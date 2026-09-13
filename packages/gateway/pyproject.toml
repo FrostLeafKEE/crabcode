@@ -1,11 +1,11 @@
 [project]
 name = "crabcode-gateway"
 # Synced from packages/core/crabcode_core/_version.py by scripts/sync_version.py.
-version = "0.1.4"
+version = "0.1.5"
 description = "CrabCode Gateway - multi-protocol (HTTP/gRPC) server for CrabCode"
 requires-python = ">=3.10"
 dependencies = [
-    "crabcode-core>=0.1.4",
+    "crabcode-core>=0.1.5",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "grpcio>=1.65.0",
