@@ -416,6 +416,110 @@ class CodexAdapter(APIAdapter):
 
         return None
 
+    @property
+    def supports_image_generation(self) -> bool:
+        """Subscription image generation is only exposed for Codex OAuth."""
+        return self._using_codex_oauth
+
+    async def generate_images(
+        self,
+        prompt: str,
+        *,
+        model: str,
+        reference_images: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        """Run the native Responses image tool using the current Codex login.
+
+        This deliberately does not call the API-key-only Images API or fall
+        back to another provider. Partial previews are not final artifacts.
+        """
+        if not self.supports_image_generation:
+            raise RuntimeError("Image generation requires the Codex auth.json mode")
+
+        # Pick up credentials refreshed by `codex login` since session startup.
+        token, account_id = _load_codex_oauth(self.config)
+        if not token:
+            raise RuntimeError("Codex auth.json is unavailable; run `codex login`")
+        headers = self._raw_responses_headers()
+        headers = {
+            key: value for key, value in headers.items()
+            if key.lower() not in {"authorization", "chatgpt-account-id"}
+        }
+        headers["Authorization"] = f"Bearer {token}"
+        if account_id:
+            headers["ChatGPT-Account-Id"] = account_id
+
+        content: list[dict[str, str]] = [{"type": "input_text", "text": prompt}]
+        content.extend({
+            "type": "input_image",
+            "image_url": f"data:{image['media_type']};base64,{image['data']}",
+        } for image in reference_images)
+        params: dict[str, Any] = {
+            "model": model,
+            "instructions": "Generate or edit the requested image using the image generation tool.",
+            "input": [{"role": "user", "content": content}],
+            "tools": [{"type": "image_generation"}],
+            "tool_choice": {"type": "image_generation"},
+            "stream": True,
+            "store": False,
+        }
+        cache_key = self._prompt_cache_key()
+        if cache_key:
+            params["prompt_cache_key"] = cache_key
+
+        images: dict[str, dict[str, str]] = {}
+        completed = False
+
+        def collect(item: dict[str, Any]) -> None:
+            if item.get("type") != "image_generation_call":
+                return
+            if item.get("status") not in {None, "completed"}:
+                return
+            result = item.get("result")
+            if not isinstance(result, str) or not result:
+                return
+            output_format = item.get("output_format") or "png"
+            media_type = {"png": "image/png", "jpeg": "image/jpeg", "webp": "image/webp"}.get(output_format)
+            if not media_type:
+                raise RuntimeError(f"Unsupported generated image format: {output_format}")
+            images[str(item.get("id") or result)] = {"media_type": media_type, "data": result}
+
+        async with httpx.AsyncClient(timeout=self.config.timeout) as client:
+            async with client.stream(
+                "POST", f"{self._base_url.rstrip('/')}/responses",
+                headers=headers, json=safe_utf8_json_tree(params),
+            ) as response:
+                if response.is_error:
+                    # Do not include raw upstream bodies, which can echo credentials.
+                    if response.status_code == 401:
+                        raise RuntimeError("Codex login expired; run `codex login` and retry")
+                    raise RuntimeError(
+                        f"Codex image generation HTTP {response.status_code}; "
+                        "the account/model may not support image generation or may have reached its limit"
+                    )
+                async for event, payload in _iter_sse_payloads(response):
+                    event_type = payload.get("type") or event
+                    if event_type == "response.output_item.done":
+                        collect(payload.get("item") or {})
+                    elif event_type == "response.completed":
+                        final = payload.get("response") or {}
+                        if final.get("status") not in {None, "completed"} or final.get("error"):
+                            raise RuntimeError("Codex image generation did not complete successfully")
+                        for item in final.get("output") or []:
+                            collect(item)
+                        completed = True
+                    elif event_type in {"response.failed", "response.incomplete", "response.error", "error"}:
+                        message = _response_error_message(payload) or event_type
+                        for secret in (token, account_id):
+                            if secret:
+                                message = message.replace(secret, "[REDACTED_SECRET]")
+                        raise RuntimeError(f"Codex image generation failed: {message}")
+        if not completed:
+            raise RuntimeError("Codex image stream ended without a completed response")
+        if not images:
+            raise RuntimeError("Codex returned no image; the account/model may not support image generation")
+        return list(images.values())
+
     async def _stream_via_httpx(
         self,
         params: dict[str, Any],

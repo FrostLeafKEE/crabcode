@@ -71,6 +71,8 @@ class ToolContext:
     team_manager: Any | None = None  # TeamManager — session-scoped
     schedule_manager: Any | None = None  # ScheduleManager — session-scoped
     session: Any | None = None  # CoreSession — for checkpoint/revert operations
+    api_adapter: Any | None = None  # Active turn's provider, including subagent/model switches
+    model: str | None = None
     snapshot_enabled: bool = True
     snapshot_max_size_mb: int = 1024
     # ImageContent emitted by a tool during this invocation.  This is kept on
@@ -158,6 +160,10 @@ class Tool(ABC):
     ) -> str | None:
         """Validate input. Return error string or None if valid."""
         return None
+
+    def is_available(self, context: ToolContext) -> bool:
+        """Whether the active provider/context supports this tool."""
+        return self.is_enabled
 
     async def check_permissions(
         self,

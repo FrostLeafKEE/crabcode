@@ -940,6 +940,8 @@ async def query_loop(
         or "claude-sonnet-4-20250514"
     )
     effective_max_tokens = cfg.max_tokens if cfg else 16384
+    params.tool_context.api_adapter = params.api_adapter
+    params.tool_context.model = effective_model
     effective_thinking = cfg.thinking_enabled if cfg else True
     effective_thinking_budget = cfg.thinking_budget if cfg else 10000
     effective_reasoning_effort = (
@@ -1079,7 +1081,7 @@ async def query_loop(
         tool_schemas = [
             t.to_api_schema()
             for t in params.tools
-            if t.is_enabled and (not plan_mode_active or t.is_read_only)
+            if t.is_available(params.tool_context) and (not plan_mode_active or t.is_read_only)
         ]
 
         max_tokens = effective_max_tokens
