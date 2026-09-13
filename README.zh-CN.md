@@ -447,6 +447,7 @@ export AZURE_OPENAI_ENDPOINT=https://my-resource.openai.azure.com/
 | `base_url` | 自定义 API 地址（适用于第三方转发或本地部署） | — |
 | `api_key_env` | 存放 API Key 的**环境变量名**（不是 Key 本身） | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` |
 | `codex_auth_path` | Codex CLI OAuth 登录文件路径。仅在 `codex` provider 且未配置 API Key 与 `base_url` 时使用。 | `$CODEX_HOME/auth.json` 或 `~/.codex/auth.json` |
+| `image_generation_enabled` | 显式为兼容 Responses 接口开启 `ImageGenerate`（`provider: "codex"`，或 `provider: "router"` 且 `format: "codex"`）。不影响官方 Codex OAuth 模式自动提供生图。 | `false` |
 | `http_headers` | 为该配置的每次 API 请求附加额外 HTTP Header | `{}` |
 | `anthropic_stream_transport` | Anthropic 流式传输实现：`auto` \| `sdk` \| `httpx`。`auto` 下官方 Anthropic 使用 SDK，自定义 `base_url` 使用直接 SSE，适合会拒绝 SDK stream helper 头的转发服务。 | `auto` |
 | `format` | Router 模式下的协议格式：`anthropic` \| `openai` \| `codex` \| `ollama` \| `gemini` \| `azure` | — |
@@ -475,6 +476,29 @@ Codex OAuth 用法：将 `provider` 设为 `codex`，并省略 `base_url` 和 AP
   }
 }
 ```
+
+第三方 Codex / Responses 格式的兼容生图接口，需要手动开启：
+
+```json
+{
+  "models": {
+    "compatible-images": {
+      "provider": "codex",
+      "model": "your-provider-model-id",
+      "base_url": "https://your-provider.example/v1",
+      "api_key_env": "COMPATIBLE_CODEX_API_KEY",
+      "image_generation_enabled": true,
+      "timeout": 300
+    }
+  }
+}
+```
+
+在环境变量中设置 `COMPATIBLE_CODEX_API_KEY`，然后选择 `compatible-images` 模型。上述字段也可以配置在 `api` 或共享 `groups` 条目中。兼容接口未设置开关或设为 `false` 时关闭生图；官方 `auth.json` 模式仍自动提供生图。其它协议格式不使用这个开关。
+
+接口必须支持 `POST <base_url>/responses`，接受原生 `image_generation` 工具、`tool_choice`、`stream: true` 和 `store: false`，并通过 Responses SSE 事件返回最终的 Base64 `image_generation_call.result`。仅支持 `/images/generations` 的接口不适用。请求复用所选模型 ID、`api_key_env` 和 `http_headers`，不会为自定义接口读取本机 Codex OAuth 凭据。`extra_body` 可透传第三方专用参数，但不能覆盖生图请求的 `model`、`instructions`、`input`、`tools`、`tool_choice`、`stream`、`store`。配置的 `prompt_cache_key`（未设置时使用 `http_headers.session_id`）和 `prompt_cache_retention` 也会透传。
+
+更新配置并重启后，在对话中直接要求生成图片即可。`ImageGenerate` 接受 `prompt` 和可选的 `reference_image_paths`（最多五张本地参考图），自动保存到工作区 `output/imagegen/`，并向 Desktop / VS Code 返回内联图片。实际可用性仍取决于服务商的模型能力与额度，开启开关不会让上游自动获得生图能力。
 
 DeepSeek V4 思考模式配合工具调用时，需要开启 reasoning 回传：
 

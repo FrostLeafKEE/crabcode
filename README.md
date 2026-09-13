@@ -459,6 +459,7 @@ Or configure in `~/.crabcode/settings.json`:
 | `base_url` | Custom API endpoint (for routers or local deployments) | — |
 | `api_key_env` | **Name** of the env var that holds the API key (not the key itself) | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` |
 | `codex_auth_path` | Codex CLI OAuth auth file path. Used only by the `codex` provider when no API key and no `base_url` are configured. | `$CODEX_HOME/auth.json` or `~/.codex/auth.json` |
+| `image_generation_enabled` | Explicitly enable `ImageGenerate` for a compatible Responses endpoint (`provider: "codex"`, or `provider: "router"` with `format: "codex"`). Does not affect automatic image generation availability in official Codex OAuth mode. | `false` |
 | `http_headers` | Extra HTTP headers to attach to every API request for this config | `{}` |
 | `anthropic_stream_transport` | Anthropic streaming implementation: `auto` \| `sdk` \| `httpx`. In `auto`, first-party Anthropic uses the SDK and custom `base_url` endpoints use direct SSE for proxies that reject SDK stream helper headers. | `auto` |
 | `format` | Wire format for router mode: `anthropic` \| `openai` \| `codex` | — |
@@ -487,6 +488,29 @@ For Codex OAuth, set `provider` to `codex` and omit `base_url` and API key setti
   }
 }
 ```
+
+For a third-party Codex/Responses-compatible image generation endpoint, explicitly opt in:
+
+```json
+{
+  "models": {
+    "compatible-images": {
+      "provider": "codex",
+      "model": "your-provider-model-id",
+      "base_url": "https://your-provider.example/v1",
+      "api_key_env": "COMPATIBLE_CODEX_API_KEY",
+      "image_generation_enabled": true,
+      "timeout": 300
+    }
+  }
+}
+```
+
+Set `COMPATIBLE_CODEX_API_KEY` in the environment and select `compatible-images`. You can also put these fields under `api` or a shared `groups` entry. Omitted or `false` disables image generation for compatible endpoints; official `auth.json` mode remains automatic. Other wire formats ignore this flag.
+
+The endpoint must support `POST <base_url>/responses` with the native `image_generation` tool, `tool_choice`, `stream: true`, and `store: false`, returning a final base64 `image_generation_call.result` in Responses SSE events. An `/images/generations`-only API is not compatible with this option. Requests use the selected model ID, `api_key_env` and `http_headers`; they never load local Codex OAuth credentials for a custom endpoint. `extra_body` passes through provider-specific options, but cannot override the image request's `model`, `instructions`, `input`, `tools`, `tool_choice`, `stream`, or `store`. `prompt_cache_key` (or `http_headers.session_id`) and `prompt_cache_retention` are also forwarded when configured.
+
+After restarting with the updated configuration, ask for an image in the conversation. `ImageGenerate` accepts a `prompt` and optional `reference_image_paths` (up to five local images), saves unique files under the workspace's `output/imagegen/`, and returns inline images to Desktop and VS Code. Provider/model support and quotas still apply; enabling this flag does not add upstream image capabilities.
 
 For DeepSeek V4 thinking mode with tool calls, enable reasoning pass-through:
 

@@ -86,6 +86,9 @@ class ApiConfig(BaseModel):
     base_url: str | None = None
     api_key_env: str | None = None
     codex_auth_path: str | None = None
+    # Opt in to native Responses image generation on API-key/custom Codex
+    # endpoints. Official Codex OAuth exposes it automatically.
+    image_generation_enabled: bool = False
     http_headers: dict[str, str] = Field(default_factory=dict)
     format: str | None = None  # anthropic | openai | codex | ollama | gemini | azure (for routers)
     max_tokens: int = 16384

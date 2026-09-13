@@ -1,4 +1,4 @@
-"""Generate images with the active Codex subscription and return inline artifacts."""
+"""Generate images with the active Codex provider and return inline artifacts."""
 
 from __future__ import annotations
 
@@ -17,8 +17,9 @@ from crabcode_core.types.tool import MAX_INLINE_IMAGE_BYTES, Tool, ToolContext, 
 class ImageGenerateTool(Tool):
     name = "ImageGenerate"
     description = (
-        "Generate or edit a raster image using the current Codex auth.json login; "
-        "no separate OpenAI API key is needed. Describe the subject, style, composition, "
+        "Generate or edit a raster image using the current Codex auth.json login "
+        "or an explicitly enabled compatible Responses provider. Uses the active "
+        "provider's configured credentials. Describe the subject, style, composition, "
         "exact text and constraints in prompt. For edits or visual references, pass "
         "reference_image_paths after inspecting those images with Image. State each "
         "reference's role and what must remain unchanged in prompt. Saves unique files "
@@ -46,7 +47,13 @@ class ImageGenerateTool(Tool):
 
     async def call(self, tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         if not self.is_available(context):
-            return ToolResult(is_error=True, result_for_model="ImageGenerate requires an active Codex auth.json model.")
+            return ToolResult(
+                is_error=True,
+                result_for_model=(
+                    "ImageGenerate requires Codex auth.json mode or "
+                    "image_generation_enabled=true on a compatible Codex model."
+                ),
+            )
         prompt = tool_input.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
             return ToolResult(is_error=True, result_for_model="Error: prompt is required")

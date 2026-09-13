@@ -418,8 +418,8 @@ class CodexAdapter(APIAdapter):
 
     @property
     def supports_image_generation(self) -> bool:
-        """Subscription image generation is only exposed for Codex OAuth."""
-        return self._using_codex_oauth
+        """OAuth is automatic; compatible endpoints require explicit opt-in."""
+        return self._using_codex_oauth or self.config.image_generation_enabled
 
     async def generate_images(
         self,
@@ -428,33 +428,48 @@ class CodexAdapter(APIAdapter):
         model: str,
         reference_images: list[dict[str, str]],
     ) -> list[dict[str, str]]:
-        """Run the native Responses image tool using the current Codex login.
+        """Run the native Responses image tool using this provider's credentials.
 
         This deliberately does not call the API-key-only Images API or fall
         back to another provider. Partial previews are not final artifacts.
         """
         if not self.supports_image_generation:
-            raise RuntimeError("Image generation requires the Codex auth.json mode")
+            raise RuntimeError(
+                "Image generation requires Codex auth.json mode or "
+                "image_generation_enabled=true on a compatible Codex endpoint"
+            )
 
-        # Pick up credentials refreshed by `codex login` since session startup.
-        token, account_id = _load_codex_oauth(self.config)
-        if not token:
-            raise RuntimeError("Codex auth.json is unavailable; run `codex login`")
         headers = self._raw_responses_headers()
-        headers = {
-            key: value for key, value in headers.items()
-            if key.lower() not in {"authorization", "chatgpt-account-id"}
-        }
-        headers["Authorization"] = f"Bearer {token}"
-        if account_id:
-            headers["ChatGPT-Account-Id"] = account_id
+        secrets = [self._api_key]
+        if self._using_codex_oauth:
+            # Pick up credentials refreshed by `codex login` since startup.
+            # Never read or forward Codex credentials to a compatible endpoint.
+            token, account_id = _load_codex_oauth(self.config)
+            if not token:
+                raise RuntimeError("Codex auth.json is unavailable; run `codex login`")
+            secrets.extend([token, account_id])
+            headers = {
+                key: value for key, value in headers.items()
+                if key.lower() not in {"authorization", "chatgpt-account-id"}
+            }
+            headers["Authorization"] = f"Bearer {token}"
+            if account_id:
+                headers["ChatGPT-Account-Id"] = account_id
+        for key, value in headers.items():
+            if any(part in key.lower() for part in ("authorization", "token", "key", "account-id")):
+                secrets.extend([value, value.removeprefix("Bearer ")])
 
         content: list[dict[str, str]] = [{"type": "input_text", "text": prompt}]
         content.extend({
             "type": "input_image",
             "image_url": f"data:{image['media_type']};base64,{image['data']}",
         } for image in reference_images)
-        params: dict[str, Any] = {
+        # Preserve compatible-provider routing/options while keeping the native
+        # image request contract intact. OAuth retains its validated payload.
+        params: dict[str, Any] = (
+            {} if self._using_codex_oauth else dict(self.config.extra_body or {})
+        )
+        params.update({
             "model": model,
             "instructions": "Generate or edit the requested image using the image generation tool.",
             "input": [{"role": "user", "content": content}],
@@ -462,10 +477,12 @@ class CodexAdapter(APIAdapter):
             "tool_choice": {"type": "image_generation"},
             "stream": True,
             "store": False,
-        }
+        })
         cache_key = self._prompt_cache_key()
         if cache_key:
             params["prompt_cache_key"] = cache_key
+        if not self._using_codex_oauth and self.config.prompt_cache_retention:
+            params["prompt_cache_retention"] = self.config.prompt_cache_retention
 
         images: dict[str, dict[str, str]] = {}
         completed = False
@@ -492,7 +509,12 @@ class CodexAdapter(APIAdapter):
                 if response.is_error:
                     # Do not include raw upstream bodies, which can echo credentials.
                     if response.status_code == 401:
-                        raise RuntimeError("Codex login expired; run `codex login` and retry")
+                        if self._using_codex_oauth:
+                            raise RuntimeError("Codex login expired; run `codex login` and retry")
+                        raise RuntimeError(
+                            "Image generation HTTP 401; check api_key_env and "
+                            "http_headers for the configured compatible endpoint"
+                        )
                     raise RuntimeError(
                         f"Codex image generation HTTP {response.status_code}; "
                         "the account/model may not support image generation or may have reached its limit"
@@ -510,7 +532,7 @@ class CodexAdapter(APIAdapter):
                         completed = True
                     elif event_type in {"response.failed", "response.incomplete", "response.error", "error"}:
                         message = _response_error_message(payload) or event_type
-                        for secret in (token, account_id):
+                        for secret in secrets:
                             if secret:
                                 message = message.replace(secret, "[REDACTED_SECRET]")
                         raise RuntimeError(f"Codex image generation failed: {message}")
