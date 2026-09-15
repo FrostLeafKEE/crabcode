@@ -739,20 +739,20 @@ class _PersistentComposer:
         # Status labels are literal text. HTML parsing would treat command
         # placeholders such as /model <name> as tags and break every redraw.
         if self._busy:
+            elapsed = max(
+                0.0,
+                time.monotonic() - self._activity_started_at,
+            )
+            frame = _SPINNER_FRAMES[
+                int(elapsed / 0.08) % len(_SPINNER_FRAMES)
+            ]
             if self._activity_running:
-                elapsed = max(
-                    0.0,
-                    time.monotonic() - self._activity_started_at,
-                )
-                frame = _SPINNER_FRAMES[
-                    int(elapsed / 0.08) % len(_SPINNER_FRAMES)
-                ]
                 suffix = f" ({elapsed:.0f}s)" if elapsed >= 2 else ""
                 return [
                     ("class:ansicyan", f"  {frame} {self._phase}…"),
                     ("class:gray", suffix),
                 ]
-            return [("class:ansicyan", "  ● Working")]
+            return [("class:ansicyan", f"  {frame} Working")]
         if self._notice:
             return [("class:gray", f"  ● {self._notice}")]
         return [("class:gray", "  ● Ready")]
@@ -776,7 +776,7 @@ class _PersistentComposer:
 
     async def _animate_status(self) -> None:
         try:
-            while self._busy and self._activity_running:
+            while self._busy:
                 self._invalidate()
                 await asyncio.sleep(0.08)
         except asyncio.CancelledError:
@@ -821,8 +821,11 @@ class _PersistentComposer:
         if busy and not self._busy:
             self._notice = ""
             self._verb_index = 0
+            self._activity_started_at = time.monotonic()
         self._busy = busy
-        if not busy:
+        if busy:
+            self._start_animation()
+        else:
             self._activity_running = False
             self._phase = ""
             self._stop_animation()
@@ -840,7 +843,6 @@ class _PersistentComposer:
         self._phase = message
         self._activity_started_at = time.monotonic()
         self._activity_running = True
-        self._start_animation()
         self._invalidate()
 
     def update_activity(self, message: str) -> None:
@@ -856,7 +858,6 @@ class _PersistentComposer:
             return
         self._activity_running = False
         self._phase = ""
-        self._stop_animation()
         self._invalidate()
 
     def set_notice(self, notice: str) -> None:
