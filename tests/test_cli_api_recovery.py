@@ -1,0 +1,240 @@
+"""Drive the actual CLI input loop through model failures and recovery."""
+
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager
+from io import StringIO
+import json
+import unittest
+from unittest.mock import patch
+
+import httpx
+from prompt_toolkit.application.current import create_app_session
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
+from rich.console import Console
+
+from crabcode_cli import repl
+from crabcode_core.events import CoreSession
+from crabcode_core.api.openai_adapter import OpenAIAdapter
+from crabcode_core.query.loop import QueryParams, query_loop
+from crabcode_core.types.config import ApiConfig, CrabCodeSettings
+from crabcode_core.types.event import ErrorEvent, StreamModeEvent, TurnCompleteEvent
+from crabcode_core.types.message import create_user_message
+from crabcode_core.types.tool import ToolContext
+
+
+class RecoverySession(CoreSession):
+    """Keep real turn ownership/model switching; isolate tools and storage."""
+
+    def __init__(self, failure):
+        super().__init__(settings=CrabCodeSettings(
+            default_model="healthy",
+            models={name: ApiConfig(provider="openai", model=name)
+                    for name in ("healthy", "broken", "invalid")},
+        ))
+        self.failure = failure
+        self.finished = []
+        self.completed = []
+
+    async def initialize(self):
+        self._initialized = True
+
+    async def _send_message_impl(self, text, **kwargs):
+        try:
+            yield StreamModeEvent(mode="requesting")
+            if self._current_model_name == "broken":
+                if isinstance(self.failure, Exception):
+                    raise self.failure
+                yield self.failure
+            else:
+                self.completed.append(text)
+                yield TurnCompleteEvent()
+        finally:
+            self.finished.append(text)
+
+
+class CliApiRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    @asynccontextmanager
+    async def running_repl(self, session, adapter_factory=None):
+        output = StringIO()
+        composers = []
+        real_composer = repl._PersistentComposer
+
+        def make_composer(*args):
+            composer = real_composer(*args)
+            composers.append(composer)
+            return composer
+
+        def make_adapter(config):
+            if config.model == "invalid":
+                raise ValueError("Invalid API URL [/provider]")
+            return object()
+
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+            patch.object(repl, "CoreSession", return_value=session),
+            patch.object(repl, "_PersistentComposer", side_effect=make_composer),
+            patch.object(repl, "console", Console(file=output, width=180)),
+            patch("crabcode_core.api.create_adapter", side_effect=adapter_factory or make_adapter),
+        ):
+            task = asyncio.create_task(repl.run_repl(settings=session.settings))
+
+            async def wait_for(predicate):
+                async def poll():
+                    while not predicate():
+                        if task.done():
+                            await task  # Surface an unexpected CLI exit immediately.
+                            self.fail("CLI exited before the next command")
+                        await asyncio.sleep(0.01)
+                await asyncio.wait_for(poll(), 3)
+
+            try:
+                await wait_for(lambda: composers and composers[0].prompt_session.app.is_running)
+                yield pipe, composers[0], output, wait_for
+                pipe.send_text("\x04")
+                await asyncio.wait_for(task, 3)
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    async def assert_recovery(self, failure, expected):
+        session = RecoverySession(failure)
+        async with self.running_repl(session) as (pipe, composer, output, wait_for):
+            pipe.send_text("/model broken\r")
+            await wait_for(lambda: "Switched to broken" in output.getvalue())
+            pipe.send_text("first request\r")
+            await wait_for(lambda: expected in output.getvalue() and not composer._busy)
+            self.assertFalse(session._closed)
+            self.assertFalse(session._turn_lock.locked())
+            self.assertFalse(session._foreground_turn_active)
+            self.assertFalse(composer._activity_running)
+            self.assertEqual(session.finished, ["first request"])
+            pipe.send_text("/model healthy\r")
+            await wait_for(lambda: "Switched to healthy" in output.getvalue())
+            pipe.send_text("second request\r")
+            await wait_for(lambda: session.completed == ["second request"] and not composer._busy)
+            self.assertEqual(session.finished, ["first request", "second request"])
+
+    async def test_connection_exception_keeps_cli_usable(self):
+        await self.assert_recovery(httpx.ConnectError("Connection refused"), "Connection refused")
+
+    async def test_timeout_exception_keeps_cli_usable(self):
+        await self.assert_recovery(httpx.ReadTimeout("Request timed out"), "Request timed out")
+
+    async def test_non_retryable_error_finishes_turn_before_next_input(self):
+        await self.assert_recovery(ErrorEvent(message="404 API endpoint gone", recoverable=False),
+                                   "404 API endpoint gone")
+
+    async def test_provider_error_markup_is_rendered_literally(self):
+        await self.assert_recovery(ErrorEvent(message="401 [/provider] [red]expired key",
+                                             recoverable=False),
+                                   "401 [/provider] [red]expired key")
+
+    async def test_invalid_model_configuration_preserves_current_model(self):
+        session = RecoverySession(None)
+        async with self.running_repl(session) as (pipe, composer, output, wait_for):
+            pipe.send_text("/model healthy\r")
+            await wait_for(lambda: "Switched to healthy" in output.getvalue())
+            adapter = session._api_adapter
+            pipe.send_text("/model invalid\r")
+            await wait_for(lambda: "Failed to switch model" in output.getvalue())
+            self.assertEqual(session._current_model_name, "healthy")
+            self.assertIs(session._api_adapter, adapter)
+            pipe.send_text("still working\r")
+            await wait_for(lambda: session.completed == ["still working"] and not composer._busy)
+
+    async def test_unexpected_model_command_failure_keeps_cli_usable(self):
+        session = RecoverySession(None)
+        async with self.running_repl(session) as (pipe, composer, output, wait_for):
+            with patch.object(session, "switch_model", side_effect=RuntimeError("switch failed [/api]")):
+                pipe.send_text("/model broken\r")
+                await wait_for(lambda: "switch failed [/api]" in output.getvalue())
+            pipe.send_text("/model healthy\r")
+            await wait_for(lambda: "Switched to healthy" in output.getvalue())
+            pipe.send_text("still working\r")
+            await wait_for(lambda: session.completed == ["still working"] and not composer._busy)
+
+    async def test_real_http_404_then_switch_and_successful_stream(self):
+        requests = []
+        adapters = []
+
+        async def handle_http(reader, writer):
+            try:
+                headers = (await reader.readuntil(b"\r\n\r\n")).decode()
+                path = headers.split()[1]
+                length = next(int(line.split(":", 1)[1]) for line in headers.splitlines()
+                              if line.lower().startswith("content-length:"))
+                requests.append((path, json.loads(await reader.readexactly(length))))
+                if path.startswith("/broken/"):
+                    status, content_type = "404 Not Found", "application/json"
+                    body = json.dumps({"error": {"message": "Endpoint expired [/provider]"}})
+                else:
+                    status, content_type = "200 OK", "text/event-stream"
+                    chunk = {"id": "local-test", "object": "chat.completion.chunk", "created": 0,
+                             "model": "healthy", "choices": [{"index": 0,
+                                 "delta": {"content": "Recovered successfully"}, "finish_reason": "stop"}]}
+                    body = "data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n"
+                payload = body.encode()
+                writer.write((f"HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n"
+                              f"Content-Length: {len(payload)}\r\nConnection: close\r\n\r\n").encode()
+                             + payload)
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        class HttpSession(RecoverySession):
+            async def _send_message_impl(self, text, **kwargs):
+                self.messages.append(create_user_message(content=text))
+                params = QueryParams(
+                    messages=self.messages, system_prompt=[], user_context={}, system_context={},
+                    tools=[], tool_context=ToolContext(cwd=self.cwd), api_adapter=self._api_adapter,
+                    api_config=self.settings.get_api_config(self._current_model_name),
+                    auto_compact_enabled=False,
+                )
+                async for event in query_loop(params):
+                    if isinstance(event, TurnCompleteEvent):
+                        self.completed.append(text)
+                    yield event
+
+        def make_adapter(config):
+            adapter = OpenAIAdapter(config)
+            adapter.client.max_retries = 0
+            adapters.append(adapter)
+            return adapter
+
+        server = await asyncio.start_server(handle_http, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        session = HttpSession(None)
+        for name, config in session.settings.models.items():
+            config.base_url = f"http://127.0.0.1:{port}/{name}"
+            config.api_key_env = "CRABCODE_RECOVERY_TEST_KEY"
+            config.max_retries = 0
+            config.timeout = 2
+        try:
+            with patch.dict("os.environ", {"CRABCODE_RECOVERY_TEST_KEY": "local-test-only"}):
+                async with self.running_repl(session, make_adapter) as (pipe, composer, output, wait_for):
+                    pipe.send_text("/model broken\r")
+                    await wait_for(lambda: "Switched to broken" in output.getvalue())
+                    pipe.send_text("first request\r")
+                    await wait_for(lambda: "Endpoint expired [/provider]" in output.getvalue()
+                                   and not composer._busy)
+                    self.assertFalse(session._turn_lock.locked())
+                    pipe.send_text("/model healthy\r")
+                    await wait_for(lambda: "Switched to healthy" in output.getvalue())
+                    pipe.send_text("second request\r")
+                    await wait_for(lambda: session.completed == ["second request"] and not composer._busy)
+                    self.assertEqual([path for path, _ in requests],
+                                     ["/broken/chat/completions", "/healthy/chat/completions"])
+                    self.assertEqual(session.messages[-1].text_content, "Recovered successfully")
+                    self.assertEqual([message["content"] for message in requests[-1][1]["messages"]],
+                                     ["first request", "second request"])
+        finally:
+            server.close()
+            await server.wait_closed()
+            for adapter in adapters:
+                await adapter.client.close()

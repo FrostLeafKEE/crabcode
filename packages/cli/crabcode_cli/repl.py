@@ -645,6 +645,12 @@ def _render_submitted_input(text: str, *, steering: bool = False) -> None:
     console.print(line)
 
 
+def _render_repl_error(message: str) -> None:
+    # Provider responses may contain brackets/HTML. Treat them as literal
+    # text so displaying an API failure cannot itself raise a MarkupError.
+    console.print(Text(f"\nError: {safe_utf8_str(message)}", style="bold red"))
+
+
 class _PersistentComposer:
     """One long-lived input application shared by idle and working states."""
 
@@ -1744,11 +1750,7 @@ async def _consume_background_events(
                 )
             )
         elif isinstance(event, ErrorEvent):
-            await render(
-                lambda: console.print(
-                    f"[bold red]Error: {safe_utf8_str(event.message)}[/]"
-                )
-            )
+            await render(lambda: _render_repl_error(event.message))
         elif isinstance(event, ModeChangeEvent):
             session.switch_mode(event.mode)
             await render(
@@ -1861,7 +1863,7 @@ async def _stream_agent_until_done(
         elif isinstance(event, ChoiceRequestEvent):
             await _prompt_choice(event, session)
         elif isinstance(event, ErrorEvent):
-            console.print(f"\n[bold red]Error: {safe_utf8_str(event.message)}[/]")
+            _render_repl_error(event.message)
 
     _flush_agent_stream_line(active_stream_agent)
 
@@ -1955,7 +1957,7 @@ async def _run_plan_executor_with_runtime_events(
             elif isinstance(event, ChoiceRequestEvent):
                 await _prompt_choice(event, session)
             elif isinstance(event, ErrorEvent):
-                console.print(f"  [bold red]{safe_utf8_str(event.message)}[/]")
+                _render_repl_error(event.message)
     finally:
         forwarder.cancel()
         producer.cancel()
@@ -2138,12 +2140,17 @@ async def run_repl(
 
             if user_input.startswith("/"):
                 async with in_terminal():
-                    result = await _handle_command(
-                        user_input,
-                        session,
-                        settings,
-                        pending_images,
-                    )
+                    try:
+                        result = await _handle_command(
+                            user_input,
+                            session,
+                            settings,
+                            pending_images,
+                        )
+                    except Exception as exc:
+                        logger.exception("REPL command failed")
+                        _render_repl_error(f"{type(exc).__name__}: {exc}")
+                        continue
                 if result is False:
                     break
                 if isinstance(result, str):
@@ -2221,11 +2228,13 @@ async def run_repl(
                         await session.interrupt()
 
             steering_task = asyncio.create_task(_consume_turn_input())
+            turn_stream = None
             try:
                 send_images = pending_images.copy() if pending_images else None
                 pending_images.clear()
                 batch_state: dict = {"denied": False}
-                async for event in session.send_message(user_input, images=send_images):
+                turn_stream = session.send_message(user_input, images=send_images)
+                async for event in turn_stream:
                     if isinstance(event, StreamModeEvent):
                         if event.mode == "requesting":
                             spinner.start()
@@ -2335,11 +2344,12 @@ async def run_repl(
                     elif isinstance(event, ErrorEvent):
                         await _stop_spinner_with_thinking()
                         _finish_stream_line()
-                        console.print(
-                            f"\n[bold red]Error: {safe_utf8_str(event.message)}[/]"
-                        )
-                        if not event.recoverable:
-                            break
+                        _render_repl_error(event.message)
+                        # Non-recoverable means this request cannot be retried
+                        # automatically. Drain the stream so Core can commit
+                        # history and release the turn before the next input.
+                        composer.set_notice("Request failed · retry or use /model <name>")
+                        plan_pending = False
 
                     elif isinstance(event, ModeChangeEvent):
                         await _stop_spinner_with_thinking()
@@ -2441,10 +2451,29 @@ async def run_repl(
                     f"Interrupted · Ctrl+C again within "
                     f"{_CTRL_C_EXIT_WINDOW_S:.0f}s to exit"
                 )
+            except Exception as exc:
+                # Initialization, request preparation and rendering can fail
+                # outside query_loop's ErrorEvent boundary. Keep the session
+                # and composer alive so the user can select a working model.
+                logger.exception("REPL request failed")
+                _finish_stream_line()
+                _render_repl_error(f"{type(exc).__name__}: {exc}")
+                composer.set_notice("Request failed · retry or use /model <name>")
+                plan_pending = False
             finally:
                 steering_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await steering_task
+                steering_results = await asyncio.gather(steering_task, return_exceptions=True)
+                if isinstance(steering_results[0], Exception):
+                    _render_repl_error(str(steering_results[0]))
+                try:
+                    if turn_stream is not None:
+                        await turn_stream.aclose()
+                except Exception as exc:
+                    logger.exception("Failed to close REPL request stream")
+                    _render_repl_error(f"{type(exc).__name__}: {exc}")
+                    plan_pending = False
+                await _stop_spinner_with_thinking()
+                composer.set_busy(False)
 
             if input_state.pop("interrupt_requested", False):
                 if streamed_text_for_context.strip():
