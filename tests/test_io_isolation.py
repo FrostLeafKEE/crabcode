@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 import signal
@@ -14,9 +15,12 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, PropertyMock, patch
+
+from pydantic import ValidationError
 
 from crabcode_core import io_worker
+from crabcode_core.config.manager import ConfigManager
 from crabcode_core.subprocess_utils import terminate_process_tree
 from crabcode_core.tools.file_read import FileReadTool
 from crabcode_core.tools.file_write import FileWriteTool
@@ -24,6 +28,7 @@ from crabcode_core.tools.file_edit import FileEditTool
 from crabcode_core.tools.glob import GlobTool
 from crabcode_core.tools.grep import GrepTool
 from crabcode_core.tools.bash import BashTool
+from crabcode_core.types.config import CrabCodeSettings
 from crabcode_core.types.tool import ToolContext
 
 
@@ -54,7 +59,83 @@ _worker_main()
     return io_worker._BOOTSTRAP.replace("_worker_main()", injection)
 
 
+class FilesystemTimeoutConfigTests(unittest.TestCase):
+    def test_default_timeout_is_one_hour(self):
+        self.assertEqual(CrabCodeSettings().filesystem_timeout, 3600)
+        self.assertEqual(ToolContext().filesystem_timeout, 3600)
+        self.assertEqual(io_worker.IO_TIMEOUT, 3600)
+
+    def test_settings_layers_override_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            user_path = Path(directory) / "user.json"
+            project_path = Path(directory) / "project.json"
+            user_path.write_text(json.dumps({"filesystem_timeout": 7200}))
+            for timeout in (42.5, None):
+                with self.subTest(timeout=timeout):
+                    project_path.write_text(json.dumps({"filesystem_timeout": timeout}))
+                    with patch.object(ConfigManager, "settings_file_paths", new_callable=PropertyMock,
+                                      return_value={"userSettings": str(user_path),
+                                                    "projectSettings": str(project_path)}):
+                        settings = ConfigManager(cwd=directory).load()
+                    self.assertEqual(settings.filesystem_timeout, timeout)
+                    self.assertEqual(settings.model_dump()["filesystem_timeout"], timeout)
+
+    def test_timeout_must_be_finite_and_positive(self):
+        for timeout in (0, -1, float("inf"), float("-inf"), float("nan"), "invalid"):
+            with self.subTest(timeout=timeout), self.assertRaises(ValidationError):
+                CrabCodeSettings(filesystem_timeout=timeout)
+
+
 class FileIsolationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_file_tools_share_default_and_configured_timeouts(self):
+        for settings in (CrabCodeSettings(), CrabCodeSettings(filesystem_timeout=7200)):
+            context = ToolContext(filesystem_timeout=settings.filesystem_timeout)
+            for tool in (FileReadTool(), FileWriteTool(), FileEditTool(), GlobTool(), GrepTool(), BashTool()):
+                with self.subTest(tool=tool.name, timeout=settings.filesystem_timeout):
+                    with patch.object(io_worker, "run_io", new_callable=AsyncMock,
+                                      side_effect=asyncio.TimeoutError) as run_io:
+                        result = await tool.call({}, context)
+                    self.assertEqual(run_io.await_args.kwargs["timeout"], settings.filesystem_timeout)
+                    self.assertTrue(result.is_error)
+                    self.assertIn(f"timed out after {settings.filesystem_timeout:g}s", result.result_for_model)
+
+    async def test_file_tools_can_disable_timeouts(self):
+        settings = CrabCodeSettings(filesystem_timeout=None)
+        context = ToolContext(filesystem_timeout=settings.filesystem_timeout)
+        for tool in (FileReadTool(), FileWriteTool(), FileEditTool(), GlobTool(), GrepTool(), BashTool()):
+            with self.subTest(tool=tool.name):
+                with patch.object(io_worker, "run_io", new_callable=AsyncMock,
+                                  return_value={"result_for_model": "done"}) as run_io:
+                    result = await tool.call({}, context)
+                self.assertFalse(result.is_error)
+                self.assertIsNone(run_io.await_args.kwargs["timeout"])
+
+    async def test_worker_errors_survive_disabled_timeout(self):
+        with patch.object(io_worker, "run_io", new_callable=AsyncMock, side_effect=OSError()):
+            result = await FileReadTool().call({}, ToolContext(filesystem_timeout=None))
+        self.assertTrue(result.is_error)
+        self.assertIn("Read filesystem operation failed: OSError", result.result_for_model)
+
+    async def test_shell_explicit_timeout_overrides_filesystem_default(self):
+        for default in (42, None):
+            context = ToolContext(filesystem_timeout=default)
+            for timeout in (1, 7200):
+                with self.subTest(default=default, timeout=timeout):
+                    with patch.object(io_worker, "run_io", new_callable=AsyncMock,
+                                      return_value={"result_for_model": "done"}) as run_io:
+                        result = await BashTool().call({"command": "echo done", "timeout": timeout}, context)
+                    self.assertFalse(result.is_error)
+                    self.assertEqual(run_io.await_args.kwargs["timeout"], timeout)
+
+    async def test_shell_rejects_invalid_explicit_timeouts(self):
+        for timeout in (0, -1, float("inf"), float("nan"), None, "invalid"):
+            with self.subTest(timeout=timeout):
+                with patch.object(io_worker, "run_io", new_callable=AsyncMock) as run_io:
+                    result = await BashTool().call({"command": "echo done", "timeout": timeout}, ToolContext())
+                self.assertTrue(result.is_error)
+                self.assertIn("timeout must be a positive number of seconds", result.result_for_model)
+                run_io.assert_not_awaited()
+
     @unittest.skipIf(os.name == "nt", "POSIX process group verification")
     async def test_shell_timeout_terminates_descendants(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -76,7 +157,7 @@ class FileIsolationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_shell_preserves_cwd_environment_and_output(self):
         with tempfile.TemporaryDirectory() as directory:
-            context = ToolContext(cwd=directory, env={"CRABCODE_IO_TEST": "custom"})
+            context = ToolContext(cwd=directory, env={"CRABCODE_IO_TEST": "custom"}, filesystem_timeout=None)
             command = ('Write-Output $env:CRABCODE_IO_TEST; (Get-Location).Path'
                        if os.name == "nt" else 'printf "%s\\n" "$CRABCODE_IO_TEST"; pwd')
             result = await BashTool().call({"command": command}, context)
@@ -90,7 +171,7 @@ class FileIsolationTests(unittest.IsolatedAsyncioTestCase):
             path = Path(directory) / "中文 file.txt"
             original = b"\xef\xbb\xbf" + "甲\r\n乙\r\n".encode()
             path.write_bytes(original)
-            context = ToolContext(cwd=directory, session_id="isolation-test")
+            context = ToolContext(cwd=directory, session_id="isolation-test", filesystem_timeout=None)
             read = await FileReadTool().call({"path": path.name, "offset": -1}, context)
             self.assertFalse(read.is_error, read.result_for_model)
             self.assertIn("2|乙", read.result_for_model)
@@ -126,13 +207,14 @@ class FileIsolationTests(unittest.IsolatedAsyncioTestCase):
             (FileEditTool(), {"file_path": "target.txt", "old_string": "before", "new_string": "after"}),
             (GlobTool(), {"pattern": "*.txt"}),
             (GrepTool(), {"pattern": "before", "path": "target.txt"}),
+            (BashTool(), {"command": "echo done"}),
         ]
         for tool, inputs in cases:
             with self.subTest(tool=tool.name), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "target.txt"
                 path.write_text("before")
                 ready = Path(directory) / "ready"
-                target = Path(directory) if tool.name == "Glob" else path
+                target = Path(directory) if tool.name in {"Glob", "Bash"} else path
                 bootstrap = blocking_stat_bootstrap(target, ready)
                 ticks = 0
                 async def heartbeat():
@@ -142,16 +224,20 @@ class FileIsolationTests(unittest.IsolatedAsyncioTestCase):
                         await asyncio.sleep(0.01)
                 pulse = asyncio.create_task(heartbeat())
                 try:
-                    with patch.object(io_worker, "_BOOTSTRAP", bootstrap), patch.object(io_worker, "IO_TIMEOUT", 1):
+                    with patch.object(io_worker, "_BOOTSTRAP", bootstrap):
                         started = time.monotonic()
-                        result = await tool.call(inputs, ToolContext(cwd=directory))
+                        settings = CrabCodeSettings(filesystem_timeout=1)
+                        result = await tool.call(inputs, ToolContext(
+                            cwd=directory, session_id="timeout-test",
+                            filesystem_timeout=settings.filesystem_timeout,
+                        ))
                     self.assertTrue(ready.exists(), f"{tool.name}: worker never reached injected stat: {result}")
                     self.assertTrue(result.is_error)
                     self.assertIn("timed out", result.result_for_model)
                     self.assertLess(time.monotonic() - started, 2)
                     self.assertGreater(ticks, 20)
                     self.assertEqual(path.read_text(), "before")
-                    if tool.name in {"Write", "Edit"}:
+                    if tool.name in {"Write", "Edit", "Bash"}:
                         self.assertIn("outcome is unknown", result.result_for_model)
                 finally:
                     pulse.cancel()
@@ -163,7 +249,7 @@ class FileIsolationTests(unittest.IsolatedAsyncioTestCase):
             target.write_text("hello")
             with patch.object(io_worker, "_BOOTSTRAP", blocking_stat_bootstrap(target, ready)):
                 task = asyncio.create_task(FileReadTool().call(
-                    {"file_path": str(target)}, ToolContext(cwd=directory)))
+                    {"file_path": str(target)}, ToolContext(cwd=directory, filesystem_timeout=None)))
                 await wait_until(ready.exists)
                 started = time.monotonic()
                 task.cancel()

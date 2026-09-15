@@ -8,6 +8,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 
+DEFAULT_FILESYSTEM_TIMEOUT = 3600.0
+
+
 ReasoningEffort = Literal[
     "none", "minimal", "low", "medium", "high", "xhigh", "max"
 ]
@@ -247,6 +250,12 @@ class CrabCodeSettings(BaseModel):
     extra_tools: list[str] = Field(default_factory=list)
     ultra_mode: bool = False
     tool_call_timeout: float | None = None
+    filesystem_timeout: float | None = Field(
+        default=DEFAULT_FILESYSTEM_TIMEOUT,
+        gt=0,
+        allow_inf_nan=False,
+        description="Default timeout in seconds for Read, Write, Edit, Glob, Grep, and Bash; null disables it.",
+    )
     tool_settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     team: TeamSettings = Field(default_factory=TeamSettings)

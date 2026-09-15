@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
+from crabcode_core.types.config import DEFAULT_FILESYSTEM_TIMEOUT
+
 if TYPE_CHECKING:
     from crabcode_core.types.message import AssistantMessage, Message
 
@@ -75,6 +77,7 @@ class ToolContext:
     model: str | None = None
     snapshot_enabled: bool = True
     snapshot_max_size_mb: int = 1024
+    filesystem_timeout: float | None = DEFAULT_FILESYSTEM_TIMEOUT
     # ImageContent emitted by a tool during this invocation.  This is kept on
     # the per-call context so concurrent tools cannot leak attachments into
     # one another.

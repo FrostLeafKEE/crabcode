@@ -20,11 +20,12 @@ import threading
 from typing import Any, Callable
 
 from crabcode_core.subprocess_utils import managed_process_command, subprocess_group_options
+from crabcode_core.types.config import DEFAULT_FILESYSTEM_TIMEOUT
 
 _SLOTS = threading.BoundedSemaphore(8)
 _ACTIVE_GUARD = threading.Lock()
 _ACTIVE_ABORTS: set[Callable[[], None]] = set()
-IO_TIMEOUT = 30.0
+IO_TIMEOUT = DEFAULT_FILESYSTEM_TIMEOUT
 
 # Do not resolve/stat package paths in the caller. Imports and path resolution
 # happen in the child, including for editable installs on network storage.
@@ -57,8 +58,8 @@ def abort_io_workers() -> None:
 
 
 async def run_io(module: str, function: str, *args: Any,
-                 timeout: float = IO_TIMEOUT, **kwargs: Any) -> Any:
-    """Call a JSON-serializable internal function in an expendable process."""
+                 timeout: float | None = IO_TIMEOUT, **kwargs: Any) -> Any:
+    """Call an internal function in an expendable process; None disables the deadline."""
     slots = _SLOTS
     if not slots.acquire(blocking=False):
         raise OSError("Filesystem workers are busy or still blocked; stop retrying until storage recovers")
@@ -155,11 +156,12 @@ async def run_file_tool(name: str, tool_input: dict[str, Any], context: Any) -> 
     # explicit; filesystem changes and their backups execute in the same child.
     fields = {key: getattr(context, key) for key in (
         "cwd", "session_id", "snapshot_enabled", "snapshot_max_size_mb", "env",
+        "filesystem_timeout",
     )}
-    timeout = IO_TIMEOUT
-    if name == "Bash":
+    timeout = context.filesystem_timeout
+    if name == "Bash" and "timeout" in tool_input:
         try:
-            timeout = float(tool_input.get("timeout", 120))
+            timeout = float(tool_input["timeout"])
             if not math.isfinite(timeout) or timeout <= 0:
                 raise ValueError
         except (ValueError, TypeError):
@@ -170,7 +172,9 @@ async def run_file_tool(name: str, tool_input: dict[str, Any], context: Any) -> 
                             timeout=timeout)
         return ToolResult(**data)
     except (OSError, asyncio.TimeoutError) as exc:
-        detail = str(exc) or f"timed out after {timeout:g}s"
+        detail = str(exc) or (
+            f"timed out after {timeout:g}s" if timeout is not None else type(exc).__name__
+        )
         if name in {"Edit", "Write", "Bash"}:
             detail += ". Write outcome is unknown; inspect affected files and snapshots before retrying"
         return ToolResult(result_for_model=f"{name} filesystem operation failed: {detail}",

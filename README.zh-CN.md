@@ -1232,7 +1232,17 @@ VS Code 扩展默认使用“跟随配置”（`crabcode.permissionMode: "defaul
 }
 ```
 
-省略 `tool_call_timeout` 或设为 `null` 时，工具调用不会因为全局配置而超时。工具自身的超时配置（例如 `Bash.timeout` 或 `agent.timeout`）仍会独立生效，并且可能更短。
+省略 `tool_call_timeout` 或设为 `null` 时，工具调用不会因为全局配置而超时。文件系统及工具自身的超时配置（例如 `filesystem_timeout`、`Bash.timeout` 或 `agent.timeout`）仍会独立生效，并且可能更短。
+
+Read、Write、Edit、Glob、Grep 和 Bash 共用的文件系统工具超时默认为 **3600 秒**。可以在 `~/.crabcode/settings.json` 或项目的 `.crabcode/settings.json` 中设置顶层 `filesystem_timeout` 字段：
+
+```json
+{
+  "filesystem_timeout": 3600
+}
+```
+
+该值可以是有限的正数（单位为秒），也可以设为 `null` 来关闭文件系统超时；省略此字段时仍使用 3600 秒的默认值。该配置对主会话和子 agent 的文件工具均生效，也包含工具调用期间执行的文件快照操作。单次 Bash 调用显式传入的 `timeout` 会覆盖此默认值，即使 `filesystem_timeout` 为 `null` 也会生效；如果配置了 `tool_call_timeout`，整体执行时间仍受其限制。关闭超时后仍可主动取消操作。
 
 ## CLAUDE.md（项目指令文件）
 

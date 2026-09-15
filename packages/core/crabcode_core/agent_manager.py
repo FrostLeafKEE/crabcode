@@ -1472,6 +1472,7 @@ class AgentManager:
                     schedule_manager=self._schedule_manager,
                     snapshot_enabled=settings.snapshot.enabled,
                     snapshot_max_size_mb=settings.snapshot.max_size_mb,
+                    filesystem_timeout=settings.filesystem_timeout,
                 )
                 params = QueryParams(
                     messages=list(run.messages),

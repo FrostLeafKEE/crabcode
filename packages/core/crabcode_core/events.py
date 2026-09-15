@@ -771,6 +771,7 @@ class CoreSession:
                 session=self,
                 snapshot_enabled=merged.snapshot.enabled,
                 snapshot_max_size_mb=merged.snapshot.max_size_mb,
+                filesystem_timeout=merged.filesystem_timeout,
             )
             await tool.setup(ctx)
 
@@ -2276,6 +2277,7 @@ class CoreSession:
                 session=self,
                 snapshot_enabled=self.settings.snapshot.enabled,
                 snapshot_max_size_mb=self.settings.snapshot.max_size_mb,
+                filesystem_timeout=self.settings.filesystem_timeout,
             )
             try:
                 await tool.setup(context)
@@ -2987,6 +2989,7 @@ class CoreSession:
             session=self,
             snapshot_enabled=self.settings.snapshot.enabled,
             snapshot_max_size_mb=self.settings.snapshot.max_size_mb,
+            filesystem_timeout=self.settings.filesystem_timeout,
         )
 
         # Sync SwitchModeTool's current_mode so its prompt and validation

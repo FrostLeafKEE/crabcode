@@ -1257,7 +1257,17 @@ By default, CrabCode does not apply a global timeout to tool calls. Set the top-
 }
 ```
 
-Omit `tool_call_timeout` or set it to `null` to let tool calls run indefinitely. Tool-specific timeouts, such as `Bash.timeout` or `agent.timeout`, still apply independently and may be shorter.
+Omit `tool_call_timeout` or set it to `null` to disable the global limit. Filesystem and tool-specific timeouts, such as `filesystem_timeout`, `Bash.timeout`, or `agent.timeout`, still apply independently and may be shorter.
+
+The shared filesystem tool timeout defaults to **3600 seconds** for Read, Write, Edit, Glob, Grep, and Bash. Set the top-level `filesystem_timeout` field in `~/.crabcode/settings.json` or the project's `.crabcode/settings.json` to change it:
+
+```json
+{
+  "filesystem_timeout": 3600
+}
+```
+
+The value must be a finite, positive number of seconds, or `null` to disable the filesystem timeout. Omitting the field keeps the 3600-second default. It applies to both main-session and sub-agent file tools, including file snapshots performed during a tool call. An explicit `Bash.timeout` overrides this default for that invocation, even when `filesystem_timeout` is `null`; a configured `tool_call_timeout` still caps the overall execution. Operations can still be cancelled when the timeout is disabled.
 
 ## CLAUDE.md (project instructions)
 
