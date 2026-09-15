@@ -1,4 +1,4 @@
-"""CrabCode ASCII banner."""
+"""CrabCode terminal banner."""
 
 from __future__ import annotations
 
@@ -6,18 +6,15 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-# ASCII crab art — hand-crafted
+# Pixel crab with open claws, eye stalks, and three pairs of splayed legs.
 _CRAB = (
-    "   ▐▛██▜▌    ▐▛██▜▌   \n"
-    " ▝▜██████▛▘ ▝▜██████▛▘ \n"
-    "     ▐██████████▌     \n"
-    "   ▐████████████▌     \n"
-    "   ▐████████████▌     \n"
-    "    ▝▜████████▛▘      \n"
-    "  ▐▛██▛▘    ▝▜██▜▌    \n"
-    " ▐▛▘            ▝▜▌   \n"
-    "▝▘                ▝▘  \n"
-    "                    "
+    " ▄   ▄           ▄   ▄\n"
+    " ▀█▄█▀   ▄   ▄   ▀█▄█▀\n"
+    "   ▀█▄▄  █   █  ▄▄█▀\n"
+    "   ▄▄█████████████▄▄\n"
+    " ▄█▀ █████████████ ▀█▄\n"
+    " ▀ ▄█▀▀█████████▀▀█▄ ▀\n"
+    "  ▀▀  ▄█▀     ▀█▄  ▀▀"
 )
 
 # "CrabCode" in figlet slant font
@@ -29,10 +26,10 @@ _CRABCODE = r"""   ______           __    ______          __
 
 
 def print_banner(console: Console) -> None:
-    """Print the CrabCode banner with ASCII crab art on the left."""
+    """Print the CrabCode banner with pixel crab art on the left."""
     grid = Table.grid(padding=(0, 3))
     grid.add_column(no_wrap=True)
-    grid.add_column(no_wrap=True)
+    grid.add_column(no_wrap=True, vertical="middle")
     grid.add_row(
         Text(_CRAB, style="bold red"),
         Text(_CRABCODE, style="bold cyan"),
