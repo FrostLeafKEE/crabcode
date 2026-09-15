@@ -16,6 +16,16 @@ from crabcode_core.prompts.templates import CLAUDE_MODEL_IDS
         ("gpt-6-astra", 1_050_000),
         ("gpt-daybreak-blue-latest", 1_050_000),
         ("gpt-daybreak-red-latest", 400_000),
+        ("grok-4.20", 1_000_000),
+        ("grok-4.20-0309-reasoning", 1_000_000),
+        ("grok-4.20-0309-non-reasoning", 1_000_000),
+        ("grok-4.20-multi-agent-0309", 1_000_000),
+        ("grok-4.6", 500_000),
+        ("grok-4.5", 500_000),
+        ("grok-4.3", 1_000_000),
+        ("grok-build-latest", 500_000),
+        ("grok-build-0.1", 256_000),
+        ("grok-code-fast-1", 256_000),
         ("deepseek-flash", 1_000_000),
         ("glm-5.3", 1_000_000),
         ("glm-5.3-flash", 1_000_000),
@@ -58,6 +68,8 @@ def test_colon_tag_uses_base_context_window() -> None:
 def test_longest_model_name_wins_for_version_suffix() -> None:
     """Prefer a specific variant over a shorter base model."""
     assert lookup_context_window("gpt-5.6-cyber-2026-09-01") == 400_000
+    assert lookup_context_window("grok-4.20-0309-reasoning") == 1_000_000
+    assert lookup_context_window("grok-4.6-2026-08-12") == 500_000
     assert lookup_context_window("skywork-ai/skyclaw-v1-lite-2026-05-19") == 1_000_000
 
 
