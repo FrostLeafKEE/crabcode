@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+from prompt_toolkit.application.current import create_app_session
+from prompt_toolkit.data_structures import Size
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
+
+from crabcode_cli.repl import _PersistentComposer, _alt_enter_label
+
+
+class TerminalOutput(DummyOutput):
+    size = Size(rows=24, columns=80)
+
+    def get_size(self):
+        return self.size
+
+
+class ComposerTests(unittest.IsolatedAsyncioTestCase):
+    @asynccontextmanager
+    async def composer(self, *, busy=False):
+        output = TerminalOutput()
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=output):
+            composer = _PersistentComposer(SimpleNamespace(), [])
+            composer.set_busy(busy)
+            if busy:
+                composer.add_guidance("previous guidance")
+            composer.start()
+            try:
+                await self.wait_for(lambda: composer.prompt_session.app.is_running)
+                yield composer, pipe, output
+            finally:
+                await composer.close()
+
+    async def wait_for(self, predicate):
+        async def poll():
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(poll(), 3)
+
+    async def test_newline_keys_do_not_submit_in_idle_or_busy_state(self):
+        for busy in (False, True):
+            for newline in (
+                "\n", "\x1b\r",
+                "\x1b[13;2u", "\x1b[13;3u", "\x1b[13;5u",
+                "\x1b[27;2;13~", "\x1b[27;3;13~", "\x1b[27;5;13~",
+            ):
+                with self.subTest(busy=busy, newline=repr(newline)):
+                    async with self.composer(busy=busy) as (composer, pipe, _):
+                        pipe.send_text("first" + newline + "second")
+                        await self.wait_for(
+                            lambda: composer.prompt_session.default_buffer.text
+                            == "first\nsecond"
+                        )
+                        self.assertTrue(composer._events.empty())
+                        pipe.send_text("\r")
+                        self.assertEqual(
+                            await asyncio.wait_for(composer.next_event(), 3),
+                            ("submit", "first\nsecond"),
+                        )
+                        self.assertEqual(composer.prompt_session.default_buffer.text, "")
+
+    async def test_modified_enter_sequence_can_arrive_in_chunks(self):
+        async with self.composer() as (composer, pipe, _):
+            pipe.send_text("first\x1b[13;")
+            await self.wait_for(
+                lambda: composer.prompt_session.default_buffer.text == "first"
+            )
+            pipe.send_text("2usecond")
+            await self.wait_for(
+                lambda: composer.prompt_session.default_buffer.text == "first\nsecond"
+            )
+            self.assertTrue(composer._events.empty())
+
+    async def test_paste_preserves_literal_modified_enter_sequences(self):
+        async with self.composer() as (composer, pipe, _):
+            text = "literal \x1b[13;2u sequence"
+            pipe.send_text("\x1b[200~" + text + "\x1b[201~")
+            await self.wait_for(lambda: composer.prompt_session.default_buffer.text == text)
+            self.assertTrue(composer._events.empty())
+
+    def test_alt_label_matches_platform(self):
+        for platform, label in (("darwin", "Opt+Enter"), ("linux", "Alt+Enter"),
+                                ("win32", "Alt+Enter")):
+            with self.subTest(platform=platform), patch("crabcode_cli.repl.sys.platform", platform):
+                self.assertEqual(_alt_enter_label(), label)
+
+    async def test_paste_grows_frame_and_submit_shrinks_it(self):
+        async with self.composer() as (composer, pipe, _):
+            window = composer.prompt_session.layout.current_window
+            pipe.send_text("\x1b[200~first\nsecond\nthird\x1b[201~")
+            await self.wait_for(
+                lambda: window.render_info is not None
+                and window.render_info.window_height == 3
+            )
+            self.assertTrue(composer._events.empty())
+            self.assertEqual(window.render_info.displayed_lines, [0, 1, 2])
+            screen = composer.prompt_session.app.renderer._last_screen
+            rows = [
+                "".join(row[x].char for x in range(80))
+                for row in screen.data_buffer.values()
+            ]
+            for word in ("first", "second", "third"):
+                row = next(row for row in rows if word in row)
+                self.assertTrue(row.startswith("│"), row)
+                self.assertTrue(row.endswith("│"), row)
+            pipe.send_text("\r")
+            self.assertEqual(
+                await asyncio.wait_for(composer.next_event(), 3),
+                ("submit", "first\nsecond\nthird"),
+            )
+            await self.wait_for(lambda: window.render_info.window_height == 1)
+
+    async def test_soft_wrap_and_terminal_resize(self):
+        async with self.composer() as (composer, pipe, output):
+            window = composer.prompt_session.layout.current_window
+            pipe.send_text("中文" * 30)
+            await self.wait_for(
+                lambda: window.render_info is not None
+                and window.render_info.window_height == 2
+            )
+            output.size = Size(rows=24, columns=40)
+            composer.prompt_session.app._on_resize()
+            await self.wait_for(lambda: window.render_info.window_height == 4)
+            self.assertTrue(composer._events.empty())
+
+    async def test_enter_accepts_history_search_without_submitting(self):
+        async with self.composer() as (composer, pipe, _):
+            pipe.send_text("first\nsecond\r")
+            self.assertEqual(
+                await asyncio.wait_for(composer.next_event(), 3),
+                ("submit", "first\nsecond"),
+            )
+            pipe.send_text("\x12first\r")
+            await self.wait_for(
+                lambda: composer.prompt_session.default_buffer.text == "first\nsecond"
+                and composer.prompt_session.layout.current_buffer
+                is composer.prompt_session.default_buffer
+            )
+            self.assertTrue(composer._events.empty())
+            pipe.send_text("\r")
+            self.assertEqual(
+                await asyncio.wait_for(composer.next_event(), 3),
+                ("submit", "first\nsecond"),
+            )
+
+    async def test_long_input_scrolls_to_cursor_and_can_be_edited(self):
+        async with self.composer(busy=True) as (composer, pipe, output):
+            window = composer.prompt_session.layout.current_window
+            text = "\n".join(f"line {i}" for i in range(50))
+            pipe.send_text("\x1b[200~" + text + "\x1b[201~")
+            await self.wait_for(
+                lambda: window.render_info is not None
+                and 49 in window.render_info.displayed_lines
+            )
+            self.assertLess(window.render_info.window_height, output.size.rows)
+            self.assertTrue(composer._events.empty())
+            # Ctrl+Home, then edit the first line, and redraw at the top.
+            pipe.send_text("\x1b[1;5Hedited ")
+            await self.wait_for(
+                lambda: composer.prompt_session.default_buffer.text.startswith("edited ")
+                and 0 in window.render_info.displayed_lines
+            )
+            self.assertTrue(composer._events.empty())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -16,20 +16,24 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.application import get_app_or_none, in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.filters import Condition
+from prompt_toolkit.enums import DEFAULT_BUFFER
+from prompt_toolkit.filters import Condition, has_focus
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+from prompt_toolkit.input.vt100_parser import _IS_PREFIX_OF_LONGER_MATCH_CACHE
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import (
     ConditionalContainer,
     Dimension,
-    Float,
     FloatContainer,
     HSplit,
     VerticalAlign,
     Window,
 )
 from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.margins import Margin
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
@@ -476,16 +480,49 @@ def _composer_prompt(
 
 def _composer_toolbar(*, busy: bool = False, queued_count: int = 0) -> HTML:
     if busy and queued_count:
-        hint = f" {queued_count} queued · Enter adds another · Ctrl+C interrupts "
+        hint = f" {queued_count} queued · Enter adds · Ctrl+J newline · Ctrl+C interrupts "
     elif busy:
-        hint = " Enter sends after the next tool call · Ctrl+C interrupts "
+        hint = " Enter queues · Ctrl+J newline · Ctrl+C interrupts "
     else:
-        hint = " Enter sends · Ctrl+D exits "
+        hint = f" Enter sends · {_alt_enter_label()} / Ctrl+J newline · Ctrl+D exits "
     fitted_hint, dashes = _composer_frame_parts("╰─", hint, "╯")
     return HTML(
         f"<ansicyan>╰─</ansicyan><gray>{fitted_hint}</gray>"
         f"<ansicyan>{dashes}╯</ansicyan>"
     )
+
+
+def _configure_modified_enter_keys() -> None:
+    """Normalize terminal-reported modified Enter to the newline key.
+
+    prompt_toolkit 3.x aliases xterm modified Enter to plain Enter and lacks
+    CSI-u mappings. Register both encodings before reading composer input.
+    This does not enable an extended keyboard protocol: other keys retain
+    their terminal's existing encoding. Legacy terminals that send only CR
+    cannot expose these modifiers; Ctrl+J and Esc, Enter remain available.
+    """
+    for modifier in range(2, 9):  # Shift, Alt, Ctrl, and their combinations.
+        ANSI_SEQUENCES[f"\x1b[13;{modifier}u"] = Keys.ControlJ
+        ANSI_SEQUENCES[f"\x1b[27;{modifier};13~"] = Keys.ControlJ
+    # The parser caches unmatched prefixes too; earlier prompts may have
+    # encountered these sequences before the composer was constructed.
+    _IS_PREFIX_OF_LONGER_MATCH_CACHE.clear()
+
+
+def _alt_enter_label() -> str:
+    return "Opt+Enter" if sys.platform == "darwin" else "Alt+Enter"
+
+
+class _ComposerRightMargin(Margin):
+    """Reserve a border cell on every visible input row, including soft wraps."""
+
+    def get_width(self, get_ui_content: Callable[[], Any]) -> int:
+        return 1
+
+    def create_margin(
+        self, window_render_info: Any, width: int, height: int
+    ) -> list[tuple[str, str]]:
+        return [("fg:ansicyan", "\n".join("│" for _ in range(height)))]
 
 
 def _configure_composer_layout(
@@ -531,12 +568,13 @@ def _configure_composer_layout(
     if prefix_rows:
         main.content.children = [*prefix_rows, *main.content.children]
 
-    # The single-line input Window is also unbounded by default. Keep its
-    # editing row at one line; completion menus remain floats and can still use
-    # the free space above the composer.
+    # Fit explicit newlines and soft wraps without stretching into empty rows.
+    # When the terminal is full, Window scrolls to keep the cursor visible.
     input_window = prompt_session.layout.current_window
     if isinstance(input_window, Window):
-        input_window.height = Dimension.exact(1)
+        input_window.height = Dimension(min=1)
+        input_window.dont_extend_height = Condition(lambda: True)
+        input_window.right_margins = [_ComposerRightMargin()]
 
     # The stock bottom-toolbar Window has only a minimum height, so HSplit can
     # stretch it across all remaining rows and draw its text on the final one.
@@ -558,21 +596,6 @@ def _configure_composer_layout(
         )
     )
 
-    main.floats.append(
-        Float(
-            right=0,
-            ycursor=True,
-            width=1,
-            height=1,
-            allow_cover_cursor=True,
-            content=Window(
-                FormattedTextControl(HTML("<ansicyan>│</ansicyan>")),
-                width=1,
-                height=1,
-            ),
-        )
-    )
-
 
 def _render_submitted_input(text: str, *, steering: bool = False) -> None:
     """Put submitted text into scrollback without leaving a stale frame."""
@@ -590,6 +613,7 @@ class _PersistentComposer:
         session: CoreSession,
         pending_images: list[dict[str, str]],
     ) -> None:
+        _configure_modified_enter_keys()
         self._session = session
         self._pending_images = pending_images
         self._events: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
@@ -604,6 +628,15 @@ class _PersistentComposer:
         self._animation_task: asyncio.Task[None] | None = None
 
         bindings = KeyBindings()
+
+        @bindings.add("enter", filter=has_focus(DEFAULT_BUFFER))
+        def _submit(event: Any) -> None:
+            event.current_buffer.validate_and_handle()
+
+        @bindings.add("c-j", filter=has_focus(DEFAULT_BUFFER))
+        @bindings.add("escape", "enter", filter=has_focus(DEFAULT_BUFFER))
+        def _newline(event: Any) -> None:
+            event.current_buffer.insert_text("\n")
 
         @bindings.add("c-c", eager=True)
         def _interrupt(event: Any) -> None:
@@ -625,6 +658,11 @@ class _PersistentComposer:
             history=InMemoryHistory(),
             completer=_CrabCodeCompleter(session),
             complete_while_typing=True,
+            multiline=True,
+            prompt_continuation=lambda width, line_number, wrap_count: [
+                ("fg:ansicyan", "│"),
+                ("", " " * max(0, width - 1)),
+            ],
             key_bindings=bindings,
             style=_COMPOSER_STYLE,
             erase_when_done=True,
@@ -1920,7 +1958,8 @@ async def run_repl(
         "  Type /help for commands. "
         "You can send guidance while the agent is working. "
         f"Ctrl+C interrupts; press again within {_CTRL_C_EXIT_WINDOW_S:.0f}s to exit. "
-        "Ctrl+D exits.",
+        f"Enter sends; Ctrl+J or {_alt_enter_label()} inserts a newline "
+        "(or press Esc, then Enter). Ctrl+D exits.",
         style="dim",
     )
 

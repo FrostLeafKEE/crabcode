@@ -75,6 +75,10 @@ crabcode --continue      # 或 -c
 crabcode --resume <id>   # 或 -r <id>
 ```
 
+交互式 CLI 中，**Enter** 发送，**Ctrl+J** 或 **Alt/Opt+Enter** 换行，也可以先按
+**Esc** 再按 **Enter** 换行。输入框随换行和长文本折行自动增高，超过终端可用
+高度后随光标滚动。Agent 运行期间编辑输入时也适用。
+
 ### 持久目标
 
 使用 `/goal` 可让一个可验收的目标在多轮对话、上下文压缩和会话恢复后继续生效。

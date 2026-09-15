@@ -76,6 +76,11 @@ crabcode --continue      # or -c
 crabcode --resume <id>   # or -r <id>
 ```
 
+In the interactive CLI, **Enter** sends; **Ctrl+J** or **Alt/Opt+Enter** inserts a
+newline. You can also press **Esc**, then **Enter** to insert a newline. The
+input frame grows with newlines and wrapped text, and scrolls with the cursor
+when it fills the terminal. These keys also work while the agent is running.
+
 ### Persistent Goals
 
 Use `/goal` to keep a measurable objective active across turns, compaction, and
