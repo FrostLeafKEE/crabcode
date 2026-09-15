@@ -17,11 +17,12 @@ DEFAULT_PREFIX = "You are CrabCode, an AI coding assistant in the terminal."
 
 SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"
 
-FRONTIER_MODEL_NAME = "Claude Opus 4.6"
+FRONTIER_MODEL_NAME = "Claude Opus 5"
 
 CLAUDE_MODEL_IDS = {
-    "opus": "claude-opus-4-6",
-    "sonnet": "claude-sonnet-4-6",
+    "fable": "claude-fable-5-1",
+    "opus": "claude-opus-5",
+    "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5-20251001",
 }
 

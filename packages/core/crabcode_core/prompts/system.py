@@ -365,7 +365,14 @@ def _compute_env_info(
         f"OS Version: {os_version}",
         f"You are powered by the model {model_id}.",
         _get_knowledge_cutoff(model_id),
-        f"The most recent Claude model family is Claude 4.5/4.6. Model IDs \u2014 Opus 4.6: '{CLAUDE_MODEL_IDS['opus']}', Sonnet 4.6: '{CLAUDE_MODEL_IDS['sonnet']}', Haiku 4.5: '{CLAUDE_MODEL_IDS['haiku']}'. When building AI applications, default to the latest and most capable Claude models.",
+        (
+            "The most recent Claude model family is Claude 5/5.1. Model IDs "
+            f"\u2014 Fable 5.1: '{CLAUDE_MODEL_IDS['fable']}', "
+            f"Opus 5: '{CLAUDE_MODEL_IDS['opus']}', "
+            f"Sonnet 5: '{CLAUDE_MODEL_IDS['sonnet']}', "
+            f"Haiku 4.5: '{CLAUDE_MODEL_IDS['haiku']}'. When building AI "
+            "applications, default to the latest and most capable Claude models."
+        ),
         f"Fast mode uses the same {FRONTIER_MODEL_NAME} model with faster output. It does NOT switch to a different model.",
     ])
 
@@ -379,6 +386,12 @@ def _compute_env_info(
 
 def _get_knowledge_cutoff(model_id: str) -> str | None:
     m = model_id.lower()
+    if "claude-fable-5-1" in m or "claude-mythos-5-1" in m:
+        return "Assistant knowledge cutoff is June 2026."
+    if "claude-opus-5" in m:
+        return "Assistant knowledge cutoff is May 2026."
+    if "claude-sonnet-5" in m:
+        return "Assistant knowledge cutoff is January 2026."
     if "claude-sonnet-4-6" in m:
         return "Assistant knowledge cutoff is August 2025."
     if "claude-opus-4-6" in m:

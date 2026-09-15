@@ -6,6 +6,8 @@ from __future__ import annotations
 # Used as fallback when the API doesn't provide model metadata.
 KNOWN_CONTEXT_WINDOWS: dict[str, int] = {
     # Anthropic
+    "claude-mythos-5-1": 1_000_000,
+    "claude-fable-5-1": 1_000_000,
     "claude-mythos-preview": 1_000_000,
     "claude-mythos-5": 1_000_000,
     "claude-fable-5": 1_000_000,
@@ -27,6 +29,9 @@ KNOWN_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-3-sonnet-20240229": 200_000,
     "claude-3-haiku-20240307": 200_000,
     # OpenAI
+    "gpt-daybreak-blue-latest": 1_050_000,
+    "gpt-daybreak-red-latest": 400_000,
+    "gpt-6-astra": 1_050_000,
     "gpt-5.6-cyber": 400_000,
     "gpt-5.6-sol": 1_050_000,
     "gpt-5.6-terra": 1_050_000,
@@ -80,11 +85,14 @@ KNOWN_CONTEXT_WINDOWS: dict[str, int] = {
     "o4-mini": 200_000,
     "codex-mini-latest": 200_000,
     # DeepSeek
+    "deepseek-flash": 1_000_000,
     "deepseek-v4-pro": 1_000_000,
     "deepseek-v4-flash": 1_000_000,
     "deepseek-chat": 128_000,
     "deepseek-reasoner": 128_000,
     # GLM (Zhipu)
+    "glm-5.3-flash": 1_000_000,
+    "glm-5.3": 1_000_000,
     "glm-5.2": 1_000_000,
     "glm-5.1-fp8": 202_752,
     "glm-5.1": 202_752,
@@ -92,6 +100,7 @@ KNOWN_CONTEXT_WINDOWS: dict[str, int] = {
     "glm-4": 128_000,
     # Other OpenAI-compatible models
     "qwen3.8-max": 1_000_000,
+    "qwen3.8-flash": 1_000_000,
     "qwen3.7-plus": 1_000_000,
     "qwen3.7-flash": 1_000_000,
     "qwen3.6-plus": 1_000_000,
@@ -105,7 +114,32 @@ KNOWN_CONTEXT_WINDOWS: dict[str, int] = {
     "moonshot-v1-128k": 128_000,
     "moonshot-v1-32k": 32_000,
     "moonshot-v1-8k": 8_000,
+    "MiniMax-M3": 1_000_000,
+    "MiniMax-M2.7-highspeed": 204_800,
+    "MiniMax-M2.7": 204_800,
     "minimax-m2.7": 204_800,
+    # Skywork
+    "skyclaw-v1-lite": 1_000_000,
+    "skyclaw-v1": 1_000_000,
+    # Meta
+    "Llama-4-Maverick-17B-128E-Instruct": 1_000_000,
+    "Llama-4-Scout-17B-16E-Instruct": 10_000_000,
+    "muse-spark-1.3-contributor": 1_000_000,
+    "muse-spark-1.3": 1_000_000,
+    # Mistral
+    "mistral-medium-3-5": 256_000,
+    "mistral-medium-3": 256_000,
+    "mistral-medium-latest": 256_000,
+    "mistral-small-2603": 256_000,
+    "mistral-small-latest": 256_000,
+    "mistral-large-2512": 256_000,
+    "mistral-large-latest": 256_000,
+    "Mixtral-8x22B-Instruct-v0.1": 64_000,
+    "Mixtral-8x22B-v0.1": 64_000,
+    "Mixtral-8x7B-Instruct-v0.1": 32_000,
+    "Mixtral-8x7B-v0.1": 32_000,
+    "open-mixtral-8x22b": 64_000,
+    "open-mixtral-8x7b": 32_000,
     # Ollama
     "qwen3:32b": 128_000,
     "qwen2.5-coder:32b": 128_000,
@@ -115,6 +149,10 @@ KNOWN_CONTEXT_WINDOWS: dict[str, int] = {
     "mistral": 32_000,
     "mixtral": 32_000,
     # Gemini
+    "gemini-3.8-live-extended-thinking": 131_072,
+    "gemini-3.8-live": 131_072,
+    "gemini-3.8-flash": 1_048_576,
+    "gemini-3.7-flash": 1_048_576,
     "gemini-3.6-flash": 1_048_576,
     "gemini-3.5-flash-lite": 1_048_576,
     "gemini-3.5-flash": 1_048_576,
