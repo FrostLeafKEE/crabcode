@@ -523,7 +523,7 @@ describe("SettingsView", () => {
       default_model: "gpt-5.6",
       sources: ["/Users/test/.crabcode/settings.json"],
       groups: {
-        "sky-router": {
+        "test_rourter": {
           provider: "codex",
           base_url: "https://router.example.com/v1",
           reasoning_effort: "high",
@@ -541,11 +541,11 @@ describe("SettingsView", () => {
         },
         {
           name: "gpt-5.6",
-          group: "sky-router",
+          group: "test_rourter",
           is_default: true,
-          configured: { group: "sky-router", model: "gpt-5.6-sol" },
+          configured: { group: "test_rourter", model: "gpt-5.6-sol" },
           effective: {
-            group: "sky-router",
+            group: "test_rourter",
             provider: "codex",
             base_url: "https://router.example.com/v1",
             model: "gpt-5.6-sol",
@@ -572,9 +572,9 @@ describe("SettingsView", () => {
     ));
 
     expect(Array.from(container.querySelectorAll(".model-settings-group > header strong"))
-      .map((element) => element.textContent)).toEqual(["未分组", "sky-router"]);
+      .map((element) => element.textContent)).toEqual(["未分组", "test_rourter"]);
     expect(container.querySelector(".model-settings-detail")?.textContent).toContain("gpt-5.6");
-    expect(container.querySelector(".model-settings-detail")?.textContent).toContain("继承 sky-router");
+    expect(container.querySelector(".model-settings-detail")?.textContent).toContain("继承 test_rourter");
     expect(container.querySelector(".model-settings-detail")?.textContent).toContain("https://router.example.com/v1");
     expect(container.querySelector('[aria-label^="编辑"]')).toBeNull();
     expect(container.querySelector('[aria-label^="删除"]')).toBeNull();

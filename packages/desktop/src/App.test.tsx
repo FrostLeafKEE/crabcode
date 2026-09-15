@@ -1452,22 +1452,22 @@ describe("remembered model selection", () => {
 describe("model grouping", () => {
   const models = [
     { name: "codex", description: "codex/gpt-5.6-sol" },
-    { name: "sky-5.5", description: "codex/gpt-5.5", group: "sky-router" },
-    { name: "sky-5.6", description: "codex/gpt-5.6-sol", group: "sky-router" },
+    { name: "gpt-5.5", description: "codex/gpt-5.5", group: "test_rourter" },
+    { name: "gpt-5.6", description: "codex/gpt-5.6-sol", group: "test_rourter" },
     { name: "claude", description: "anthropic/claude-opus-4.6", group: "anthropic" },
   ];
 
   it("preserves group and model order while assigning missing groups to default", () => {
     expect(groupGatewayModels(models)).toEqual([
       { group: "default", models: [models[0]] },
-      { group: "sky-router", models: [models[1], models[2]] },
+      { group: "test_rourter", models: [models[1], models[2]] },
       { group: "anthropic", models: [models[3]] },
     ]);
   });
 
   it("matches a group name during model search", () => {
-    expect(groupGatewayModels(models, "sky")).toEqual([
-      { group: "sky-router", models: [models[1], models[2]] },
+    expect(groupGatewayModels(models, "gpt")).toEqual([
+      { group: "test_rourter", models: [models[1], models[2]] },
     ]);
   });
 });

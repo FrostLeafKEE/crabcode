@@ -665,17 +665,17 @@ CrabCode 会估算完整请求（system prompt、消息、工具调用/结果、
 ```json
 {
   "groups": {
-    "sky-router": {
+    "test_rourter": {
       "provider": "codex",
       "base_url": "https://router.example.com/v1",
-      "api_key_env": "SKY_ROUTER_API_KEY",
+      "api_key_env": "TEST_ROUTER_KEY",
       "reasoning_effort": "high",
       "http_headers": {"originator": "codex_vscode"}
     }
   },
   "models": {
-    "gpt-5.6": {"group": "sky-router", "model": "gpt-5.6-sol"},
-    "gpt-5.5": {"group": "sky-router", "model": "gpt-5.5", "reasoning_effort": "low"}
+    "gpt-5.6": {"group": "test_rourter", "model": "gpt-5.6-sol"},
+    "gpt-5.5": {"group": "test_rourter", "model": "gpt-5.5", "reasoning_effort": "low"}
   }
 }
 ```
