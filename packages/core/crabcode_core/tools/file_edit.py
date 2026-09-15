@@ -10,6 +10,7 @@ from crabcode_core.logging_utils import get_logger
 from crabcode_core.text_io import normalize_newlines, read_utf8_text, write_utf8_text
 from crabcode_core.tools.diff_utils import compute_diff, format_edit_summary
 from crabcode_core.types.tool import Tool, ToolContext, ToolResult
+from crabcode_core.io_worker import run_file_tool
 
 logger = get_logger(__name__)
 
@@ -93,6 +94,14 @@ class FileEditTool(Tool):
         return None
 
     async def call(
+        self, tool_input: dict[str, Any], context: ToolContext,
+    ) -> ToolResult:
+        result = await run_file_tool(self.name, tool_input, context)
+        if not result.is_error and result.data:
+            result.result_for_model += await _get_lsp_diagnostics(result.data["file_path"], context)
+        return result
+
+    async def _call_local(
         self,
         tool_input: dict[str, Any],
         context: ToolContext,

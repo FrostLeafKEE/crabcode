@@ -6,7 +6,7 @@ so the LLM can see compilation/type errors immediately after writing code.
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
 from typing import Any
 
 # Maximum diagnostics blocks for non-current files
@@ -94,7 +94,7 @@ async def collect_and_format_diagnostics(
             return ""
 
         # Normalize the file path for comparison
-        normalized = str(Path(file_path).resolve())
+        normalized = os.path.normcase(os.path.abspath(file_path))
 
         # Format diagnostics
         parts: list[str] = []
@@ -106,7 +106,7 @@ async def collect_and_format_diagnostics(
             except Exception:
                 diag_path = uri
 
-            is_current = Path(diag_path).resolve() == Path(normalized).resolve()
+            is_current = os.path.normcase(os.path.abspath(diag_path)) == normalized
             block = format_diagnostics_block(diag_path, diags)
             if not block:
                 continue

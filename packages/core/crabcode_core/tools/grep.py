@@ -12,11 +12,10 @@ from typing import Any
 from crabcode_core.subprocess_utils import (
     managed_process_command,
     resolve_executable_command,
-    subprocess_group_options,
-    terminate_process_tree,
 )
 from crabcode_core.tools._input_helpers import first_non_empty_str
 from crabcode_core.types.tool import Tool, ToolContext, ToolResult
+from crabcode_core.io_worker import run_file_tool
 
 
 _SKIP_DIRECTORIES = {
@@ -133,6 +132,12 @@ class GrepTool(Tool):
         )
 
     async def call(
+        self, tool_input: dict[str, Any], context: ToolContext,
+    ) -> ToolResult:
+        result = await run_file_tool(self.name, tool_input, context)
+        return result
+
+    async def _call_local(
         self,
         tool_input: dict[str, Any],
         context: ToolContext,
@@ -160,21 +165,10 @@ class GrepTool(Tool):
 
         if not use_ripgrep and not grep_bin:
             try:
-                stdout = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        _python_search,
-                        pattern,
-                        str(search_path),
-                        cwd=context.cwd,
-                        glob_pattern=glob_pattern,
-                        case_insensitive=bool(case_insensitive),
-                    ),
-                    timeout=30,
-                )
-            except asyncio.TimeoutError:
-                return ToolResult(
-                    result_for_model="Search timed out after 30s",
-                    is_error=True,
+                stdout = _python_search(
+                    pattern, str(search_path), cwd=context.cwd,
+                    glob_pattern=glob_pattern,
+                    case_insensitive=bool(case_insensitive),
                 )
             except (FileNotFoundError, re.error) as exc:
                 return ToolResult(result_for_model=f"Grep error: {exc}", is_error=True)
@@ -216,22 +210,8 @@ class GrepTool(Tool):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=context.cwd,
-                **subprocess_group_options(),
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=30
-            )
-        except asyncio.TimeoutError:
-            if proc is not None and proc.returncode is None:
-                await terminate_process_tree(proc)
-            return ToolResult(
-                result_for_model="Search timed out after 30s",
-                is_error=True,
-            )
-        except asyncio.CancelledError:
-            if proc is not None and proc.returncode is None:
-                await terminate_process_tree(proc)
-            raise
+            stdout_bytes, stderr_bytes = await proc.communicate()
         except FileNotFoundError:
             return ToolResult(
                 result_for_model="Error: neither ripgrep (rg) nor grep found on PATH.",

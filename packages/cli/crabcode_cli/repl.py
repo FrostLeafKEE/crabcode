@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -415,16 +416,55 @@ _COMPOSER_STYLE = Style.from_dict(
 )
 
 
+_exit_terminal_state: tuple[int, Any] | None = None
+
+
+def _capture_exit_terminal() -> None:
+    """Save terminal modes before prompt_toolkit enters raw input mode."""
+    global _exit_terminal_state
+    _exit_terminal_state = None
+    if os.name != "nt":
+        try:
+            import termios
+            fd = sys.stdin.fileno()
+            _exit_terminal_state = (fd, termios.tcgetattr(fd))
+        except (OSError, ValueError, AttributeError):
+            pass
+
+
 def _force_exit(code: int = 130) -> None:
-    """Exit immediately without waiting for executor/native thread cleanup."""
+    """Exit without session persistence, stdout flush, or executor joins."""
+    # Even terminal restoration must not become an unbounded prerequisite.
+    fallback = threading.Timer(0.5, os._exit, args=(code,))
+    fallback.daemon = True
+    fallback.start()
     try:
-        sys.stdout.flush()
-        sys.stderr.flush()
+        from crabcode_core.io_worker import abort_io_workers
+        abort_io_workers()
+        if _exit_terminal_state is not None:
+            import termios
+            fd, attrs = _exit_terminal_state
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    except (OSError, ValueError):
+        pass
     finally:
+        fallback.cancel()
         os._exit(code)
 
 
 _CTRL_C_EXIT_WINDOW_S = 5.0
+
+
+@contextlib.contextmanager
+def _shutdown_deadline(timeout: float = 5.0):
+    """Bound cleanup even when a synchronous call blocks the event loop."""
+    timer = threading.Timer(timeout, _force_exit)
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
 
 
 def _composer_columns() -> int:
@@ -626,11 +666,13 @@ class _PersistentComposer:
         self._queued_messages: list[str] = []
         self._task: asyncio.Task[str] | None = None
         self._animation_task: asyncio.Task[None] | None = None
+        self._exit_keys = _CtrlCDoubleExit()
 
         bindings = KeyBindings()
 
         @bindings.add("enter", filter=has_focus(DEFAULT_BUFFER))
         def _submit(event: Any) -> None:
+            self._exit_keys.clear()
             event.current_buffer.validate_and_handle()
 
         @bindings.add("c-j", filter=has_focus(DEFAULT_BUFFER))
@@ -640,6 +682,11 @@ class _PersistentComposer:
 
         @bindings.add("c-c", eager=True)
         def _interrupt(event: Any) -> None:
+            # Handle the escape hatch at input receipt, even if the consumer
+            # is still awaiting the first interrupt or session cleanup.
+            if self._exit_keys.should_exit_now():
+                _force_exit()
+                return
             self._events.put_nowait(("interrupt", ""))
 
         @bindings.add("c-d", eager=True)
@@ -1925,6 +1972,7 @@ async def run_repl(
     resume_session_id: str | None = None,
 ) -> None:
     """Run the interactive REPL."""
+    _capture_exit_terminal()
     if resume_session_id:
         # Defensive resolution for callers that invoke run_repl directly
         # (without going through the Typer entry point).  Project settings,
@@ -2041,23 +2089,11 @@ async def run_repl(
             _consume_background_events(session)
         )
 
-        async def _force_exit_cleanly() -> None:
-            """Restore terminal modes before the REPL's immediate exit path."""
-            await composer.close()
-            if stdout_patch is not None:
-                stdout_patch.__exit__(None, None, None)
-            try:
-                await session.close()
-            except Exception:
-                logger.debug("Failed to close session during forced exit", exc_info=True)
-            _force_exit()
-
         ctrl_c_exit = _CtrlCDoubleExit()
         input_state: dict[str, Any] = {
             "shutdown": False,
             "deferred": [],
             "interrupt_requested": False,
-            "force_exit": False,
         }
 
         while True:
@@ -2075,15 +2111,7 @@ async def run_repl(
                         break
                     if event_kind == "interrupt":
                         if ctrl_c_exit.should_exit_now():
-                            console.print("\nGoodbye!", style="dim")
-                            try:
-                                await session.interrupt()
-                            except Exception:
-                                logger.debug(
-                                    "Failed to interrupt session during forced exit",
-                                    exc_info=True,
-                                )
-                            await _force_exit_cleanly()
+                            _force_exit()
                         try:
                             await session.interrupt()
                         except Exception:
@@ -2163,7 +2191,6 @@ async def run_repl(
 
             plan_pending = False
             input_state["interrupt_requested"] = False
-            input_state["force_exit"] = False
             composer.set_busy(True)
 
             async def _consume_turn_input() -> None:
@@ -2186,7 +2213,7 @@ async def run_repl(
 
                     if event_kind == "interrupt":
                         if ctrl_c_exit.should_exit_now():
-                            input_state["force_exit"] = True
+                            _force_exit()
                         else:
                             input_state["interrupt_requested"] = True
                         composer.stop_activity()
@@ -2400,15 +2427,7 @@ async def run_repl(
             except _REPL_INTERRUPT_EXCS:
                 await spinner.stop()
                 if ctrl_c_exit.should_exit_now():
-                    console.print("\nGoodbye!", style="dim")
-                    try:
-                        await session.interrupt()
-                    except Exception:
-                        logger.debug("Failed to interrupt session while streaming on exit", exc_info=True)
-                    _persist_partial_assistant_for_interrupt(
-                        session, streamed_text_for_context
-                    )
-                    await _force_exit_cleanly()
+                    _force_exit()
                 _clear_sigint_cancel()
                 try:
                     await session.interrupt()
@@ -2426,15 +2445,6 @@ async def run_repl(
                 steering_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await steering_task
-
-            if input_state.get("force_exit"):
-                console.print("\nGoodbye!", style="dim")
-                if streamed_text_for_context.strip():
-                    _persist_partial_assistant_for_interrupt(
-                        session,
-                        streamed_text_for_context,
-                    )
-                await _force_exit_cleanly()
 
             if input_state.pop("interrupt_requested", False):
                 if streamed_text_for_context.strip():
@@ -2465,17 +2475,18 @@ async def run_repl(
 
             console.print()
     finally:
-        if background_consumer is not None:
-            background_consumer.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await background_consumer
-        try:
-            await session.close()
-        finally:
-            if composer is not None:
-                await composer.close()
-            if stdout_patch is not None:
-                stdout_patch.__exit__(None, None, None)
+        with _shutdown_deadline():
+            if background_consumer is not None:
+                background_consumer.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await background_consumer
+            try:
+                await session.close()
+            finally:
+                if composer is not None:
+                    await composer.close()
+                if stdout_patch is not None:
+                    stdout_patch.__exit__(None, None, None)
 
 
 async def _prompt_plan_action(session: CoreSession, console: Console) -> None:

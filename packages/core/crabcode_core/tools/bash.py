@@ -10,10 +10,9 @@ from crabcode_core.subprocess_utils import (
     decode_subprocess_output,
     managed_process_command,
     shell_command,
-    subprocess_group_options,
-    terminate_process_tree,
 )
 from crabcode_core.types.tool import Tool, ToolContext, ToolResult
+from crabcode_core.io_worker import run_file_tool
 
 
 class BashTool(Tool):
@@ -76,12 +75,16 @@ class BashTool(Tool):
         )
 
     async def call(
+        self, tool_input: dict[str, Any], context: ToolContext,
+    ) -> ToolResult:
+        return await run_file_tool(self.name, tool_input, context)
+
+    async def _call_local(
         self,
         tool_input: dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
         command = tool_input.get("command", "")
-        timeout = tool_input.get("timeout", 120)
 
         if not command.strip():
             return ToolResult(
@@ -95,11 +98,8 @@ class BashTool(Tool):
         if context.session_id:
             try:
                 from crabcode_core.snapshot.tracker import pre_bash_snapshot
-                # Snapshot creation may walk/copy many files.  Keep that
-                # filesystem work off the Gateway event loop so a large
-                # project cannot starve WebSocket heartbeats and reconnects.
-                await asyncio.to_thread(
-                    pre_bash_snapshot,
+                # The entire operation is isolated, including snapshot I/O.
+                pre_bash_snapshot(
                     context.cwd,
                     context.session_id,
                     enabled=context.snapshot_enabled,
@@ -115,24 +115,10 @@ class BashTool(Tool):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=context.cwd,
                 env=env,
-                **subprocess_group_options(),
             )
 
-            try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-            except asyncio.TimeoutError:
-                if proc.returncode is None:
-                    await terminate_process_tree(proc)
-                return ToolResult(
-                    result_for_model=f"Command timed out after {timeout}s",
-                    is_error=True,
-                )
-            except asyncio.CancelledError:
-                if proc.returncode is None:
-                    await terminate_process_tree(proc)
-                raise
+            # The parent worker supervisor owns the deadline and process group.
+            stdout_bytes, stderr_bytes = await proc.communicate()
 
             stdout = decode_subprocess_output(stdout_bytes)
             stderr = decode_subprocess_output(stderr_bytes)

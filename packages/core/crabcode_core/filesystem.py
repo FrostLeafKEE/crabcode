@@ -5,6 +5,11 @@ from pathlib import Path
 import time
 
 
+def read_text_file(path: str) -> str:
+    """Worker entry point for LSP text synchronization."""
+    return Path(path).read_text(encoding="utf-8")
+
+
 def replace_with_retry(source: Path, target: Path) -> None:
     """Keep atomic replacement, tolerating brief Windows sharing violations."""
     for attempt in range(5):

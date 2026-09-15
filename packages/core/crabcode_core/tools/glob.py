@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
-import fnmatch
 from pathlib import Path
 from typing import Any
 
 from crabcode_core.tools._input_helpers import first_non_empty_str
 from crabcode_core.types.tool import Tool, ToolContext, ToolResult
+from crabcode_core.io_worker import run_file_tool
 
 
 class GlobTool(Tool):
@@ -47,6 +46,12 @@ class GlobTool(Tool):
         )
 
     async def call(
+        self, tool_input: dict[str, Any], context: ToolContext,
+    ) -> ToolResult:
+        result = await run_file_tool(self.name, tool_input, context)
+        return result
+
+    async def _call_local(
         self,
         tool_input: dict[str, Any],
         context: ToolContext,
@@ -90,7 +95,7 @@ class GlobTool(Tool):
                         mtime = 0
                     matches.append((mtime, str(path)))
 
-                if len(matches) > 1000:
+                if len(matches) >= 1000:
                     break
 
             matches.sort(key=lambda x: x[0], reverse=True)

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from crabcode_core.logging_utils import get_logger
+from crabcode_core.io_worker import run_io
 from crabcode_core.lsp.client import LSPClient, _path_to_uri
 from crabcode_core.types.config import CrabCodeSettings, LspServerConfig
 
@@ -278,7 +279,7 @@ class LSPManager:
         if not matching:
             return []
 
-        root = find_project_root(file_path)
+        root = await run_io(__name__, "find_project_root", file_path, timeout=5)
         root_uri = _path_to_uri(root)
 
         clients: list[LSPClient] = []

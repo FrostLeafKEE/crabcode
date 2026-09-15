@@ -177,7 +177,9 @@ class LSPClient:
 
         if text is None:
             try:
-                text = Path(file_path).read_text(encoding="utf-8")
+                from crabcode_core.io_worker import run_io
+                text = await run_io("crabcode_core.filesystem", "read_text_file",
+                                    str(file_path), timeout=5)
             except OSError:
                 logger.warning("Cannot read file for LSP sync: %s", file_path)
                 return
@@ -687,9 +689,9 @@ def _diagnostic_uri_key(uri: str) -> str:
 
 def _path_to_uri(path: str) -> str:
     """Convert a filesystem path to a file:// URI."""
-    resolved = Path(path).resolve()
-    # Use as_posix to get forward slashes, then encode
-    return resolved.as_uri()
+    # URI encoding is lexical: resolving symlinks here can block the event
+    # loop on a network mount. Match _diagnostic_uri_key's normalization.
+    return Path(os.path.abspath(path)).as_uri()
 
 
 def _uri_to_path(uri: str) -> str:

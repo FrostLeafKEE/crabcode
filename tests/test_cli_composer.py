@@ -44,6 +44,18 @@ class ComposerTests(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.wait_for(poll(), 3)
 
+    async def test_second_ctrl_c_exits_without_waiting_for_input_consumer(self):
+        async with self.composer(busy=True) as (composer, pipe, _):
+            # Leave the first interrupt queued: the session consumer could be
+            # stuck in interrupt/close. The second key must still force exit.
+            with patch("crabcode_cli.repl._force_exit") as force_exit:
+                pipe.send_text("\x03")
+                await self.wait_for(lambda: composer._events.qsize() == 1)
+                pipe.send_text("\x03")
+                await self.wait_for(lambda: force_exit.called)
+                force_exit.assert_called_once_with()
+                self.assertEqual(composer._events.qsize(), 1)
+
     async def test_newline_keys_do_not_submit_in_idle_or_busy_state(self):
         for busy in (False, True):
             for newline in (

@@ -207,8 +207,10 @@ async def terminate_process_tree(process: Any, *, timeout: float = 5.0) -> None:
                     stderr=asyncio.subprocess.DEVNULL,
                     **options,
                 )
-                await killer.wait()
+                await asyncio.wait_for(killer.wait(), timeout=timeout)
                 tree_killed = killer.returncode == 0
+            except asyncio.TimeoutError:
+                killer.kill()
             except OSError:
                 pass
         if not tree_killed and process.returncode is None:
@@ -225,7 +227,10 @@ async def terminate_process_tree(process: Any, *, timeout: float = 5.0) -> None:
                     process.kill()
                 except ProcessLookupError:
                     pass
-        await process.wait()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass  # A kernel-blocked process must not hold its caller forever.
         return
 
     try:
@@ -249,4 +254,7 @@ async def terminate_process_tree(process: Any, *, timeout: float = 5.0) -> None:
                 process.kill()
             except ProcessLookupError:
                 return
-        await process.wait()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass  # SIGKILL does not guarantee an immediate reap (e.g. D state).

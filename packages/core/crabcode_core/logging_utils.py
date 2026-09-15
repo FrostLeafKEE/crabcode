@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import copy
+import queue
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,6 +21,59 @@ LOG_INDEX_NAME = "index.json"
 LOGS_DIR_NAME = ".crabcode/logs"
 
 _configured_signature: tuple[str, str, str] | None = None
+
+
+class _AsyncFileHandler(logging.Handler):
+    """Keep disk writes and traceback source lookups off application threads.
+
+    A stalled sink has bounded memory and a daemon owner. It must never hold
+    the logging handler lock or make logging.shutdown wait for remote storage.
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__()
+        self._path = path
+        self._records: queue.Queue[logging.LogRecord | None] = queue.Queue(maxsize=1024)
+        self._stopped = threading.Event()
+        self._writer = threading.Thread(target=self._write, name="crabcode-log-writer", daemon=True)
+        self._writer.start()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if self._stopped.is_set():
+            return
+        try:
+            # Formatting exceptions can read source files; do it in the writer.
+            self._records.put_nowait(copy.copy(record))
+        except queue.Full:
+            pass
+
+    def _write(self) -> None:
+        try:
+            with open(self._path, "a", encoding="utf-8") as stream:
+                while True:
+                    try:
+                        record = self._records.get(timeout=0.1)
+                    except queue.Empty:
+                        if self._stopped.is_set():
+                            break
+                        continue
+                    if record is None:
+                        break
+                    stream.write(self.format(record) + "\n")
+                    stream.flush()
+        except Exception:
+            # Do not recursively log a failed/full logging sink.
+            self._stopped.set()
+
+    def close(self) -> None:
+        self._stopped.set()
+        try:
+            self._records.put_nowait(None)
+        except queue.Full:
+            pass
+        if threading.current_thread() is not self._writer:
+            self._writer.join(timeout=0.2)
+        super().close()
 
 
 def get_logger(name: str | None = None) -> logging.Logger:
@@ -72,11 +128,13 @@ def configure_logging(cwd: str, settings: LoggingSettings | None = None) -> Path
         _register_log(cwd, LOG_KEY, log_path)
         return log_path
 
-    logger.handlers.clear()
+    for old_handler in logger.handlers[:]:
+        logger.removeHandler(old_handler)
+        old_handler.close()
     logger.setLevel(getattr(logging, level_name, logging.WARNING))
     logger.propagate = False
 
-    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler = _AsyncFileHandler(log_path)
     handler.setLevel(logger.level)
     handler.setFormatter(
         logging.Formatter(
