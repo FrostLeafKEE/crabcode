@@ -735,7 +735,9 @@ class _PersistentComposer:
             self._events.put_nowait(("submit", text))
         return False
 
-    def _status_text(self) -> HTML:
+    def _status_text(self) -> list[tuple[str, str]]:
+        # Status labels are literal text. HTML parsing would treat command
+        # placeholders such as /model <name> as tags and break every redraw.
         if self._busy:
             if self._activity_running:
                 elapsed = max(
@@ -746,14 +748,14 @@ class _PersistentComposer:
                     int(elapsed / 0.08) % len(_SPINNER_FRAMES)
                 ]
                 suffix = f" ({elapsed:.0f}s)" if elapsed >= 2 else ""
-                return HTML(
-                    f"<ansicyan>  {frame} {self._phase}…</ansicyan>"
-                    f"<gray>{suffix}</gray>"
-                )
-            return HTML("<ansicyan>  ● Working</ansicyan>")
+                return [
+                    ("class:ansicyan", f"  {frame} {self._phase}…"),
+                    ("class:gray", suffix),
+                ]
+            return [("class:ansicyan", "  ● Working")]
         if self._notice:
-            return HTML(f"<gray>  ● {self._notice}</gray>")
-        return HTML("<gray>  ● Ready</gray>")
+            return [("class:gray", f"  ● {self._notice}")]
+        return [("class:gray", "  ● Ready")]
 
     def _queued_text(self) -> list[tuple[str, str]]:
         latest = self._queued_messages[-1] if self._queued_messages else ""

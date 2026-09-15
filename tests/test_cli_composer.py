@@ -56,6 +56,35 @@ class ComposerTests(unittest.IsolatedAsyncioTestCase):
                 force_exit.assert_called_once_with()
                 self.assertEqual(composer._events.qsize(), 1)
 
+    async def test_status_labels_render_as_literal_text(self):
+        async with self.composer() as (composer, pipe, _):
+            def visible(text):
+                screen = composer.prompt_session.app.renderer._last_screen
+                return screen is not None and any(
+                    text in "".join(cell.char for _, cell in sorted(row.items()))
+                    for row in screen.data_buffer.values()
+                )
+
+            for label in (
+                "Request failed · retry or use /model <name>",
+                "401 <html> & [/provider]",
+                "<b>literal tags</b> &amp;",
+            ):
+                with self.subTest(label=label):
+                    composer.set_notice(label)
+                    await self.wait_for(lambda: visible("● " + label))
+                    composer.set_busy(True)
+                    composer.start_activity(label)
+                    await self.wait_for(lambda: visible(label + "…"))
+                    composer.stop_activity()
+
+            composer.set_busy(False)
+            pipe.send_text("retry\r")
+            self.assertEqual(
+                await asyncio.wait_for(composer.next_event(), 3), ("submit", "retry")
+            )
+            await self.wait_for(lambda: visible("● Ready"))
+
     async def test_newline_keys_do_not_submit_in_idle_or_busy_state(self):
         for busy in (False, True):
             for newline in (

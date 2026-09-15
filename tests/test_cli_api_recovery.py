@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import httpx
+from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
@@ -60,6 +61,7 @@ class CliApiRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def running_repl(self, session, adapter_factory=None):
         output = StringIO()
         composers = []
+        loop_errors = []
         real_composer = repl._PersistentComposer
 
         def make_composer(*args):
@@ -79,12 +81,20 @@ class CliApiRecoveryTests(unittest.IsolatedAsyncioTestCase):
             patch.object(repl, "_PersistentComposer", side_effect=make_composer),
             patch.object(repl, "console", Console(file=output, width=180)),
             patch("crabcode_core.api.create_adapter", side_effect=adapter_factory or make_adapter),
+            # Turn renderer callback failures into test failures instead of
+            # allowing prompt_toolkit's "Press ENTER" recovery prompt to hide them.
+            patch.object(Application, "_handle_exception",
+                         side_effect=lambda loop, context: loop_errors.append(context)),
         ):
             task = asyncio.create_task(repl.run_repl(settings=session.settings))
 
             async def wait_for(predicate):
                 async def poll():
-                    while not predicate():
+                    while True:
+                        if loop_errors:
+                            self.fail(f"Unhandled event loop exception: {loop_errors[0]}")
+                        if predicate():
+                            return
                         if task.done():
                             await task  # Surface an unexpected CLI exit immediately.
                             self.fail("CLI exited before the next command")
@@ -96,10 +106,27 @@ class CliApiRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 yield pipe, composers[0], output, wait_for
                 pipe.send_text("\x04")
                 await asyncio.wait_for(task, 3)
+                self.assertEqual(loop_errors, [])
             finally:
                 if not task.done():
                     task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+
+    async def assert_failure_notice_rendered(self, composer, wait_for):
+        def notice_visible():
+            screen = composer.prompt_session.app.renderer._last_screen
+            if screen is None:
+                return False
+            return any(
+                "Request failed · retry or use /model <name>" in "".join(
+                    cell.char for _, cell in sorted(row.items())
+                )
+                for row in screen.data_buffer.values()
+            )
+
+        # Wait for the actual screen, not just output or _busy: the next input
+        # clears the notice and can otherwise race past a broken status redraw.
+        await wait_for(notice_visible)
 
     async def assert_recovery(self, failure, expected):
         session = RecoverySession(failure)
@@ -108,6 +135,7 @@ class CliApiRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await wait_for(lambda: "Switched to broken" in output.getvalue())
             pipe.send_text("first request\r")
             await wait_for(lambda: expected in output.getvalue() and not composer._busy)
+            await self.assert_failure_notice_rendered(composer, wait_for)
             self.assertFalse(session._closed)
             self.assertFalse(session._turn_lock.locked())
             self.assertFalse(session._foreground_turn_active)
@@ -159,6 +187,15 @@ class CliApiRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await wait_for(lambda: session.completed == ["still working"] and not composer._busy)
 
     async def test_real_http_404_then_switch_and_successful_stream(self):
+        await self.assert_http_error_recovery("404 Not Found", "Endpoint expired [/provider]")
+
+    async def test_real_http_401_then_switch_and_successful_stream(self):
+        await self.assert_http_error_recovery(
+            "401 Unauthorized",
+            "Authentication Fails, Your api key: ****test is invalid <key> & [/provider]",
+        )
+
+    async def assert_http_error_recovery(self, error_status, error_message):
         requests = []
         adapters = []
 
@@ -170,8 +207,8 @@ class CliApiRecoveryTests(unittest.IsolatedAsyncioTestCase):
                               if line.lower().startswith("content-length:"))
                 requests.append((path, json.loads(await reader.readexactly(length))))
                 if path.startswith("/broken/"):
-                    status, content_type = "404 Not Found", "application/json"
-                    body = json.dumps({"error": {"message": "Endpoint expired [/provider]"}})
+                    status, content_type = error_status, "application/json"
+                    body = json.dumps({"error": {"message": error_message}})
                 else:
                     status, content_type = "200 OK", "text/event-stream"
                     chunk = {"id": "local-test", "object": "chat.completion.chunk", "created": 0,
@@ -221,8 +258,9 @@ class CliApiRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     pipe.send_text("/model broken\r")
                     await wait_for(lambda: "Switched to broken" in output.getvalue())
                     pipe.send_text("first request\r")
-                    await wait_for(lambda: "Endpoint expired [/provider]" in output.getvalue()
+                    await wait_for(lambda: error_message in output.getvalue()
                                    and not composer._busy)
+                    await self.assert_failure_notice_rendered(composer, wait_for)
                     self.assertFalse(session._turn_lock.locked())
                     pipe.send_text("/model healthy\r")
                     await wait_for(lambda: "Switched to healthy" in output.getvalue())
