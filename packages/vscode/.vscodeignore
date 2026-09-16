@@ -1,6 +1,15 @@
 .vscode/**
+.gitignore
+.crabcode/**
+.claude/**
+.env
+.env.*
+.nvmrc
 scripts/**
 src/**
+tests/**
+**/*.map
+**/*.log
 *.vsix
 esbuild.js
 tsconfig.json
