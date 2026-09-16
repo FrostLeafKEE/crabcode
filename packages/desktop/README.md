@@ -32,6 +32,12 @@ Gateway's version, package path, Python version and executable, environment
 directory/type, platform, and startup directory. Runtime details are returned
 by the authenticated workspace endpoint, so remote connections describe the
 server's environment. Older Gateways can still connect without this metadata.
+For local connections, Desktop uses the detected Python only to create a
+managed virtual environment at `~/.crabcode/desktop/gateway-venv`; CrabCode is
+installed and launched there instead of modifying the system, Homebrew, or
+Conda environment. `npm run tauri dev` instead uses the configured Python or
+the terminal's active Python environment directly so Gateway source and local
+editable installs can be debugged.
 
 For a remote Gateway, prefer HTTPS/WSS. An HTTP remote connection requires
 explicit acknowledgement in the connection dialog. A browser UI hosted away

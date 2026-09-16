@@ -301,6 +301,7 @@ def setup_cors(app: FastAPI, extra_origins: list[str] | None = None) -> None:
         allow_origin_regex=(
             r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
             r"|^https?://tauri\.localhost$"
+            r"|^tauri://localhost$"
             r"|^vscode-webview://"
         ),
         allow_origins=extra_origins or [],

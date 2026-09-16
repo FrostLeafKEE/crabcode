@@ -7,8 +7,7 @@ use std::io::{self, BufRead, BufReader, Read};
 use std::net::{IpAddr, ToSocketAddrs};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-#[cfg(target_os = "macos")]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Mutex;
 use std::thread;
@@ -19,6 +18,7 @@ use url::Url;
 const MIN_PYTHON_MAJOR: u32 = 3;
 const MIN_PYTHON_MINOR: u32 = 10;
 const GATEWAY_PROTOCOL: i64 = 1;
+const DESKTOP_ORIGIN: &str = "tauri://localhost";
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -28,6 +28,21 @@ fn configure_python_utf8(command: &mut Command) {
         .env("PYTHONIOENCODING", "utf-8");
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
+}
+
+fn configure_gateway_command(command: &mut Command, host: &str, port: &str) {
+    configure_python_utf8(command);
+    command.args([
+        "-m",
+        "crabcode_cli",
+        "gateway",
+        "--host",
+        host,
+        "--port",
+        port,
+        "--cors",
+        DESKTOP_ORIGIN,
+    ]);
 }
 
 fn stop_child_tree(child: &mut Child) -> io::Result<()> {
@@ -277,6 +292,12 @@ fn python_version(candidate: &str) -> Option<(u32, u32)> {
     Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
 }
 
+fn supported_gateway_python(candidate: &str) -> bool {
+    python_version(candidate).is_some_and(|(major, minor)| {
+        major > MIN_PYTHON_MAJOR || (major == MIN_PYTHON_MAJOR && minor >= MIN_PYTHON_MINOR)
+    })
+}
+
 fn push_unique(candidates: &mut Vec<String>, candidate: String) {
     if !candidates.contains(&candidate) {
         candidates.push(candidate);
@@ -361,10 +382,20 @@ fn extend_macos_python_candidates(candidates: &mut Vec<String>, home: Option<&Pa
     }
 }
 
-fn python_candidates(configured: Option<&str>) -> Vec<String> {
+fn python_candidates(configured: Option<&str>, include_managed: bool) -> Vec<String> {
     let mut candidates = Vec::new();
     if let Some(value) = configured.filter(|value| !value.trim().is_empty()) {
         push_unique(&mut candidates, value.to_string());
+    }
+    if include_managed {
+        if let Ok(environment) = managed_gateway_environment_dir() {
+            push_unique(
+                &mut candidates,
+                managed_gateway_python_path(&environment)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
     }
     push_unique(&mut candidates, "python3".to_string());
     push_unique(&mut candidates, "python".to_string());
@@ -379,20 +410,28 @@ fn python_candidates(configured: Option<&str>) -> Vec<String> {
     candidates
 }
 
+#[cfg(not(debug_assertions))]
 fn detect_python(configured: Option<&str>) -> Result<String, String> {
-    for candidate in python_candidates(configured) {
-        if let Some((major, minor)) = python_version(&candidate) {
-            if major > MIN_PYTHON_MAJOR || (major == MIN_PYTHON_MAJOR && minor >= MIN_PYTHON_MINOR)
-            {
-                return Ok(candidate);
-            }
+    for candidate in python_candidates(configured, true) {
+        if supported_gateway_python(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err("Python 3.10 or newer was not found. Install Python or set a Python path in Desktop settings.".to_string())
+}
+
+#[cfg(debug_assertions)]
+fn detect_development_python(configured: Option<&str>) -> Result<String, String> {
+    for candidate in python_candidates(configured, false) {
+        if supported_gateway_python(&candidate) {
+            return Ok(candidate);
         }
     }
     Err("Python 3.10 or newer was not found. Install Python or set a Python path in Desktop settings.".to_string())
 }
 
 fn detect_document_engine_python(configured: Option<&str>) -> Result<String, String> {
-    for candidate in python_candidates(configured) {
+    for candidate in python_candidates(configured, true) {
         if python_version(&candidate)
             .is_some_and(|(major, minor)| major == 3 && (10..=13).contains(&minor))
         {
@@ -600,6 +639,64 @@ fn installed_gateway_version(python: &str) -> Option<String> {
     (!version.is_empty()).then_some(version)
 }
 
+fn managed_gateway_environment_dir() -> Result<PathBuf, String> {
+    let home =
+        dirs::home_dir().ok_or_else(|| "Unable to locate the user home directory".to_string())?;
+    Ok(home.join(".crabcode").join("desktop").join("gateway-venv"))
+}
+
+fn managed_gateway_python_path(environment: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    return environment.join("Scripts").join("python.exe");
+    #[cfg(not(target_os = "windows"))]
+    return environment.join("bin").join("python");
+}
+
+#[cfg(any(not(debug_assertions), test))]
+fn ensure_managed_gateway_python_at(
+    base_python: &str,
+    environment: &Path,
+    on_output: &(impl Fn(&str) + Sync),
+) -> Result<String, String> {
+    let managed_python = managed_gateway_python_path(environment);
+    let managed_python_string = managed_python.to_string_lossy().into_owned();
+    if supported_gateway_python(&managed_python_string) {
+        return Ok(managed_python_string);
+    }
+
+    let parent = environment
+        .parent()
+        .ok_or_else(|| "Invalid managed Gateway environment path".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("Unable to create the Gateway environment directory: {error}"))?;
+    let environment_string = environment.to_string_lossy().into_owned();
+    let mut command = Command::new(base_python);
+    configure_python_utf8(&mut command);
+    command.args(["-m", "venv", "--clear", &environment_string]);
+    let (status, detail) = run_streaming_command(&mut command, on_output)?;
+    if !status.success() {
+        return Err(format!(
+            "Unable to create the managed Gateway environment with `{base_python} -m venv`. {detail}"
+        ));
+    }
+    if !supported_gateway_python(&managed_python_string) {
+        return Err(
+            "The managed Gateway environment did not provide a working Python interpreter"
+                .to_string(),
+        );
+    }
+    Ok(managed_python_string)
+}
+
+#[cfg(not(debug_assertions))]
+fn ensure_managed_gateway_python(
+    base_python: &str,
+    on_output: &(impl Fn(&str) + Sync),
+) -> Result<String, String> {
+    let environment = managed_gateway_environment_dir()?;
+    ensure_managed_gateway_python_at(base_python, &environment, on_output)
+}
+
 #[derive(Deserialize)]
 struct PythonEnvironment {
     version: String,
@@ -635,7 +732,7 @@ struct GatewayStartupProgress {
 
 // Drain both pipes concurrently so a verbose installer cannot deadlock. Keep only
 // a bounded tail for failures; each line is delivered to the UI as it arrives.
-fn run_gateway_installer(
+fn run_streaming_command(
     command: &mut Command,
     on_output: &(impl Fn(&str) + Sync),
 ) -> Result<(ExitStatus, String), String> {
@@ -644,9 +741,9 @@ fn run_gateway_installer(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("Unable to start pip: {error}"))?;
-    let stdout = child.stdout.take().ok_or("Unable to read pip output")?;
-    let stderr = child.stderr.take().ok_or("Unable to read pip errors")?;
+        .map_err(|error| format!("Unable to start setup command: {error}"))?;
+    let stdout = child.stdout.take().ok_or("Unable to read setup output")?;
+    let stderr = child.stderr.take().ok_or("Unable to read setup errors")?;
     let read_output = |stream: &mut dyn Read| -> Result<String, String> {
         let mut tail = VecDeque::new();
         let mut reader = BufReader::new(stream);
@@ -681,13 +778,13 @@ fn run_gateway_installer(
         let stderr_reader = scope.spawn(|| read_output(&mut { stderr }));
         let status = child
             .wait()
-            .map_err(|error| format!("Unable to wait for pip: {error}"))?;
+            .map_err(|error| format!("Unable to wait for setup command: {error}"))?;
         let stdout = stdout_reader
             .join()
-            .map_err(|_| "Pip output reader stopped unexpectedly")??;
+            .map_err(|_| "Setup output reader stopped unexpectedly")??;
         let stderr = stderr_reader
             .join()
-            .map_err(|_| "Pip error reader stopped unexpectedly")??;
+            .map_err(|_| "Setup error reader stopped unexpectedly")??;
         Ok((status, [stdout, stderr].join("\n").trim().to_string()))
     })
 }
@@ -707,7 +804,7 @@ fn install_gateway(python: &str, on_output: &(impl Fn(&str) + Sync)) -> Result<(
         "off",
         &package,
     ]);
-    let (status, detail) = run_gateway_installer(&mut command, on_output)?;
+    let (status, detail) = run_streaming_command(&mut command, on_output)?;
     if status.success() {
         return Ok(());
     }
@@ -804,11 +901,25 @@ fn ensure_local_gateway_blocking(
     }
 
     progress("checking_python", "正在检测 Python 环境");
-    let python = detect_python(python_path.as_deref())?;
-    progress(
-        "environment",
-        &format!("准备启动本地 Gateway，Python 命令：{python}"),
-    );
+    #[cfg(debug_assertions)]
+    let python = {
+        let python = detect_development_python(python_path.as_deref())?;
+        progress(
+            "environment",
+            &format!("开发模式直接使用 Python 环境：{python}"),
+        );
+        python
+    };
+    #[cfg(not(debug_assertions))]
+    let python = {
+        let base_python = detect_python(python_path.as_deref())?;
+        progress(
+            "environment",
+            &format!("用于创建独立环境的 Python：{base_python}"),
+        );
+        progress("creating_environment", "正在准备 CrabCode 独立 Python 环境");
+        ensure_managed_gateway_python(&base_python, &|line| progress("creating_environment", line))?
+    };
     if let Some(environment) = python_environment(&python) {
         progress(
             "environment",
@@ -855,16 +966,7 @@ fn ensure_local_gateway_blocking(
     let host = base.host_str().unwrap_or("127.0.0.1");
     let port = base.port_or_known_default().unwrap_or(4096).to_string();
     let mut command = Command::new(&python);
-    configure_python_utf8(&mut command);
-    command.args([
-        "-m",
-        "crabcode_cli",
-        "gateway",
-        "--host",
-        host,
-        "--port",
-        &port,
-    ]);
+    configure_gateway_command(&mut command, host, &port);
     if let Some(home) = dirs::home_dir() {
         command.current_dir(home);
     }
@@ -961,7 +1063,7 @@ mod tests {
             ])
             .arg(&marker);
         let output = Mutex::new(Vec::new());
-        let (status, tail) = run_gateway_installer(&mut command, &|line| {
+        let (status, tail) = run_streaming_command(&mut command, &|line| {
             output.lock().unwrap().push(line.to_string());
             if line == "installing" {
                 std::fs::write(&marker, "received").unwrap();
@@ -982,7 +1084,7 @@ mod tests {
             "i=0; while [ $i -lt 100 ]; do echo line-$i; echo error-$i >&2; i=$((i + 1)); done",
         ]);
         let output = Mutex::new(Vec::new());
-        let (status, tail) = run_gateway_installer(&mut command, &|line| {
+        let (status, tail) = run_streaming_command(&mut command, &|line| {
             output.lock().unwrap().push(line.to_string());
         })
         .unwrap();
@@ -1016,6 +1118,19 @@ mod tests {
         assert!(parse_base_url("ws://localhost:4096").is_err());
     }
 
+    #[test]
+    fn gateway_launch_allows_the_macos_tauri_origin() {
+        let mut command = Command::new("python");
+        configure_gateway_command(&mut command, "127.0.0.1", "4096");
+        let arguments = command
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(arguments
+            .windows(2)
+            .any(|pair| pair == ["--cors", DESKTOP_ORIGIN]));
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn finds_conda_python_without_a_shell_path() {
@@ -1032,6 +1147,53 @@ mod tests {
         let discovered = python.to_string_lossy().into_owned();
         assert!(candidates.contains(&discovered));
         assert_eq!(python_version(&discovered), Some((3, 12)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn creates_and_reuses_an_isolated_gateway_environment() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let base_python = directory.path().join("base-python");
+        std::fs::write(
+            &base_python,
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'Python 3.12.4\n'
+  exit 0
+fi
+if [ "$1" = "-m" ] && [ "$2" = "venv" ] && [ "$3" = "--clear" ]; then
+  mkdir -p "$4/bin"
+  cp "$0" "$4/bin/python"
+  printf 'created isolated environment\n'
+  exit 0
+fi
+exit 2
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&base_python, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let environment = directory.path().join("managed/gateway-venv");
+        let output = Mutex::new(Vec::new());
+        let capture = |line: &str| output.lock().unwrap().push(line.to_string());
+
+        let first = ensure_managed_gateway_python_at(
+            &base_python.to_string_lossy(),
+            &environment,
+            &capture,
+        )
+        .unwrap();
+        let second = ensure_managed_gateway_python_at(
+            &base_python.to_string_lossy(),
+            &environment,
+            &capture,
+        )
+        .unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(Path::new(&first), managed_gateway_python_path(&environment));
+        assert_eq!(*output.lock().unwrap(), ["created isolated environment"]);
     }
 
     #[test]

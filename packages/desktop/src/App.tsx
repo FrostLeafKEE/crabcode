@@ -1618,7 +1618,16 @@ function App() {
       await api.authenticate();
       if (!isCurrentAttempt()) return;
       progress("loading_workspace", "正在加载工作区和模型");
-      const [workspace, models] = await Promise.all([api.workspaceInfo(), api.models()]);
+      const [workspace, models] = await Promise.all([
+        api.workspaceInfo().catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          throw new Error(`加载工作区失败：${detail}`);
+        }),
+        api.models().catch((error) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          throw new Error(`加载模型列表失败：${detail}`);
+        }),
+      ]);
       if (!isCurrentAttempt()) return;
       for (const detail of gatewayEnvironmentLog(workspace)) progress("environment", detail);
       if (connection.last_model_profile && !resolveRememberedModel(connection, models)) {
