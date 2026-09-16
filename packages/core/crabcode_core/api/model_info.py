@@ -96,6 +96,8 @@ KNOWN_CONTEXT_WINDOWS: dict[str, int] = {
     "deepseek-flash": 1_000_000,
     "deepseek-v4-pro": 1_000_000,
     "deepseek-v4-flash": 1_000_000,
+    "deepseek-v4.1": 1_000_000,
+    "deepseek-v4.1-flash": 1_000_000,
     "deepseek-chat": 128_000,
     "deepseek-reasoner": 128_000,
     # GLM (Zhipu)
@@ -126,7 +128,6 @@ KNOWN_CONTEXT_WINDOWS: dict[str, int] = {
     "MiniMax-M2.7-highspeed": 204_800,
     "MiniMax-M2.7": 204_800,
     "minimax-m2.7": 204_800,
-    # Skywork
     "skyclaw-v1-lite": 1_000_000,
     "skyclaw-v1": 1_000_000,
     "skyclaw-v1-lite": 1_000_000,
@@ -134,6 +135,12 @@ KNOWN_CONTEXT_WINDOWS: dict[str, int] = {
     # Meta
     "Llama-4-Maverick-17B-128E-Instruct": 1_000_000,
     "Llama-4-Scout-17B-16E-Instruct": 10_000_000,
+    "Llama-3.3": 128_000,
+    "Llama-3.2": 128_000,
+    "Llama-3.1": 128_000,
+    "Llama-3": 8_000,
+    "Llama-2": 4_000,
+    "Llama-1": 2_048,
     "Llama-4-Maverick-17B-128E-Instruct": 1_000_000,
     "Llama-4-Scout-17B-16E-Instruct": 10_000_000,
     "muse-spark-1.3-contributor": 1_000_000,
