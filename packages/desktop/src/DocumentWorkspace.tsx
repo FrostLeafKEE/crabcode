@@ -54,6 +54,7 @@ import type {
   ProjectPreset,
 } from "./types";
 import { normalizeMarkdownMathDelimiters } from "./markdownMath";
+import { randomUuid } from "./uuid";
 
 type DocumentView = "document" | "blog";
 type BlogView = "preview" | "raw";
@@ -2140,7 +2141,7 @@ export default function DocumentWorkspace({
     setError(null);
     try {
       const saved = await api.saveDocumentAnnotation(project.path, {
-        id: crypto.randomUUID(),
+        id: randomUuid(),
         label,
         note,
         text: selection.text,
@@ -2244,7 +2245,7 @@ export default function DocumentWorkspace({
   const selectionReference = selection && (() => {
     const lineRange = layout ? documentSelectionLineRange(layout, selection.rects) : null;
     return {
-      id: crypto.randomUUID(),
+      id: randomUuid(),
       project_id: project.id,
       document_name: manifest?.source.name ?? project.name,
       page_label: pageLabel(selection.rects),

@@ -114,6 +114,7 @@ import {
 } from "./ProjectFilesWorkspace";
 import { TrajectoryView } from "./TrajectoryView";
 import { getToolPresentation, parseChecklistResult, type ToolField } from "./toolPresentation";
+import { randomUuid } from "./uuid";
 import {
   DEFAULT_THEME_ID,
   addImportedTheme,
@@ -667,7 +668,7 @@ function readImage(file: File): Promise<PendingImage> {
         return;
       }
       resolve({
-        id: crypto.randomUUID(),
+        id: randomUuid(),
         name: file.name,
         media_type: file.type || "image/png",
         data: dataUrl.slice(separator + 1),
@@ -1082,7 +1083,7 @@ function App() {
         ? removeFavoriteEntries(items, (entry) => entry.type === "session"
           && entry.project_id === projectId && entry.session_id === sessionId)
         : addFavoriteEntry(items, null, {
-          id: crypto.randomUUID(),
+          id: randomUuid(),
           type: "session",
           project_id: projectId,
           session_id: sessionId,
@@ -1098,7 +1099,7 @@ function App() {
       const next = hasFavoriteProject(items, projectId)
         ? removeFavoriteEntries(items, (entry) => entry.type === "project" && entry.project_id === projectId)
         : addFavoriteEntry(items, null, {
-          id: crypto.randomUUID(),
+          id: randomUuid(),
           type: "project",
           project_id: projectId,
         });
@@ -1356,7 +1357,7 @@ function App() {
       setGlobalError("Gateway 尚未连接");
       return;
     }
-    let key = sessionKey(connection.id, info?.session_id ?? `new-${crypto.randomUUID()}`);
+    let key = sessionKey(connection.id, info?.session_id ?? `new-${randomUuid()}`);
     const existingChannel = channelRef.current.get(key);
     if (existingChannel && !existingChannel.isDisposed) {
       setActiveSessions((current) => ({ ...current, [connection.id]: key }));
@@ -1640,7 +1641,7 @@ function App() {
       const projects = connection.projects.length > 0
         ? connection.projects
         : [{
-          id: crypto.randomUUID(),
+          id: randomUuid(),
           kind: "project" as const,
           path: workspace.startup_cwd,
           name: basename(workspace.startup_cwd),
@@ -2079,7 +2080,7 @@ function App() {
           continue;
         }
         attachments.push({
-          id: crypto.randomUUID(),
+          id: randomUuid(),
           name: file.name,
           mediaType: file.type,
           mode: "content",
@@ -2146,7 +2147,7 @@ function App() {
             },
             items: [
               ...current[activeSessionKey].items,
-              { id: crypto.randomUUID(), kind: "user", text: `引导：${attachmentLine}${attachmentLine && text ? "\n\n" : ""}${text}`, status: "complete", startedAt: now, completedAt: now, durationMs: 0 },
+              { id: randomUuid(), kind: "user", text: `引导：${attachmentLine}${attachmentLine && text ? "\n\n" : ""}${text}`, status: "complete", startedAt: now, completedAt: now, durationMs: 0 },
             ],
           },
         }));
@@ -2175,7 +2176,7 @@ function App() {
             operationId,
             items: [
               ...current[activeSessionKey].items,
-              { id: crypto.randomUUID(), kind: "user", text: `${attachmentLine}${attachmentLine && text ? "\n\n" : ""}${text}`, status: "complete", startedAt: now, completedAt: now, durationMs: 0 },
+              { id: randomUuid(), kind: "user", text: `${attachmentLine}${attachmentLine && text ? "\n\n" : ""}${text}`, status: "complete", startedAt: now, completedAt: now, durationMs: 0 },
             ],
           },
         }));
@@ -2415,7 +2416,7 @@ function App() {
         [activeSessionKey]: {
           ...session,
           items: [...session.items, {
-            id: crypto.randomUUID(),
+            id: randomUuid(),
             kind: error ? "error" : title ? "command" : "system",
             title,
             command,
@@ -3529,7 +3530,7 @@ function App() {
               }}
               onCreateFolder={(parentId, name) => {
                 updateFavorites((items) => addFavoriteEntry(items, parentId, {
-                  id: crypto.randomUUID(),
+                  id: randomUuid(),
                   type: "folder",
                   name,
                   children: [],
@@ -3882,7 +3883,7 @@ function App() {
                   && projectPathKey(item.path) === projectPathKey(file.path))
                   ? current
                   : [...current, {
-                    id: crypto.randomUUID(),
+                    id: randomUuid(),
                     name: file.name,
                     mediaType: "",
                     mode: "path",
@@ -4047,7 +4048,7 @@ function App() {
                 && projectPathKey(file.path) === projectPathKey(path))
                 ? current
                 : [...current, {
-                  id: crypto.randomUUID(),
+                  id: randomUuid(),
                   name: basename(path),
                   mediaType: "",
                   mode: "path",
@@ -6152,7 +6153,7 @@ function ConnectionModal({ settings, activeConnectionId, initialEditingId, onClo
             setBusy(false);
             return;
           }
-          const id = editingConnection?.id ?? crypto.randomUUID();
+          const id = editingConnection?.id ?? randomUuid();
           void onSave({
             id,
             name: name.trim() || fallbackName,
@@ -6251,7 +6252,7 @@ export function DocumentProjectModal({ api, capabilities, defaultRoot, onClose, 
   onClose: () => void;
   onSave: (project: ProjectPreset) => void;
 }) {
-  const [projectId] = useState(() => crypto.randomUUID());
+  const [projectId] = useState(() => randomUuid());
   const [mode, setMode] = useState<"file" | "url">("file");
   const [file, setFile] = useState<File | null>(null);
   const [url, setUrl] = useState("");
@@ -6513,7 +6514,7 @@ export function ProjectModal({ api, home, roots, project, projects, protectPrima
         : path;
       const savedDirectories = [primaryPath, ...nextDirectories.slice(1)];
       onSave({
-        id: project?.id ?? crypto.randomUUID(),
+        id: project?.id ?? randomUuid(),
         kind: project?.kind ?? "project",
         path: primaryPath,
         name: name.trim() || suggestedName,

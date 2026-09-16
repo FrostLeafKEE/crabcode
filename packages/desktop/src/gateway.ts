@@ -1,4 +1,5 @@
 import { authenticateConnection, normalizeBaseUrl } from "./native";
+import { randomUuid } from "./uuid";
 import type {
   CheckpointInfo,
   BackgroundTaskInfo,
@@ -619,7 +620,7 @@ export class SessionChannel {
   }
 
   sendMessage(text: string, images: Array<{ media_type: string; data: string }> = []): string {
-    const operationId = crypto.randomUUID();
+    const operationId = randomUuid();
     this.sendRaw({
       type: "send_message",
       text,
@@ -642,7 +643,7 @@ export class SessionChannel {
       translation_engine?: "auto" | "legacy" | "precise";
     } = {},
   ): string {
-    const operationId = crypto.randomUUID();
+    const operationId = randomUuid();
     this.sendRaw({
       type: "document_action",
       action,
@@ -659,7 +660,7 @@ export class SessionChannel {
   }
 
   translateDocumentSelection(text: string, locale: string): string {
-    const operationId = crypto.randomUUID();
+    const operationId = randomUuid();
     this.sendRaw({
       type: "document_selection_translate",
       text,
@@ -752,7 +753,7 @@ export class SessionChannel {
       action,
       plan,
       session_id: this.sessionId,
-      operation_id: action === "execute" ? crypto.randomUUID() : undefined,
+      operation_id: action === "execute" ? randomUuid() : undefined,
     });
   }
 

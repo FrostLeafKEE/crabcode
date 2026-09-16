@@ -10,6 +10,7 @@ import type {
   ThemeVisuals,
 } from "./types";
 import desktopPackage from "../package.json";
+import { randomUuid } from "./uuid";
 
 export const DEFAULT_THEME_ID = "builtin.crab";
 export const THEME_DOCUMENT_SCHEMA = "io.crabcode.theme/v1";
@@ -478,10 +479,7 @@ export function legacyThemePreset(light: ThemeProfile, dark: ThemeProfile): Them
 }
 
 function customId(prefix = "custom.theme"): string {
-  const suffix = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return `${prefix}.${suffix.toLowerCase()}`;
+  return `${prefix}.${randomUuid().toLowerCase()}`;
 }
 
 export function duplicateTheme(

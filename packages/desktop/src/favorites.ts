@@ -7,6 +7,7 @@ import type {
   SessionInfo,
 } from "./types";
 import { projectPathKey } from "./pathUtils";
+import { randomUuid } from "./uuid";
 
 export type FavoriteViewEntry =
   | { kind: "folder"; entry: FavoriteFolder; children: FavoriteViewEntry[] }
@@ -43,7 +44,7 @@ export function normalizeFavoriteEntries(value: unknown): FavoriteEntry[] {
   const normalize = (raw: unknown): FavoriteEntry | null => {
     if (!raw || typeof raw !== "object") return null;
     const item = raw as Record<string, unknown>;
-    const id = typeof item.id === "string" && item.id.trim() ? item.id : crypto.randomUUID();
+    const id = typeof item.id === "string" && item.id.trim() ? item.id : randomUuid();
     if (seenIds.has(id)) return null;
     if (item.type === "folder") {
       if (typeof item.name !== "string" || !item.name.trim()) return null;
@@ -78,7 +79,7 @@ function normalizeFavoriteEntriesWithSeen(value: unknown, seenIds: Set<string>):
   return value.flatMap((raw): FavoriteEntry[] => {
     if (!raw || typeof raw !== "object") return [];
     const item = raw as Record<string, unknown>;
-    const id = typeof item.id === "string" && item.id.trim() ? item.id : crypto.randomUUID();
+    const id = typeof item.id === "string" && item.id.trim() ? item.id : randomUuid();
     if (seenIds.has(id)) return [];
     if (item.type === "folder" && typeof item.name === "string" && item.name.trim()) {
       seenIds.add(id);

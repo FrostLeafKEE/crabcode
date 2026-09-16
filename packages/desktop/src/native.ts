@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { legacyFavoriteEntries, normalizeFavoriteEntries } from "./favorites";
 import { projectPathKey } from "./pathUtils";
+import { randomUuid } from "./uuid";
 import type { GatewayStartupProgress } from "./gatewayStartup";
 import {
   DEFAULT_DARK_THEME,
@@ -286,7 +287,7 @@ export function normalizeSettings(raw: DesktopSettings): DesktopSettings {
         return {
           ...project,
           kind: project.kind === "document" ? "document" as const : "project" as const,
-          id: project.id || legacyPath || crypto.randomUUID(),
+          id: project.id || legacyPath || randomUuid(),
           path: directories[0] || legacyPath || "",
           directories,
           is_default: project.is_default === true || index === 0,
@@ -424,7 +425,7 @@ export async function ensureLocalGateway(
       message: "浏览器版不会自动启动 Gateway",
     };
   }
-  const operationId = crypto.randomUUID();
+  const operationId = randomUuid();
   const unlisten = onProgress
     ? await listen<GatewayStartupProgress>("gateway-startup-progress", (event) => {
         if (event.payload.connectionId === connectionId && event.payload.operationId === operationId) {
@@ -456,7 +457,7 @@ export async function installDocumentEngine(
   onProgress?: (progress: DocumentEngineInstallProgress) => void,
 ): Promise<Record<string, unknown>> {
   if (!isDesktopShell()) throw new Error("高精度 PDF 引擎只能由桌面应用安装");
-  const operationId = crypto.randomUUID();
+  const operationId = randomUuid();
   const unlisten = onProgress
     ? await listen<DocumentEngineInstallProgress>("document-engine-install-progress", (event) => {
         if (event.payload.operationId === operationId) onProgress(event.payload);

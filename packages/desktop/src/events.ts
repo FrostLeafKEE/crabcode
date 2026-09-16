@@ -1,4 +1,5 @@
 import type { ChatItem, GatewayEvent, ImageAttachment, SessionViewState } from "./types";
+import { randomUuid } from "./uuid";
 
 function stringify(value: unknown): string {
   if (typeof value === "string") return value;
@@ -36,7 +37,7 @@ function historyItems(messages: Array<Record<string, unknown>>): ChatItem[] {
   const finishTurn = () => {
     if (turnStartedAt === null || turnCompletedAt === null) return;
     items.push({
-      id: `${turnDurationId || crypto.randomUUID()}:turn-duration`,
+      id: `${turnDurationId || randomUuid()}:turn-duration`,
       kind: "turn_duration",
       status: "complete",
       startedAt: turnStartedAt,
@@ -58,7 +59,7 @@ function historyItems(messages: Array<Record<string, unknown>>): ChatItem[] {
     }
     if (message.origin === "document-action") continue;
 
-    const baseId = String(message.uuid ?? crypto.randomUUID());
+    const baseId = String(message.uuid ?? randomUuid());
     const messageTimestamp = timestampMs(message.timestamp);
     if (startsUserTurn(message)) {
       finishTurn();
@@ -234,7 +235,7 @@ function appendStream(items: ChatItem[], text: string, now: number): ChatItem[] 
   }
   return [
     ...items,
-    { id: crypto.randomUUID(), kind: "assistant", text, status: "running", startedAt: now },
+    { id: randomUuid(), kind: "assistant", text, status: "running", startedAt: now },
   ];
 }
 
@@ -249,7 +250,7 @@ function appendThinking(items: ChatItem[], text: string, now: number): ChatItem[
   return [
     ...items,
     {
-      id: crypto.randomUUID(),
+      id: randomUuid(),
       kind: "thinking",
       title: "思考过程",
       text,
@@ -306,7 +307,7 @@ function appendTurnDuration(
   return [
     ...items,
     {
-      id: `${operationId || crypto.randomUUID()}:turn-duration`,
+      id: `${operationId || randomUuid()}:turn-duration`,
       kind: "turn_duration",
       status: "complete",
       startedAt,
@@ -379,7 +380,7 @@ export function applyGatewayEvent(
         items: [
           ...completeRunning(state.items, now),
           {
-            id: event.tool_use_id ?? crypto.randomUUID(),
+            id: event.tool_use_id ?? randomUuid(),
             kind: "tool",
             title: event.tool_name ?? "Tool",
             detail: event.tool_input ?? {},
@@ -407,7 +408,7 @@ export function applyGatewayEvent(
         : [
             ...state.items,
             {
-              id: toolUseId || crypto.randomUUID(),
+              id: toolUseId || randomUuid(),
               kind: "tool" as const,
               title: event.tool_name ?? "Tool",
               detail: result,
@@ -436,7 +437,7 @@ export function applyGatewayEvent(
         items: [
           ...state.items,
           {
-            id: event.tool_use_id ?? crypto.randomUUID(),
+            id: event.tool_use_id ?? randomUuid(),
             kind: "permission",
             title: `允许 ${event.tool_name ?? "工具"}？`,
             text: event.reason,
@@ -466,7 +467,7 @@ export function applyGatewayEvent(
         items: [
           ...state.items,
           {
-            id: event.tool_use_id ?? crypto.randomUUID(),
+            id: event.tool_use_id ?? randomUuid(),
             kind: "choice",
             title: event.question ?? "请选择",
             tool_use_id: event.tool_use_id,
@@ -497,7 +498,7 @@ export function applyGatewayEvent(
         items: appendTurnDuration([
           ...completeRunning(state.items, now),
           {
-            id: crypto.randomUUID(),
+            id: randomUuid(),
             kind: "plan",
             title: "实施计划",
             detail: event.plan ?? {},
@@ -511,7 +512,7 @@ export function applyGatewayEvent(
         items: [
           ...state.items,
           {
-            id: crypto.randomUUID(),
+            id: randomUuid(),
             kind: "file_change",
             title: event.path,
             path: event.path,
@@ -632,7 +633,7 @@ export function applyGatewayEvent(
             ? state.items
           : [
               ...state.items,
-              { id: crypto.randomUUID(), kind: "error", text: event.message ?? "Gateway error" },
+              { id: randomUuid(), kind: "error", text: event.message ?? "Gateway error" },
             ],
       };
     }
