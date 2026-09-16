@@ -31,19 +31,19 @@ from crabcode_core.prompts.templates import CLAUDE_MODEL_IDS
         ("glm-5.3-flash", 1_000_000),
         ("qwen3.8-flash", 1_000_000),
         ("MiniMax-M3", 1_000_000),
-        ("skywork-ai/skyclaw-v1", 1_000_000),
-        ("skywork-ai/skyclaw-v1-lite", 1_000_000),
+        ("skyclaw-v1", 1_000_000),
+        ("skyclaw-v1-lite", 1_000_000),
         ("muse-spark-1.3", 1_000_000),
         ("muse-spark-1.3-contributor", 1_000_000),
-        ("meta-llama/Llama-4-Scout-17B-16E-Instruct", 10_000_000),
-        ("meta-llama/Llama-4-Maverick-17B-128E-Instruct", 1_000_000),
+        ("Llama-4-Scout-17B-16E-Instruct", 10_000_000),
+        ("Llama-4-Maverick-17B-128E-Instruct", 1_000_000),
         ("mistral-medium-3-5", 256_000),
         ("mistral-small-2603", 256_000),
         ("mistral-large-2512", 256_000),
         ("open-mixtral-8x22b", 64_000),
         ("open-mixtral-8x7b", 32_000),
-        ("mistralai/Mixtral-8x22B-Instruct-v0.1", 64_000),
-        ("mistralai/Mixtral-8x7B-Instruct-v0.1", 32_000),
+        ("Mixtral-8x22B-Instruct-v0.1", 64_000),
+        ("Mixtral-8x7B-Instruct-v0.1", 32_000),
         ("gemini-3.8-flash", 1_048_576),
         ("gemini-3.8-live", 131_072),
         ("gemini-3.8-live-extended-thinking", 131_072),
@@ -70,7 +70,7 @@ def test_longest_model_name_wins_for_version_suffix() -> None:
     assert lookup_context_window("gpt-5.6-cyber-2026-09-01") == 400_000
     assert lookup_context_window("grok-4.20-0309-reasoning") == 1_000_000
     assert lookup_context_window("grok-4.6-2026-08-12") == 500_000
-    assert lookup_context_window("skywork-ai/skyclaw-v1-lite-2026-05-19") == 1_000_000
+    assert lookup_context_window("skyclaw-v1-lite-2026-05-19") == 1_000_000
 
 
 @pytest.mark.parametrize("model", [None, "", "unknown-model", "gpt-4oextra"])
