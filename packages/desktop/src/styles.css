@@ -14889,3 +14889,190 @@ html[data-theme="light"] .project-file-code .token.class-name {
     transition: none !important;
   }
 }
+
+/* Persistent application status, including the first-run installer. */
+.app-shell > .boot,
+.app-shell > .settings-shell {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
+.desktop-status-bar {
+  flex: 0 0 28px;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 8px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.desktop-status-bar svg {
+  width: 13px;
+  height: 13px;
+}
+
+.desktop-status-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.desktop-status-bar button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.desktop-status-bar .status-connection {
+  flex: 0 1 auto;
+  max-width: 160px;
+  border-right: 1px solid var(--border-soft);
+  border-radius: 0;
+  padding-right: 10px;
+}
+
+.status-connection span,
+.status-message,
+.status-project {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-status-bar .status-current {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.status-message {
+  text-align: left;
+}
+
+.status-current > svg:first-child,
+.status-current .status-message {
+  color: var(--muted);
+}
+
+.desktop-status-bar.busy .status-current > svg:first-child {
+  color: var(--accent);
+}
+
+.desktop-status-bar.online .status-current > svg:first-child {
+  color: var(--green);
+}
+
+.desktop-status-bar.error .status-current > svg:first-child,
+.desktop-status-bar.error .status-message {
+  color: var(--red);
+}
+
+.status-elapsed,
+.status-project {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.status-elapsed {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.status-expand.expanded {
+  transform: rotate(180deg);
+}
+
+.status-spacer {
+  flex: 1;
+}
+
+.status-project {
+  flex: 0 1 auto;
+  max-width: 200px;
+  padding: 0 7px;
+}
+
+.desktop-status-bar .status-retry {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.startup-details {
+  position: absolute;
+  bottom: calc(100% + 1px);
+  left: 8px;
+  width: min(760px, calc(100vw - 16px));
+  max-height: min(360px, 55vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.startup-details > header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.startup-details > header strong {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.startup-details > header > span {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.startup-log {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 12px;
+  font: 11px/1.7 var(--code-font-family);
+  user-select: text;
+}
+
+.startup-log-line {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.startup-log-line time {
+  flex: 0 0 auto;
+  color: var(--subtle);
+}
+
+.startup-log-line > span {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .status-project {
+    display: none;
+  }
+}

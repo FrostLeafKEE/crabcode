@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import platform
+import sys
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
+from crabcode_gateway import __version__
 from crabcode_gateway.schemas import (
+    GatewayRuntimeInfo,
     WorkspaceDirectoryEntry,
     WorkspaceDirectoryCreateRequest,
     WorkspaceDirectoryListing,
@@ -166,6 +170,18 @@ def build_workspace_info(startup_cwd: str, configured_roots: list[str]) -> Works
         roots.append(resolved)
     return WorkspaceInfo(
         startup_cwd=str(cwd),
+        runtime=GatewayRuntimeInfo(
+            gateway_version=__version__,
+            gateway_path=str(Path(__file__).resolve().parents[1]),
+            python_version=platform.python_version(),
+            python_executable=sys.executable,
+            python_prefix=sys.prefix,
+            environment_kind=(
+                "conda" if (Path(sys.prefix) / "conda-meta").is_dir()
+                else "venv" if sys.prefix != sys.base_prefix else "system"
+            ),
+            platform=f"{platform.system()} {platform.machine()}",
+        ),
         home=str(home),
         browse_roots=[str(root) for root in roots],
         documents_dir=str(_recommended_documents_dir(home)),

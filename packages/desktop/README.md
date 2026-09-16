@@ -21,6 +21,18 @@ state in `localStorage`, and keeps passwords only in the current tab's
 `sessionStorage`. It connects to an already-running Gateway. Tauri mode adds
 system credential storage and automatic local Gateway installation/startup.
 
+The bottom status bar stays visible during startup and in Settings. It shows
+environment checks, live pip output, Gateway startup, connection progress, and
+elapsed time. Click the status message to inspect the latest 100 log entries;
+failed connections keep their error details and offer a retry action. Local
+installation and authentication run on background workers so the desktop
+window remains responsive while they are in progress.
+The log also records the Gateway address and startup mode, plus the running
+Gateway's version, package path, Python version and executable, environment
+directory/type, platform, and startup directory. Runtime details are returned
+by the authenticated workspace endpoint, so remote connections describe the
+server's environment. Older Gateways can still connect without this metadata.
+
 For a remote Gateway, prefer HTTPS/WSS. An HTTP remote connection requires
 explicit acknowledgement in the connection dialog. A browser UI hosted away
 from localhost must also be allowed by the Gateway's `--cors` setting.

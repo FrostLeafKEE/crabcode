@@ -101,6 +101,8 @@ import {
   type FavoriteFolderDeleteMode,
 } from "./favorites";
 import { GatewayApi, SessionChannel } from "./gateway";
+import { gatewayEnvironmentLog, gatewayLogAddress, updateGatewayStartup, type GatewayStartupState } from "./gatewayStartup";
+import { StatusBar } from "./StatusBar";
 import { SettingsView, type SettingsSectionId } from "./SettingsView";
 import {
   activateProjectFileTab,
@@ -679,6 +681,7 @@ function readImage(file: File): Promise<PendingImage> {
 function App() {
   const [settings, setSettings] = useState<DesktopSettings | null>(null);
   const [gateways, setGateways] = useState<GatewayMap>({});
+  const [gatewayStartups, setGatewayStartups] = useState<Record<string, GatewayStartupState>>({});
   const [sessions, setSessions] = useState<SessionMap>({});
   const [activeSessions, setActiveSessions] = useState<Record<string, string | null>>({});
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -735,6 +738,7 @@ function App() {
   const apiRef = useRef(new Map<string, GatewayApi>());
   const channelRef = useRef(new Map<string, SessionChannel>());
   const connectedRef = useRef(new Set<string>());
+  const connectionAttemptRef = useRef(new Map<string, symbol>());
   const deletingSessionIdsRef = useRef(new Set<string>());
   const sessionRefreshVersionRef = useRef(new Map<string, number>());
   const autoOpeningDocumentRef = useRef<string | null>(null);
@@ -1571,23 +1575,52 @@ function App() {
   }, [activeConnection, activeProject, activeSession, openSession, refreshProjectSessions]);
 
   const connectGateway = useCallback(async (connection: ConnectionPreset, pythonPath: string | null) => {
+    const attempt = Symbol();
+    connectionAttemptRef.current.set(connection.id, attempt);
+    const isCurrentAttempt = () => connectionAttemptRef.current.get(connection.id) === attempt;
+    const progress = (stage: string, detail: string) => {
+      if (!isCurrentAttempt()) return;
+      setGatewayStartups((current) => ({
+        ...current,
+        [connection.id]: updateGatewayStartup(current[connection.id], stage, detail),
+      }));
+    };
+    setGatewayStartups((current) => ({
+      ...current,
+      [connection.id]: updateGatewayStartup(undefined, "connecting", "正在连接 Gateway…"),
+    }));
     setGateways((current) => ({
       ...current,
       [connection.id]: { ...(current[connection.id] ?? EMPTY_GATEWAY), status: "connecting", error: null },
     }));
     try {
+      progress("connection_info", `Gateway 服务地址：${gatewayLogAddress(connection.base_url)}`);
+      progress("connection_info", isLoopbackUrl(connection.base_url)
+        ? "连接方式：本地 Gateway"
+        : "连接方式：远程 Gateway（以下运行环境由远程服务报告）");
       if (isLoopbackUrl(connection.base_url)) {
-        await ensureLocalGateway(
+        const local = await ensureLocalGateway(
           connection.id,
           connection.base_url,
           pythonPath,
           connection.credential_ref,
+          (event) => progress(event.stage, event.detail),
         );
+        if (!isCurrentAttempt()) return;
+        progress("connection_info", local.started_by_desktop
+          ? "本地 Gateway 由 Crab Desktop 启动并管理"
+          : local.ready ? "连接已运行的 Gateway 服务" : "浏览器模式：本地 Gateway 需要由外部启动");
+        if (local.version) progress("connection_info", `Gateway 健康检查报告版本：${local.version}`);
       }
+      progress("authenticating", "正在验证 Gateway 连接");
       const api = new GatewayApi(connection);
       apiRef.current.set(connection.id, api);
       await api.authenticate();
+      if (!isCurrentAttempt()) return;
+      progress("loading_workspace", "正在加载工作区和模型");
       const [workspace, models] = await Promise.all([api.workspaceInfo(), api.models()]);
+      if (!isCurrentAttempt()) return;
+      for (const detail of gatewayEnvironmentLog(workspace)) progress("environment", detail);
       if (connection.last_model_profile && !resolveRememberedModel(connection, models)) {
         updateConnection(connection.id, (current) => (
           current.last_model_profile === connection.last_model_profile
@@ -1607,9 +1640,12 @@ function App() {
           last_session_id: null,
             favorite_session_ids: [],
           }];
+      progress("loading_sessions", "正在加载会话列表");
       const sessionEntries = await Promise.all(
         projects.map(async (project) => [project.path, await api.sessions(project.path)] as const),
       );
+      if (!isCurrentAttempt()) return;
+      progress("online", "Gateway 已连接，工作区就绪");
       setGateways((current) => ({
         ...current,
         [connection.id]: {
@@ -1633,10 +1669,12 @@ function App() {
         }));
       }
     } catch (error) {
+      if (!isCurrentAttempt()) return;
       const detail = error instanceof Error ? error.message : String(error);
       const message = isLoopbackUrl(connection.base_url) && !isDesktopShell()
         ? `浏览器版不会自动启动本地 Gateway。请先运行 crabcode gateway。${detail}`
         : detail;
+      progress("error", message);
       setGateways((current) => ({
         ...current,
         [connection.id]: {
@@ -2876,7 +2914,14 @@ function App() {
   };
 
   if (!settings) {
-    return <div className="boot"><LoaderCircle className="spin" />正在加载 Crab Desktop</div>;
+    return (
+      <div className="app-shell">
+        <div className="boot">
+          {globalError ? <><AlertTriangle />无法加载桌面配置</> : <><LoaderCircle className="spin" />正在加载 Crab Desktop</>}
+        </div>
+        <StatusBar loading={!globalError} error={globalError} onRetry={globalError ? () => window.location.reload() : undefined} />
+      </div>
+    );
   }
 
   const activeTheme = resolveActiveTheme(settings);
@@ -3144,6 +3189,7 @@ function App() {
                 <button
                   className="icon-button small"
                   title="重新连接"
+                  disabled={activeGateway?.status === "connecting"}
                   onClick={() => {
                     if (!activeConnection) return;
                     connectedRef.current.add(activeConnection.id);
@@ -3844,6 +3890,17 @@ function App() {
       </div>
       </>
       )}
+
+      <StatusBar
+        key={activeConnection?.id ?? "no-connection"}
+        connection={activeConnection}
+        gateway={activeGateway}
+        startup={activeConnection ? gatewayStartups[activeConnection.id] : undefined}
+        project={activeProject}
+        activity={documentEngineBusy ? documentEngineProgress?.detail ?? (documentEngineBusy === "install" ? "正在安装高精度 PDF 引擎…" : "正在移除高精度 PDF 引擎…") : null}
+        onConnections={() => setConnectionModal(activeConnection?.id ?? "new")}
+        onRetry={activeConnection ? () => void connectGateway(activeConnection, settings.python_path) : undefined}
+      />
 
       {connectionModal && (
         <ConnectionModal

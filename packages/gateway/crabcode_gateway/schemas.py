@@ -600,8 +600,19 @@ class SessionInfo(BaseModel):
     forked_from_title: str | None = None
 
 
+class GatewayRuntimeInfo(BaseModel):
+    gateway_version: str
+    gateway_path: str
+    python_version: str
+    python_executable: str
+    python_prefix: str
+    environment_kind: Literal["venv", "conda", "system"]
+    platform: str
+
+
 class WorkspaceInfo(BaseModel):
     startup_cwd: str
+    runtime: GatewayRuntimeInfo | None = None
     home: str
     browse_roots: list[str] = Field(default_factory=list)
     documents_dir: str = ""

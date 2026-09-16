@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { legacyFavoriteEntries, normalizeFavoriteEntries } from "./favorites";
 import { projectPathKey } from "./pathUtils";
+import type { GatewayStartupProgress } from "./gatewayStartup";
 import {
   DEFAULT_DARK_THEME,
   DEFAULT_LIGHT_THEME,
@@ -412,6 +413,7 @@ export async function ensureLocalGateway(
   baseUrl: string,
   pythonPath: string | null,
   credentialRef: string | null,
+  onProgress?: (progress: GatewayStartupProgress) => void,
 ): Promise<EnsureGatewayResult> {
   if (!isDesktopShell()) {
     return {
@@ -422,12 +424,25 @@ export async function ensureLocalGateway(
       message: "浏览器版不会自动启动 Gateway",
     };
   }
-  return invoke<EnsureGatewayResult>("ensure_local_gateway", {
-    connectionId,
-    baseUrl,
-    pythonPath,
-    credentialRef,
-  });
+  const operationId = crypto.randomUUID();
+  const unlisten = onProgress
+    ? await listen<GatewayStartupProgress>("gateway-startup-progress", (event) => {
+        if (event.payload.connectionId === connectionId && event.payload.operationId === operationId) {
+          onProgress(event.payload);
+        }
+      })
+    : null;
+  try {
+    return await invoke<EnsureGatewayResult>("ensure_local_gateway", {
+      connectionId,
+      baseUrl,
+      pythonPath,
+      credentialRef,
+      operationId,
+    });
+  } finally {
+    unlisten?.();
+  }
 }
 
 export async function shutdownGateway(connectionId: string): Promise<boolean> {

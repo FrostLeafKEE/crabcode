@@ -2,16 +2,16 @@ use crate::settings::read_credential;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, BufRead, BufReader, Read};
 use std::net::{IpAddr, ToSocketAddrs};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use url::Url;
 
 const MIN_PYTHON_MAJOR: u32 = 3;
@@ -57,11 +57,14 @@ fn stop_child_tree(child: &mut Child) -> io::Result<()> {
 }
 
 #[derive(Default)]
-pub struct GatewayProcesses(Mutex<HashMap<String, Child>>);
+pub struct GatewayProcesses {
+    children: Mutex<HashMap<String, Child>>,
+    startup: Mutex<()>,
+}
 
 impl GatewayProcesses {
     pub fn stop_all(&self) {
-        if let Ok(mut processes) = self.0.lock() {
+        if let Ok(mut processes) = self.children.lock() {
             for (_, mut child) in processes.drain() {
                 let _ = stop_child_tree(&mut child);
             }
@@ -127,7 +130,18 @@ fn endpoint(base: &Url, path: &str) -> Result<Url, String> {
 }
 
 #[tauri::command]
-pub fn authenticate_connection(
+pub async fn authenticate_connection(
+    base_url: String,
+    credential_ref: Option<String>,
+) -> Result<AuthResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        authenticate_connection_blocking(base_url, credential_ref)
+    })
+    .await
+    .map_err(|error| format!("Gateway authentication task failed: {error}"))?
+}
+
+fn authenticate_connection_blocking(
     base_url: String,
     credential_ref: Option<String>,
 ) -> Result<AuthResult, String> {
@@ -453,8 +467,12 @@ fn run_document_engine_install_command(
 }
 
 #[tauri::command]
-pub fn document_engine_status(python_path: Option<String>) -> Result<Value, String> {
-    run_document_engine_command(python_path.as_deref(), &["status", "--json"])
+pub async fn document_engine_status(python_path: Option<String>) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_document_engine_command(python_path.as_deref(), &["status", "--json"])
+    })
+    .await
+    .map_err(|error| format!("Document engine status task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -472,8 +490,12 @@ pub async fn install_document_engine(
 }
 
 #[tauri::command]
-pub fn remove_document_engine(python_path: Option<String>) -> Result<Value, String> {
-    run_document_engine_command(python_path.as_deref(), &["remove", "--yes", "--json"])
+pub async fn remove_document_engine(python_path: Option<String>) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_document_engine_command(python_path.as_deref(), &["remove", "--yes", "--json"])
+    })
+    .await
+    .map_err(|error| format!("Document engine removal task failed: {error}"))?
 }
 
 fn installed_gateway_version(python: &str) -> Option<String> {
@@ -488,30 +510,168 @@ fn installed_gateway_version(python: &str) -> Option<String> {
     (!version.is_empty()).then_some(version)
 }
 
-fn install_gateway(python: &str) -> Result<(), String> {
+#[derive(Deserialize)]
+struct PythonEnvironment {
+    version: String,
+    executable: String,
+    prefix: String,
+    kind: String,
+}
+
+fn python_environment(python: &str) -> Option<PythonEnvironment> {
+    let script = r#"
+import json, platform, sys
+from pathlib import Path
+kind = "Conda 环境" if (Path(sys.prefix) / "conda-meta").is_dir() else "虚拟环境" if sys.prefix != sys.base_prefix else "基础环境"
+print(json.dumps({"version": platform.python_version(), "executable": sys.executable, "prefix": sys.prefix, "kind": kind}))
+"#;
+    let mut command = Command::new(python);
+    configure_python_utf8(&mut command);
+    let output = command.args(["-c", script]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&output.stdout).ok()
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewayStartupProgress {
+    connection_id: String,
+    operation_id: String,
+    stage: String,
+    detail: String,
+}
+
+// Drain both pipes concurrently so a verbose installer cannot deadlock. Keep only
+// a bounded tail for failures; each line is delivered to the UI as it arrives.
+fn run_gateway_installer(
+    command: &mut Command,
+    on_output: &(impl Fn(&str) + Sync),
+) -> Result<(ExitStatus, String), String> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Unable to start pip: {error}"))?;
+    let stdout = child.stdout.take().ok_or("Unable to read pip output")?;
+    let stderr = child.stderr.take().ok_or("Unable to read pip errors")?;
+    let read_output = |stream: &mut dyn Read| -> Result<String, String> {
+        let mut tail = VecDeque::new();
+        let mut reader = BufReader::new(stream);
+        let mut bytes = Vec::new();
+        loop {
+            bytes.clear();
+            if reader
+                .read_until(b'\n', &mut bytes)
+                .map_err(|error| error.to_string())?
+                == 0
+            {
+                break;
+            }
+            let line: String = String::from_utf8_lossy(&bytes)
+                .trim()
+                .chars()
+                .take(4096)
+                .collect();
+            if line.is_empty() {
+                continue;
+            }
+            on_output(&line);
+            tail.push_back(line);
+            if tail.len() > 40 {
+                tail.pop_front();
+            }
+        }
+        Ok(tail.into_iter().collect::<Vec<_>>().join("\n"))
+    };
+    thread::scope(|scope| {
+        let stdout_reader = scope.spawn(|| read_output(&mut { stdout }));
+        let stderr_reader = scope.spawn(|| read_output(&mut { stderr }));
+        let status = child
+            .wait()
+            .map_err(|error| format!("Unable to wait for pip: {error}"))?;
+        let stdout = stdout_reader
+            .join()
+            .map_err(|_| "Pip output reader stopped unexpectedly")??;
+        let stderr = stderr_reader
+            .join()
+            .map_err(|_| "Pip error reader stopped unexpectedly")??;
+        Ok((status, [stdout, stderr].join("\n").trim().to_string()))
+    })
+}
+
+fn install_gateway(python: &str, on_output: &(impl Fn(&str) + Sync)) -> Result<(), String> {
     let package = format!("crabcode[gateway]=={}", env!("CARGO_PKG_VERSION"));
     let mut command = Command::new(python);
     configure_python_utf8(&mut command);
-    let output = command
-        .args(["-m", "pip", "install", "--upgrade", &package])
-        .output()
-        .map_err(|error| format!("Unable to start pip: {error}"))?;
-    if output.status.success() {
+    command.args([
+        "-u",
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        "--no-input",
+        "--progress-bar",
+        "off",
+        &package,
+    ]);
+    let (status, detail) = run_gateway_installer(&mut command, on_output)?;
+    if status.success() {
         return Ok(());
     }
-    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
     Err(format!(
         "Failed to install {package}. Run `{python} -m pip install --upgrade \"{package}\"` manually. {detail}"
     ))
 }
 
 #[tauri::command]
-pub fn ensure_local_gateway(
+pub async fn ensure_local_gateway(
+    app: AppHandle,
+    connection_id: String,
+    base_url: String,
+    python_path: Option<String>,
+    credential_ref: Option<String>,
+    operation_id: String,
+) -> Result<EnsureGatewayResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let progress = |stage: &str, detail: &str| {
+            let _ = app.emit(
+                "gateway-startup-progress",
+                GatewayStartupProgress {
+                    connection_id: connection_id.clone(),
+                    operation_id: operation_id.clone(),
+                    stage: stage.to_string(),
+                    detail: detail.to_string(),
+                },
+            );
+        };
+        let result = ensure_local_gateway_blocking(
+            app.state::<GatewayProcesses>(),
+            connection_id.clone(),
+            base_url,
+            python_path,
+            credential_ref,
+            &progress,
+        );
+        match &result {
+            Ok(_) => progress("ready", "本地 Gateway 已就绪"),
+            Err(error) => progress("error", error),
+        }
+        result
+    })
+    .await
+    .map_err(|error| format!("Gateway startup task failed: {error}"))?
+}
+
+fn ensure_local_gateway_blocking(
     processes: tauri::State<'_, GatewayProcesses>,
     connection_id: String,
     base_url: String,
     python_path: Option<String>,
     credential_ref: Option<String>,
+    progress: &(impl Fn(&str, &str) + Sync),
 ) -> Result<EnsureGatewayResult, String> {
     let base = parse_base_url(&base_url)?;
     if !is_loopback(&base) {
@@ -520,11 +680,27 @@ pub fn ensure_local_gateway(
                 .to_string(),
         );
     }
+    // Several saved local connections can start together. Serialize provisioning
+    // so they cannot run pip or spawn a process for the same environment twice.
+    let _startup = match processes.startup.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::WouldBlock) => {
+            progress("waiting_setup", "正在等待其他本地环境初始化完成");
+            processes
+                .startup
+                .lock()
+                .map_err(|_| "Gateway startup registry is unavailable")?
+        }
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            return Err("Gateway startup registry is unavailable".to_string());
+        }
+    };
+    progress("checking_gateway", "正在检查本地 Gateway");
     if let Some(health) = probe_health(&base, credential_ref.as_deref())? {
         return Ok(EnsureGatewayResult {
             ready: true,
             started_by_desktop: processes
-                .0
+                .children
                 .lock()
                 .map(|items| items.contains_key(&connection_id))
                 .unwrap_or(false),
@@ -537,10 +713,55 @@ pub fn ensure_local_gateway(
         });
     }
 
+    progress("checking_python", "正在检测 Python 环境");
     let python = detect_python(python_path.as_deref())?;
-    if installed_gateway_version(&python).as_deref() != Some(env!("CARGO_PKG_VERSION")) {
-        install_gateway(&python)?;
+    progress(
+        "environment",
+        &format!("准备启动本地 Gateway，Python 命令：{python}"),
+    );
+    if let Some(environment) = python_environment(&python) {
+        progress(
+            "environment",
+            &format!(
+                "本地启动环境：Python {} · {}",
+                environment.version, environment.kind
+            ),
+        );
+        progress(
+            "environment",
+            &format!("Python 解释器路径：{}", environment.executable),
+        );
+        progress(
+            "environment",
+            &format!("Python 环境目录：{}", environment.prefix),
+        );
+    } else {
+        progress(
+            "environment",
+            "无法读取 Python 环境详情，将继续检查 Gateway 安装",
+        );
     }
+    progress(
+        "checking_package",
+        &format!("正在检查 CrabCode 安装版本 · {python}"),
+    );
+    let installed_version = installed_gateway_version(&python);
+    progress(
+        "environment",
+        &format!(
+            "本地 Gateway 已安装版本：{}；桌面端需要版本：{}",
+            installed_version.as_deref().unwrap_or("未安装或无法导入"),
+            env!("CARGO_PKG_VERSION")
+        ),
+    );
+    if installed_version.as_deref() != Some(env!("CARGO_PKG_VERSION")) {
+        progress(
+            "installing",
+            "正在安装 CrabCode 和依赖，首次启动可能需要几分钟",
+        );
+        install_gateway(&python, &|line| progress("installing", line))?;
+    }
+    progress("starting_gateway", "正在启动本地 Gateway");
     let host = base.host_str().unwrap_or("127.0.0.1");
     let port = base.port_or_known_default().unwrap_or(4096).to_string();
     let mut command = Command::new(&python);
@@ -564,11 +785,12 @@ pub fn ensure_local_gateway(
         .spawn()
         .map_err(|error| format!("Unable to start the local Gateway: {error}"))?;
     processes
-        .0
+        .children
         .lock()
         .map_err(|_| "Gateway process registry is unavailable".to_string())?
         .insert(connection_id.clone(), child);
 
+    progress("waiting_gateway", "正在等待本地 Gateway 就绪");
     for _ in 0..30 {
         thread::sleep(Duration::from_millis(350));
         if let Some(health) = probe_health(&base, credential_ref.as_deref())? {
@@ -584,7 +806,7 @@ pub fn ensure_local_gateway(
             });
         }
         let exited = processes
-            .0
+            .children
             .lock()
             .map_err(|_| "Gateway process registry is unavailable".to_string())?
             .get_mut(&connection_id)
@@ -592,14 +814,14 @@ pub fn ensure_local_gateway(
             .is_some();
         if exited {
             processes
-                .0
+                .children
                 .lock()
                 .map_err(|_| "Gateway process registry is unavailable".to_string())?
                 .remove(&connection_id);
             return Err("The local Gateway process exited before becoming ready".to_string());
         }
     }
-    shutdown_gateway(processes, connection_id)?;
+    shutdown_gateway(processes.clone(), connection_id)?;
     Err("The local Gateway did not become ready within 10 seconds".to_string())
 }
 
@@ -609,7 +831,7 @@ pub fn shutdown_gateway(
     connection_id: String,
 ) -> Result<bool, String> {
     let child = processes
-        .0
+        .children
         .lock()
         .map_err(|_| "Gateway process registry is unavailable".to_string())?
         .remove(&connection_id);
@@ -623,6 +845,64 @@ pub fn shutdown_gateway(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn streams_installer_output_before_exit_and_keeps_failure_details() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("progress-received");
+        let mut command = Command::new("/bin/sh");
+        // The child can only continue after its first line reaches the callback.
+        command
+            .args([
+                "-c",
+                r#"
+            printf 'installing\n'
+            attempt=0
+            while [ ! -f "$1" ]; do
+                attempt=$((attempt + 1))
+                [ "$attempt" -lt 100 ] || exit 99
+                sleep 0.01
+            done
+            printf 'download failed\n' >&2
+            exit 7
+        "#,
+                "installer-test",
+            ])
+            .arg(&marker);
+        let output = Mutex::new(Vec::new());
+        let (status, tail) = run_gateway_installer(&mut command, &|line| {
+            output.lock().unwrap().push(line.to_string());
+            if line == "installing" {
+                std::fs::write(&marker, "received").unwrap();
+            }
+        })
+        .unwrap();
+        assert_eq!(status.code(), Some(7));
+        assert_eq!(*output.lock().unwrap(), ["installing", "download failed"]);
+        assert!(tail.contains("download failed"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounds_installer_history_without_dropping_live_output() {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "i=0; while [ $i -lt 100 ]; do echo line-$i; echo error-$i >&2; i=$((i + 1)); done",
+        ]);
+        let output = Mutex::new(Vec::new());
+        let (status, tail) = run_gateway_installer(&mut command, &|line| {
+            output.lock().unwrap().push(line.to_string());
+        })
+        .unwrap();
+        assert!(status.success());
+        assert_eq!(output.lock().unwrap().len(), 200);
+        assert_eq!(tail.lines().count(), 80);
+        assert!(tail.contains("line-99"));
+        assert!(tail.contains("error-99"));
+        assert!(!tail.contains("line-0\n"));
+    }
 
     #[test]
     fn only_loopback_addresses_are_local() {

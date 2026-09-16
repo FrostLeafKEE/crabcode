@@ -186,7 +186,18 @@ export interface ThemePreset {
   visuals?: ThemeVisuals;
 }
 
+export interface GatewayRuntimeInfo {
+  gateway_version: string;
+  gateway_path: string;
+  python_version: string;
+  python_executable: string;
+  python_prefix: string;
+  environment_kind: "venv" | "conda" | "system";
+  platform: string;
+}
+
 export interface WorkspaceInfo {
+  runtime?: GatewayRuntimeInfo | null;
   startup_cwd: string;
   home: string;
   browse_roots: string[];
