@@ -1504,7 +1504,14 @@ describe("model grouping", () => {
   });
 
   it("matches a group name during model search", () => {
+    expect(groupGatewayModels(models, "test_rourter")).toEqual([
+      { group: "test_rourter", models: [models[1], models[2]] },
+    ]);
+  });
+
+  it("matches model names and descriptions across groups during model search", () => {
     expect(groupGatewayModels(models, "gpt")).toEqual([
+      { group: "default", models: [models[0]] },
       { group: "test_rourter", models: [models[1], models[2]] },
     ]);
   });
