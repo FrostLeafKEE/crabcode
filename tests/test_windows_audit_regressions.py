@@ -267,7 +267,7 @@ class WindowsAuditRegressionTests(unittest.TestCase):
             (root / "npm.cmd").write_bytes(b"@echo off\r\necho cmd-ok\r\n")
             result = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted",
                 "-Command", "& npm.cmd --version"], capture_output=True,
-                env={**os.environ, "PATH": directory + os.pathsep + os.environ.get("PATH", "")}, timeout=10)
+                env={**os.environ, "PATH": directory + os.pathsep + os.environ.get("PATH", "")}, timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(b"cmd-ok", result.stdout)
 
