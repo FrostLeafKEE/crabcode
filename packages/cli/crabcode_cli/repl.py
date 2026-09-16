@@ -151,6 +151,8 @@ def _render_context_usage(event: TurnCompleteEvent) -> None:
         )
     elif used:
         parts.append(f"Context: {_format_token_count(used)} tokens used (window unknown)")
+    if (used or window) and getattr(event, "context_token_source", "estimated") == "estimated":
+        parts.append("Local estimate: server-side count not yet available")
     if cache_text:
         parts.append(cache_text)
     console.print(f"  [dim]{' · '.join(parts)}[/]")
@@ -3067,6 +3069,7 @@ async def _handle_command(
             or DEFAULT_CONTEXT_WINDOW
         )
         ctx_pct = int(ctx_used / ctx_window * 100) if ctx_window else 0
+        ctx_note = " (Local estimate: server-side count not yet available)" if getattr(session, "last_context_token_source", "estimated") == "estimated" else ""
 
         def _fmt_k(n: int) -> str:
             return f"{n // 1000}k" if n >= 1000 else str(n)
@@ -3128,7 +3131,7 @@ async def _handle_command(
         lines = [
             f"[bold cyan]🦀 CrabCode[/] v{__import__('crabcode_cli').__version__}",
             f"[bold]🧠 Model:[/] {model_display} · [bold]Mode:[/] {mode_display}",
-            f"[bold]📚 Context:[/] {_fmt_k(ctx_used)} / {_fmt_k(ctx_window)} ({ctx_pct}%) · [bold]💬 Messages:[/] {msg_count}",
+            f"[bold]📚 Context:[/] {_fmt_k(ctx_used)} / {_fmt_k(ctx_window)} ({ctx_pct}%){ctx_note} · [bold]💬 Messages:[/] {msg_count}",
             f"[bold]🧹 Compactions:[/] {compact_count} · [bold]Auto-compact:[/] {auto_compact}",
             f"[bold]🧵 Session:[/] {sid_short}",
             f"[bold]⚙️  Config:[/] effort={effort} · ultra={ultra} · "

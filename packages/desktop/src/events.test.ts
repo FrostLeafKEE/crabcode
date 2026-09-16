@@ -385,6 +385,22 @@ describe("Gateway event reducer", () => {
     });
   });
 
+  it("updates the local-estimate hint when server usage becomes available", () => {
+    const initial: SessionViewState = {
+      ...state(),
+      status: { session_id: "session-1", cwd: "/work", model: "example", provider: "codex",
+        mode: "agent", permission_mode: "default", context_used_tokens: 8000,
+        context_window_tokens: 32000, context_used_percent: 25, context_token_source: "estimated" },
+    };
+    const updated = applyGatewayEvent(initial, { type: "turn_complete", context_used_tokens: 2000,
+      context_used_percent: 6.25, context_token_source: "calibrated" });
+    expect(updated.status?.context_used_tokens).toBe(2000);
+    expect(updated.status?.context_token_source).toBe("calibrated");
+    const missing = applyGatewayEvent(updated, { type: "turn_complete", context_used_tokens: 2500,
+      context_token_source: "estimated" });
+    expect(missing.status?.context_token_source).toBe("estimated");
+  });
+
   it("restores completed turn durations from message timestamps", () => {
     const current = applyGatewayEvent(state(), {
       type: "session_history",

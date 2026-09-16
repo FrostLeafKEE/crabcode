@@ -15,6 +15,7 @@ from xml.sax.saxutils import escape
 from pydantic import BaseModel
 
 from crabcode_core.agent_manager import AgentCompletion, AgentManager, AgentSnapshot
+from crabcode_core.compact.context_tokens import ContextTokenTracker
 from crabcode_core.goal import Goal, GoalStatus
 from crabcode_core.logging_utils import configure_logging, get_logger
 from crabcode_core.lsp.manager import LSPManager
@@ -116,6 +117,8 @@ class CoreSession:
         self.skills: list = []
         self.on_tool_event: ToolEventCallback | None = None
 
+        self._context_token_tracker = ContextTokenTracker()
+        self.last_context_token_source: str = "estimated"
         self.last_context_used_tokens: int = 0
         self.last_context_window_tokens: int = 0
         # Set by checkpoint() so API/tool callers can distinguish a
@@ -3015,6 +3018,7 @@ class CoreSession:
             agent_mode=self._agent_mode,
             api_config=active_api_cfg,
             context_window=resolved_context_window,
+            context_token_tracker=self._context_token_tracker,
             ai_reviewer=self._ai_reviewer,
             tool_call_timeout=self.settings.tool_call_timeout,
             auto_compact_enabled=self.settings.auto_compact_enabled,
@@ -3115,6 +3119,7 @@ class CoreSession:
                     if event.context_used_tokens or event.context_window_tokens:
                         self.last_context_used_tokens = event.context_used_tokens
                         self.last_context_window_tokens = event.context_window_tokens
+                        self.last_context_token_source = event.context_token_source
 
                     if self._session_storage:
                         input_tokens = event.usage.get(
@@ -3128,6 +3133,8 @@ class CoreSession:
                         self._session_storage.record_context_usage(
                             self.last_context_used_tokens,
                             self.last_context_window_tokens,
+                            source=self.last_context_token_source,
+                            baseline=self._context_token_tracker.dump(),
                         )
                         self._maybe_generate_title()
                     self._partial_committed_prefixes = []
@@ -3387,6 +3394,8 @@ class CoreSession:
         self.messages.clear()
         self.compact_count = 0
         self.last_context_used_tokens = 0
+        self.last_context_token_source = "estimated"
+        self._context_token_tracker.reset()
         self.last_context_window_tokens = 0
         self._persisted_compact_summaries.clear()
         self._partial_committed_prefixes.clear()
@@ -3498,6 +3507,9 @@ class CoreSession:
             return False
 
         self.messages = result
+        self._context_token_tracker.reset()
+        self.last_context_used_tokens = estimate_token_count(result)
+        self.last_context_token_source = "estimated"
         self._persist_compaction(
             result,
             trigger=trigger,
@@ -3548,6 +3560,8 @@ class CoreSession:
             self.messages.clear()
             self.compact_count = 0
             self.last_context_used_tokens = 0
+            self.last_context_token_source = "estimated"
+            self._context_token_tracker.reset()
             self.last_context_window_tokens = 0
             self._persisted_compact_summaries.clear()
             self._partial_committed_prefixes.clear()
@@ -3622,6 +3636,10 @@ class CoreSession:
             self.messages[:] = restored
         else:
             self.messages[:] = self.messages[: idx + 1]
+        self._context_token_tracker.reset()
+        self.last_context_used_tokens = 0
+        self.last_context_token_source = "estimated"
+        self._session_storage.record_context_usage(0, self.last_context_window_tokens)
         if self._session_storage:
             self._session_storage.record_message_count(len(self.messages))
         return True
@@ -3692,6 +3710,10 @@ class CoreSession:
         projection[:] = restored_projection
         if projection is not self.messages:
             self.messages[:] = restored_projection
+        self._context_token_tracker.reset()
+        self.last_context_used_tokens = 0
+        self.last_context_token_source = "estimated"
+        self._session_storage.record_context_usage(0, self.last_context_window_tokens)
         self._session_storage.record_message_count(len(projection))
         result["messages_rolled_back"] = old_count - len(projection)
 
@@ -3750,6 +3772,10 @@ class CoreSession:
             return False
         self._api_adapter = adapter
         self._current_model_name = name
+        self._context_token_tracker.reset()
+        self.last_context_used_tokens = 0
+        self.last_context_window_tokens = 0
+        self.last_context_token_source = "estimated"
         if self._agent_manager:
             self._agent_manager.set_current_model(name)
 
@@ -3773,6 +3799,9 @@ class CoreSession:
         # active runtime.  A pre-initialization switch is persisted when lazy
         # storage is created using the current model above.
         if self._session_storage is not None:
+            record_context = getattr(self._session_storage, "record_context_usage", None)
+            if callable(record_context):
+                record_context(0, 0)
             update_model = getattr(self._session_storage, "update_model", None)
             if callable(update_model):
                 update_model(
@@ -4249,6 +4278,8 @@ class CoreSession:
         self.compact_count = storage.compact_count
         self.last_context_used_tokens = storage.last_context_used_tokens
         self.last_context_window_tokens = storage.last_context_window_tokens
+        self.last_context_token_source = storage.last_context_token_source
+        self._context_token_tracker.restore(storage.last_context_token_baseline)
         self._persisted_compact_summaries.clear()
         self._partial_committed_prefixes.clear()
         self._current_plan = None

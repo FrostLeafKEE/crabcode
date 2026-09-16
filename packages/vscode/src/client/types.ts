@@ -63,6 +63,7 @@ export interface SessionRuntimeStatus {
   context_used_tokens?: number;
   context_window_tokens?: number;
   context_remaining_tokens?: number;
+  context_token_source?: "server" | "calibrated" | "estimated";
   context_used_percent?: number;
   compact_count?: number;
   auto_compact_enabled?: boolean;
@@ -877,6 +878,7 @@ export interface TurnCompletePayload {
   context_used_tokens?: number;
   context_window_tokens?: number;
   context_remaining_tokens?: number;
+  context_token_source?: "server" | "calibrated" | "estimated";
   context_used_percent?: number;
   assistant_message_uuid?: string | null;
 }

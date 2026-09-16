@@ -5140,6 +5140,7 @@ export function SessionDetailModal({
   onClose: () => void;
 }) {
   const contextUsed = status?.context_used_tokens ?? info.tokens_used;
+  const contextEstimated = !status?.context_token_source || status.context_token_source === "estimated";
   const contextWindow = status?.context_window_tokens ?? 0;
   const contextRemaining = status?.context_remaining_tokens
     ?? Math.max(0, contextWindow - contextUsed);
@@ -5166,7 +5167,7 @@ export function SessionDetailModal({
 
         <section className="session-context-card" aria-label="当前上下文用量">
           <div className="session-context-heading">
-            <span>当前上下文</span>
+            <span title={contextEstimated ? "暂未获得服务端计数，当前为本地估算" : undefined}>当前上下文{contextEstimated ? "（估算）" : ""}</span>
             <strong>{contextUsed.toLocaleString("zh-CN")} tokens{contextPercent === null ? "" : ` · ${contextPercent.toFixed(1)}%`}</strong>
           </div>
           {contextPercent !== null && (
@@ -5479,7 +5480,7 @@ function PermissionPicker({
   );
 }
 
-function ContextMeter({
+export function ContextMeter({
   status,
   usage,
 }: {
@@ -5495,6 +5496,7 @@ function ContextMeter({
   const remaining = status.context_remaining_tokens ?? Math.max(0, status.context_window_tokens - status.context_used_tokens);
   const contextClass = percent >= 90 ? "danger" : percent >= 75 ? "warn" : "";
   const cache = cacheUsage(usage);
+  const estimated = !status.context_token_source || status.context_token_source === "estimated";
   const searchDetail = status.search_index
     ? [
         status.search_index.state,
@@ -5510,18 +5512,18 @@ function ContextMeter({
       <button
         type="button"
         className={`context-meter ${contextClass}`}
-        title="查看背景窗口"
+        title={estimated ? "背景窗口（估算）：暂未获得服务端计数，当前为本地估算" : "查看背景窗口"}
         aria-label={`背景窗口已使用 ${Math.round(percent)}%`}
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
         style={{ "--context-progress": `${percent}%` } as React.CSSProperties}
       >
         <span className="context-meter-ring" />
-        <span>{Math.round(percent)}%</span>
+        <span>{Math.round(percent)}%{estimated ? " 估算" : ""}</span>
       </button>
       {open && (
         <div className="context-popover">
-          <div className="context-popover-title"><span>背景窗口</span><strong>{Math.round(percent)}% 已用</strong></div>
+          <div className="context-popover-title"><span title={estimated ? "暂未获得服务端计数，当前为本地估算" : undefined}>背景窗口{estimated ? "（估算）" : ""}</span><strong>{Math.round(percent)}% 已用</strong></div>
           <div className="context-progress"><span style={{ width: `${percent}%` }} /></div>
           <div className="context-stat-row"><span>已用</span><strong>{formatTokenCount(status.context_used_tokens)} / {formatTokenCount(status.context_window_tokens)} tokens</strong></div>
           <div className="context-stat-row"><span>剩余</span><strong>{formatTokenCount(remaining)} tokens</strong></div>

@@ -736,13 +736,11 @@ class CodexAdapter(APIAdapter):
                         error="Responses stream ended without a terminal event",
                     )
 
-    async def stream_message(
-        self,
-        messages: list[Message],
-        system: list[str],
-        tools: list[dict[str, Any]],
-        config: ModelConfig,
-    ) -> AsyncGenerator[StreamChunk, None]:
+    def _request_params(
+        self, messages: list[Message], system: list[str],
+        tools: list[dict[str, Any]], config: ModelConfig,
+    ) -> dict[str, Any]:
+        """Share input serialization between generation and server counting."""
         model = config.model or self.config.model or "codex-mini-latest"
 
         # Responses API uses 'instructions' for system prompt
@@ -800,13 +798,43 @@ class CodexAdapter(APIAdapter):
                 effort = "low"
             params["reasoning"] = {"effort": effort, "summary": "auto"}
 
-        sdk_params = dict(params)
         if extra_body:
-            sdk_params["extra_body"] = extra_body
+            params["extra_body"] = extra_body
+        return params
 
-        raw_params = dict(params)
-        if extra_body:
-            raw_params.update(extra_body)
+    async def count_input_tokens(
+        self, messages: list[Message], system: list[str],
+        tools: list[dict[str, Any]], config: ModelConfig,
+    ) -> int | None:
+        # The OAuth backend is not the public Responses API. Do not forward
+        # its credentials to api.openai.com to obtain a count.
+        if self._using_codex_oauth:
+            return None
+        payload = self._request_params(messages, system, tools, config)
+        payload.update(payload.pop("extra_body", {}))
+        supported = {
+            "model", "input", "instructions", "tools", "tool_choice",
+            "parallel_tool_calls", "previous_response_id", "conversation",
+            "reasoning", "text", "truncation", "personality",
+        }
+        payload = {key: value for key, value in payload.items() if key in supported}
+        headers = {key: value for key, value in self._raw_responses_headers().items()
+                   if key.lower() != "accept"}
+        headers["Accept"] = "application/json"
+        return await self._count_tokens_http(
+            f"{self._base_url.rstrip('/')}/responses/input_tokens", payload, headers,
+        )
+
+    async def stream_message(
+        self,
+        messages: list[Message],
+        system: list[str],
+        tools: list[dict[str, Any]],
+        config: ModelConfig,
+    ) -> AsyncGenerator[StreamChunk, None]:
+        sdk_params = self._request_params(messages, system, tools, config)
+        raw_params = dict(sdk_params)
+        raw_params.update(raw_params.pop("extra_body", {}))
 
         if self._using_codex_oauth:
             # The Codex OAuth endpoint does not support server-side response
@@ -964,7 +992,7 @@ class CodexAdapter(APIAdapter):
         messages: list[Message],
         system: list[str],
     ) -> int:
-        # No token counting API for Responses; use character estimate
+        # Legacy local estimate; count_input_tokens() uses the server when available
         total = sum(len(s) for s in system)
         for msg in messages:
             if isinstance(msg.content, str):

@@ -658,6 +658,7 @@ class SessionRuntimeStatus(BaseModel):
     context_window_tokens: int = 0
     context_remaining_tokens: int = 0
     context_used_percent: float = 0.0
+    context_token_source: Literal["server", "calibrated", "estimated"] = "estimated"
     compact_count: int = 0
     auto_compact_enabled: bool = True
     thinking_enabled: bool = False
@@ -1073,6 +1074,7 @@ class TurnCompletePayload(BaseModel):
     context_window_tokens: int = 0
     context_remaining_tokens: int = 0
     context_used_percent: float = 0.0
+    context_token_source: Literal["server", "calibrated", "estimated"] = "estimated"
     assistant_message_uuid: str | None = None
 
 
@@ -1404,6 +1406,7 @@ def core_event_to_payload(event: Any) -> EventPayload:
             turn_count=event.turn_count,
             usage=event.usage,
             context_used_tokens=event.context_used_tokens,
+            context_token_source=event.context_token_source,
             context_window_tokens=event.context_window_tokens,
             context_remaining_tokens=event.context_remaining_tokens,
             context_used_percent=event.context_used_percent,

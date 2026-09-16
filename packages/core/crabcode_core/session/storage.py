@@ -321,6 +321,8 @@ class SessionStorage:
         self._callback_deliveries_loaded = False
         self._meta_written = False
         self._meta: dict[str, Any] = {}
+        self.last_context_token_source: str = "estimated"
+        self.last_context_token_baseline: dict | None = None
         self.last_context_used_tokens: int = 0
         self.last_context_window_tokens: int = 0
         self.compact_count: int = 0
@@ -947,6 +949,8 @@ class SessionStorage:
         # These counters describe this transcript read. Reset them even when
         # the file is missing or has been truncated so a reused storage object
         # cannot expose values from an earlier load.
+        self.last_context_token_source = "estimated"
+        self.last_context_token_baseline = None
         self.last_context_used_tokens = 0
         self.last_context_window_tokens = 0
         self.compact_count = 0
@@ -1009,6 +1013,9 @@ class SessionStorage:
 
                 # Capture context_usage lines (written at turn_complete) but don't add as message
                 if entry.get("type") == "context_usage":
+                    source = entry.get("source", "estimated")
+                    self.last_context_token_source = source if isinstance(source, str) and source in {"server", "calibrated", "estimated"} else "estimated"
+                    self.last_context_token_baseline = entry.get("baseline")
                     # A truncated or hand-edited transcript must not prevent
                     # later messages from loading.  Keep each counter's last
                     # valid value when its counterpart is malformed.
@@ -1024,6 +1031,9 @@ class SessionStorage:
 
                 if entry.get("type") in {"compact_boundary", "projection_boundary"}:
                     is_compaction = entry.get("type") == "compact_boundary"
+                    self.last_context_token_source = "estimated"
+                    self.last_context_token_baseline = None
+                    self.last_context_used_tokens = 0
                     snapshot = entry.get("messages")
                     if not isinstance(snapshot, list):
                         continue
@@ -1062,6 +1072,8 @@ class SessionStorage:
                     active_seen = set()
                     boundary_seen = True
                     self.last_context_used_tokens = 0
+                    self.last_context_token_source = "estimated"
+                    self.last_context_token_baseline = None
                     self.last_context_window_tokens = 0
                     self.compact_count = 0
                     continue
@@ -1092,6 +1104,9 @@ class SessionStorage:
                     continue
 
                 if entry.get("type") == "rollback":
+                    self.last_context_token_source = "estimated"
+                    self.last_context_token_baseline = None
+                    self.last_context_used_tokens = 0
                     # Rollback markers are durable state transitions, not
                     # messages.  Apply the UUID target when available; this is
                     # stable even if unrelated metadata records were appended
@@ -1334,12 +1349,18 @@ class SessionStorage:
         except Exception:
             logger.warning("Failed to persist token usage for %s", self.session_id, exc_info=True)
 
-    def record_context_usage(self, used_tokens: int, window_tokens: int) -> None:
+    def record_context_usage(
+        self, used_tokens: int, window_tokens: int, *,
+        source: str = "estimated", baseline: dict | None = None,
+    ) -> None:
         """Persist context window usage to JSONL so it survives session restore."""
-        if not used_tokens and not window_tokens:
-            return
-        entry = {"type": "context_usage", "used_tokens": used_tokens, "window_tokens": window_tokens}
+        entry = {
+            "type": "context_usage", "used_tokens": used_tokens,
+            "window_tokens": window_tokens, "source": source, "baseline": baseline,
+        }
         self._append_transcript_line(entry)
+        self.last_context_token_source = source
+        self.last_context_token_baseline = baseline
         self.last_context_used_tokens = used_tokens
         self.last_context_window_tokens = window_tokens
 

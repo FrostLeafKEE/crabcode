@@ -352,13 +352,10 @@ class AnthropicAdapter(APIAdapter):
         self._cached_context_window = DEFAULT_CONTEXT_WINDOW
         return DEFAULT_CONTEXT_WINDOW
 
-    async def stream_message(
-        self,
-        messages: list[Message],
-        system: list[str],
-        tools: list[dict[str, Any]],
-        config: ModelConfig,
-    ) -> AsyncGenerator[StreamChunk, None]:
+    def _request_params(
+        self, messages: list[Message], system: list[str],
+        tools: list[dict[str, Any]], config: ModelConfig,
+    ) -> dict[str, Any]:
         model = config.model or self.config.model
         if not model:
             raise ValueError(
@@ -391,6 +388,34 @@ class AnthropicAdapter(APIAdapter):
 
         if config.temperature is not None:
             params["temperature"] = config.temperature
+
+        return params
+
+    async def count_input_tokens(
+        self, messages: list[Message], system: list[str],
+        tools: list[dict[str, Any]], config: ModelConfig,
+    ) -> int | None:
+        # Bedrock/Vertex use different authentication and service endpoints.
+        if isinstance(self, (BedrockAdapter, VertexAdapter)):
+            return None
+        payload = self._request_params(messages, system, tools, config)
+        payload.pop("max_tokens", None)
+        payload.pop("temperature", None)
+        headers = {key: value for key, value in self._manual_headers().items()
+                   if key.lower() != "accept"}
+        headers["accept"] = "application/json"
+        return await self._count_tokens_http(
+            f"{self._messages_url()}/count_tokens", payload, headers,
+        )
+
+    async def stream_message(
+        self,
+        messages: list[Message],
+        system: list[str],
+        tools: list[dict[str, Any]],
+        config: ModelConfig,
+    ) -> AsyncGenerator[StreamChunk, None]:
+        params = self._request_params(messages, system, tools, config)
 
         transport = self.config.anthropic_stream_transport
         use_httpx_stream = transport == "httpx" or (

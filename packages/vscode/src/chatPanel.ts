@@ -166,6 +166,10 @@ interface ContextUsageStatus {
   details: string[];
 }
 
+function contextEstimateNote(source?: string): string {
+  return !source || source === "estimated" ? " (Local estimate: server-side count not yet available)" : "";
+}
+
 function buildContextUsageStatus(payload: TurnCompletePayload): ContextUsageStatus | null {
   const used = Math.max(0, Math.trunc(payload.context_used_tokens ?? 0));
   const window = Math.max(0, Math.trunc(payload.context_window_tokens ?? 0));
@@ -180,7 +184,7 @@ function buildContextUsageStatus(payload: TurnCompletePayload): ContextUsageStat
       remainingPercent: 0,
       cacheDetail: cacheDetail ?? undefined,
       details: [
-        "背景信息窗口：",
+        `背景信息窗口${contextEstimateNote(payload.context_token_source)}：`,
         `已用 ${formatTokenCount(used)} 标记`,
         cacheDetail ? `总量未知 · ${cacheDetail}` : "总量未知",
       ],
@@ -206,7 +210,7 @@ function buildContextUsageStatus(payload: TurnCompletePayload): ContextUsageStat
     remainingPercent,
     cacheDetail: cacheDetail ?? undefined,
     details: [
-      "背景信息窗口：",
+      `背景信息窗口${contextEstimateNote(payload.context_token_source)}：`,
       `${formatPercent(usedPercent)} 已用（剩余 ${formatPercent(remainingPercent)}）`,
       cacheDetail ? `${tokenDetail} · ${cacheDetail}` : tokenDetail,
     ],
@@ -933,6 +937,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       if (!response.ok) return;
       const data = await response.json() as {
         context_used_tokens?: number;
+        context_token_source?: "server" | "calibrated" | "estimated";
         context_window_tokens?: number;
         context_used_percent?: number;
       };
@@ -955,7 +960,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         usedPercent,
         remainingPercent,
         details: [
-          "背景信息窗口：",
+          `背景信息窗口${contextEstimateNote(data.context_token_source)}：`,
           `已用 ${formatTokenCount(used)} / ${formatTokenCount(window)} 标记`,
           `剩余 ${remainingPercent.toFixed(1)}%`,
         ],
@@ -1019,7 +1024,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         Math.max(0, status.context_used_percent ?? (window ? used / window * 100 : 0)),
       );
       lines.push(
-        `**背景窗口：** ${used.toLocaleString()} / ${window.toLocaleString()} tokens（${usedPercent.toFixed(1)}% 已用，剩余 ${Math.max(0, 100 - usedPercent).toFixed(1)}%）`,
+        `**背景窗口${contextEstimateNote(status.context_token_source)}：** ${used.toLocaleString()} / ${window.toLocaleString()} tokens（${usedPercent.toFixed(1)}% 已用，剩余 ${Math.max(0, 100 - usedPercent).toFixed(1)}%）`,
       );
     } else {
       lines.push("**背景窗口：** 暂无数据");

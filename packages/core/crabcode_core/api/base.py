@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import time
 from typing import Any, AsyncGenerator
+
+import httpx
 
 from crabcode_core.types.message import Message
 
@@ -26,8 +29,11 @@ def usage_int_field(raw: Any, *keys: str) -> tuple[int, bool]:
     if not present:
         return 0, False
     try:
-        return max(0, int(value)), True
-    except (TypeError, ValueError):
+        count = int(value)
+        if isinstance(value, bool) or count < 0 or (isinstance(value, float) and value != count):
+            return 0, False
+        return count, True
+    except (TypeError, ValueError, OverflowError):
         return 0, False
 
 
@@ -133,3 +139,39 @@ class APIAdapter(ABC):
             return looked_up
 
         return DEFAULT_CONTEXT_WINDOW
+
+    async def count_input_tokens(
+        self, messages: list[Message], system: list[str],
+        tools: list[dict[str, Any]], config: ModelConfig,
+    ) -> int | None:
+        """Count the complete input on the server, or return None if unsupported.
+
+        Unlike legacy count_tokens(), this method must never return a local
+        estimate. The query loop bounds its latency and handles failures.
+        """
+        return None
+
+    async def _count_tokens_http(
+        self, url: str, payload: dict[str, Any], headers: dict[str, str],
+    ) -> int | None:
+        """Probe compatible endpoints without retries or repeated failure delays."""
+        if time.monotonic() < getattr(self, "_token_count_retry_at", 0):
+            return None
+        # Keep the cooldown even if the caller's overall deadline cancels HTTP.
+        self._token_count_retry_at = time.monotonic() + 300
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                response = await client.post(url, json=payload, headers=headers)
+            if response.status_code in {404, 405, 501}:
+                self._token_count_retry_at = float("inf")
+                return None
+            response.raise_for_status()
+            tokens, valid = usage_int_field(response.json(), "input_tokens")
+            if valid and tokens > 0:
+                self._token_count_retry_at = 0
+                return tokens
+        except (httpx.HTTPError, ValueError, TypeError):
+            pass
+        # A broken/unsupported counting route must not break normal generation.
+        self._token_count_retry_at = time.monotonic() + 300
+        return None

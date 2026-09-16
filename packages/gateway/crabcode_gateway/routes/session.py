@@ -940,12 +940,14 @@ async def session_status(
         except (AttributeError, RuntimeError):
             monitors = []
 
+        token_source = getattr(session, "last_context_token_source", "estimated")
         used = max(0, int(getattr(session, "last_context_used_tokens", 0) or 0))
         window = max(0, int(getattr(session, "last_context_window_tokens", 0) or 0))
         if not used and messages:
             from crabcode_core.compact.compact import estimate_token_count
 
             used = max(0, int(estimate_token_count(messages)))
+            token_source = "estimated"
         if not window and settings is not None:
             from crabcode_core.api.model_info import (
                 DEFAULT_CONTEXT_WINDOW,
@@ -1000,6 +1002,7 @@ async def session_status(
             ultra_mode=ultra_mode,
             permission_mode=permission_mode,
             context_used_tokens=used,
+            context_token_source=token_source,
             context_window_tokens=window,
             context_remaining_tokens=max(0, window - used),
             context_used_percent=round(used / window * 100, 1) if window else 0.0,

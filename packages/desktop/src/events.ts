@@ -679,6 +679,7 @@ export function applyGatewayEvent(
           ? {
               ...state.status,
               context_used_tokens: event.context_used_tokens,
+              context_token_source: event.context_token_source ?? "estimated",
               context_window_tokens: event.context_window_tokens ?? state.status.context_window_tokens,
               context_remaining_tokens: event.context_remaining_tokens ?? state.status.context_remaining_tokens,
               context_used_percent: event.context_used_percent ?? state.status.context_used_percent,

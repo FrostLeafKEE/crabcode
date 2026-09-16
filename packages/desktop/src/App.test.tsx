@@ -710,6 +710,21 @@ describe("SessionActionsMenu", () => {
     expect(detailDialog.textContent).toContain("8 条");
   });
 
+  it.each(["server", "calibrated", "estimated"] as const)("only labels local estimates (%s)", (source) => {
+    act(() => root.render(
+      <SessionActionsMenu info={info} status={{ ...status, context_token_source: source }}
+        onToggleFavorite={vi.fn()} onDelete={vi.fn()} />,
+    ));
+    act(() => container.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!.click());
+    act(() => document.querySelectorAll<HTMLButtonElement>('.session-action-menu [role="menuitem"]')[2].click());
+    const card = document.querySelector<HTMLElement>('.session-context-card')!;
+    expect(card.textContent).toContain("25,000 tokens");
+    expect(card.textContent?.includes("估算")).toBe(source === "estimated");
+    expect(card.querySelector('[title="暂未获得服务端计数，当前为本地估算"]') !== null)
+      .toBe(source === "estimated");
+    expect(card.textContent).not.toContain("计数来源");
+  });
+
   it("closes with Escape and returns focus to the trigger", () => {
     act(() => root.render(
       <SessionActionsMenu

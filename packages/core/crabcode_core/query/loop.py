@@ -13,7 +13,7 @@ from typing import Any, AsyncGenerator, Callable, Coroutine
 
 import httpx
 
-from crabcode_core.api.base import APIAdapter, ModelConfig
+from crabcode_core.api.base import APIAdapter, ModelConfig, usage_int_field
 from crabcode_core.compact.compact import (
     DEFAULT_COMPACT_BUFFER_TOKENS,
     compact_conversation,
@@ -21,8 +21,8 @@ from crabcode_core.compact.compact import (
     compaction_input_limit,
     conversation_turn_starts,
     estimate_token_count,
-    should_auto_compact,
 )
+from crabcode_core.compact.context_tokens import ContextTokenTracker, RequestSnapshot, TokenMeasurement
 from crabcode_core.logging_utils import get_logger
 from crabcode_core.types.config import ApiConfig
 from crabcode_core.types.event import (
@@ -308,6 +308,7 @@ class QueryParams:
     agent_mode: str = "agent"  # "agent" | "plan"
     api_config: ApiConfig | None = None  # passed from session for ModelConfig
     context_window: int = 0  # resolved context window size
+    context_token_tracker: ContextTokenTracker | None = None
     ai_reviewer: AiPermissionReviewer | None = None
     tool_call_timeout: float | None = None  # seconds; None means no timeout
     auto_compact_enabled: bool = True
@@ -994,6 +995,43 @@ async def query_loop(
         else getattr(adapter_config, "max_retries", 5),
     )
     context_window = params.context_window
+    token_tracker = params.context_token_tracker or ContextTokenTracker()
+    count_available = True
+
+    def _request_config(max_tokens: int) -> ModelConfig:
+        request_thinking = effective_thinking
+        request_thinking_budget = effective_thinking_budget
+        request_reasoning_effort = effective_reasoning_effort
+        if _awaiting_compact_resume:
+            request_reasoning_effort = _compact_recovery_reasoning_effort(
+                request_reasoning_effort
+            )
+            if request_reasoning_effort is None:
+                request_reasoning_effort = "low"
+            if _compact_resume_retries > 0:
+                request_thinking = False
+                request_thinking_budget = 0
+            elif request_thinking:
+                request_thinking_budget = min(
+                    request_thinking_budget,
+                    max(1024, max_tokens // 4),
+                )
+
+        if request_thinking and request_thinking_budget >= max_tokens:
+            request_thinking_budget = max_tokens - 1024
+            if request_thinking_budget < 1024:
+                request_thinking = False
+                request_thinking_budget = 0
+
+        return ModelConfig(
+            model=effective_model,
+            max_tokens=max_tokens,
+            thinking_enabled=request_thinking,
+            thinking_budget=request_thinking_budget,
+            timeout=effective_timeout,
+            context_window=context_window,
+            reasoning_effort=request_reasoning_effort,
+        )
 
     async def _schedule_api_retry(error_message: str) -> bool:
         nonlocal _api_retry_attempts
@@ -1051,6 +1089,7 @@ async def query_loop(
             return None
 
         messages[:] = result
+        token_tracker.reset()
         _awaiting_compact_resume = True
         _compact_resume_retries = 0
         params.tool_context.messages = messages
@@ -1121,25 +1160,42 @@ async def query_loop(
 
         max_tokens = effective_max_tokens
 
+        compact_limit = compaction_input_limit(
+            context_window, max_tokens,
+            buffer_tokens=DEFAULT_COMPACT_BUFFER_TOKENS,
+            override=params.compact_threshold if params.auto_compact_enabled else None,
+        )
+
+        async def _measure_input(candidate: list[Message]) -> TokenMeasurement:
+            nonlocal count_available
+            count_config = _request_config(max_tokens)
+            snapshot = RequestSnapshot.capture(
+                params.api_adapter, count_config, candidate, full_system, tool_schemas,
+            )
+            measurement = token_tracker.measure(snapshot, candidate, full_system, tool_schemas)
+            # Establish a baseline if none exists, then verify only near the
+            # limit. Ordinary append-only turns reuse usage plus a small delta.
+            needs_count = measurement.source == "estimated" or measurement.tokens >= compact_limit * 0.9
+            counter = getattr(params.api_adapter, "count_input_tokens", None)
+            if measurement.source != "server" and needs_count and count_available and callable(counter):
+                try:
+                    count = await asyncio.wait_for(counter(
+                        candidate, full_system, tool_schemas, count_config,
+                    ), timeout=3.0)
+                    if token_tracker.calibrate(snapshot, count):
+                        return TokenMeasurement(token_tracker.input_tokens, "server")
+                    count_available = False
+                except Exception as exc:
+                    # Cancellation must propagate; counting failures must not.
+                    logger.debug("Input token counting unavailable (%s)", type(exc).__name__)
+                    count_available = False
+            return measurement
+
         # --- Final-request preflight (system + messages + tool schemas) ---
         if context_window > 0:
-            estimated = estimate_token_count(
-                messages_for_api,
-                system=full_system,
-                tools=tool_schemas,
-            )
-            compact_limit = compaction_input_limit(
-                context_window,
-                max_tokens,
-                buffer_tokens=DEFAULT_COMPACT_BUFFER_TOKENS,
-                override=params.compact_threshold,
-            )
-            needs_compaction = params.auto_compact_enabled and should_auto_compact(
-                messages_for_api,
-                threshold=compact_limit,
-                system=full_system,
-                tools=tool_schemas,
-            )
+            measurement = await _measure_input(messages_for_api)
+            estimated = measurement.tokens
+            needs_compaction = params.auto_compact_enabled and estimated > compact_limit
             if needs_compaction:
                 source_messages = list(messages)
                 pruned_messages = [message.model_copy(deep=True) for message in messages]
@@ -1153,16 +1209,13 @@ async def query_loop(
                         pruned_messages,
                         params.user_context,
                     )
-                    pruned_estimated = estimate_token_count(
-                        pruned_for_api,
-                        system=full_system,
-                        tools=tool_schemas,
-                    )
-                    if pruned_estimated <= compact_limit:
+                    pruned_measurement = await _measure_input(pruned_for_api)
+                    if pruned_measurement.tokens <= compact_limit:
                         messages[:] = pruned_messages
                         params.tool_context.messages = messages
                         messages_for_api = pruned_for_api
-                        estimated = pruned_estimated
+                        measurement = pruned_measurement
+                        estimated = measurement.tokens
                         needs_compaction = False
                         logger.warning(
                             "Pruned oversized tool output; estimated final input is now %d",
@@ -1181,7 +1234,7 @@ async def query_loop(
 
             if needs_compaction:
                 logger.warning(
-                    "Estimated final input (%d) exceeds compact threshold %d. "
+                    "Final input count (%d) exceeds compact threshold %d. "
                     "Attempting auto compact.",
                     estimated,
                     compact_limit,
@@ -1192,11 +1245,8 @@ async def query_loop(
                 )
                 if compact_event:
                     messages_for_api = _prepend_user_context(messages, params.user_context)
-                    estimated = estimate_token_count(
-                        messages_for_api,
-                        system=full_system,
-                        tools=tool_schemas,
-                    )
+                    measurement = await _measure_input(messages_for_api)
+                    estimated = measurement.tokens
                     yield compact_event
 
             # Always validate input + output. If compaction was disabled or failed,
@@ -1216,58 +1266,28 @@ async def query_loop(
                     reason="context_overflow",
                     turn_count=turn_count,
                     usage=_compact_total_usage(),
+                    context_used_tokens=estimated,
+                    context_token_source=measurement.source,
+                    context_window_tokens=context_window,
+                    context_remaining_tokens=max(0, context_window - estimated),
+                    context_used_percent=round(estimated / context_window * 100, 1),
                 )
                 return
             if max_tokens > available_output:
                 max_tokens = max(256, available_output)
                 logger.warning("Reducing max_tokens to %d to fit final request", max_tokens)
 
-        request_thinking = effective_thinking
-        request_thinking_budget = effective_thinking_budget
-        request_reasoning_effort = effective_reasoning_effort
-        if _awaiting_compact_resume:
-            request_reasoning_effort = _compact_recovery_reasoning_effort(
-                request_reasoning_effort
-            )
-            if request_reasoning_effort is None:
-                request_reasoning_effort = "low"
-            if _compact_resume_retries > 0:
-                request_thinking = False
-                request_thinking_budget = 0
-            elif request_thinking:
-                request_thinking_budget = min(
-                    request_thinking_budget,
-                    max(1024, max_tokens // 4),
-                )
-
-        if request_thinking and request_thinking_budget >= max_tokens:
-            request_thinking_budget = max_tokens - 1024
-            if request_thinking_budget < 1024:
-                request_thinking = False
-                request_thinking_budget = 0
-
+        model_config = _request_config(max_tokens)
+        request_snapshot = RequestSnapshot.capture(
+            params.api_adapter, model_config, messages_for_api, full_system, tool_schemas,
+        )
         logger.warning(
             "Sending API request: model=%s, max_tokens=%d, msgs=%d, context_window=%d",
             effective_model, max_tokens, len(messages_for_api), context_window,
         )
-        model_config = ModelConfig(
-            model=effective_model,
-            max_tokens=max_tokens,
-            thinking_enabled=request_thinking,
-            thinking_budget=request_thinking_budget,
-            timeout=effective_timeout,
-            context_window=context_window,
-            reasoning_effort=request_reasoning_effort,
-        )
 
         last_request_usage = {key: 0 for key in usage_keys}
         reported_usage_keys = set()
-
-        def _usage_int(usage: dict[str, Any], key: str) -> int:
-            try:
-                return int(usage.get(key, 0) or 0)
-            except (TypeError, ValueError):
-                return 0
 
         def _set_request_usage(usage: dict[str, Any]) -> None:
             """Record this API request's latest usage snapshot.
@@ -1279,7 +1299,9 @@ async def query_loop(
             for key in usage_keys:
                 if key not in usage:
                     continue
-                value = _usage_int(usage, key)
+                value, valid = usage_int_field(usage, key)
+                if not valid:
+                    continue
                 previous = last_request_usage[key]
                 if key in reported_usage_keys and value < previous:
                     continue
@@ -1287,19 +1309,17 @@ async def query_loop(
                 reported_usage_keys.add(key)
                 reported_total_usage_keys.add(key)
                 total_usage[key] = total_usage.get(key, 0) + value - previous
+            token_tracker.observe_usage(request_snapshot, {
+                key: last_request_usage[key] for key in reported_usage_keys
+            })
 
         def _turn_complete_event(reason: str, snapshot: list[Message]) -> TurnCompleteEvent:
-            estimated_context_used = estimate_token_count(
-                _prepend_user_context(snapshot, params.user_context),
-                system=full_system,
-                tools=tool_schemas,
+            context_messages = _prepend_user_context(snapshot, params.user_context)
+            context_snapshot = RequestSnapshot.capture(
+                params.api_adapter, model_config, context_messages, full_system, tool_schemas,
             )
-            exact_input_used = (
-                last_request_usage["total_input_tokens"]
-                or last_request_usage["input_tokens"]
-            )
-            exact_context_used = exact_input_used + last_request_usage["output_tokens"]
-            context_used = exact_context_used if exact_context_used > 0 else estimated_context_used
+            measurement = token_tracker.measure(context_snapshot, context_messages, full_system, tool_schemas)
+            context_used = measurement.tokens
             context_window_tokens = max(0, context_window or 0)
             context_remaining = (
                 max(context_window_tokens - context_used, 0)
@@ -1324,6 +1344,7 @@ async def query_loop(
                 turn_count=turn_count,
                 usage=_compact_total_usage(),
                 context_used_tokens=context_used,
+                context_token_source=measurement.source,
                 context_window_tokens=context_window_tokens,
                 context_remaining_tokens=context_remaining,
                 context_used_percent=context_percent,
