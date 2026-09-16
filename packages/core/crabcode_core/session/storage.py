@@ -1521,7 +1521,7 @@ class SessionStorage:
             from crabcode_core.session.meta_db import SessionMetaStore
 
             store = SessionMetaStore()
-            rows = store.list_by_cwd(abs_cwd, limit=100)
+            rows = store.list_by_cwd(abs_cwd, limit=-1)
             list_states = getattr(store, "list_states_by_cwd", None)
             if callable(list_states):
                 indexed_states = dict(list_states(abs_cwd))
@@ -1545,6 +1545,7 @@ class SessionStorage:
                     "git_branch": row.get("git_branch"),
                     "git_sha": row.get("git_sha"),
                     "message_count": row.get("message_count", 0),
+                    "created_at": row.get("created_at", 0),
                     "modified": (
                         datetime.fromtimestamp(sort_timestamp, tz=timezone.utc).isoformat()
                         if sort_timestamp
@@ -1641,6 +1642,7 @@ class SessionStorage:
                     "git_branch": meta_info.get("git_branch"),
                     "git_sha": meta_info.get("git_sha"),
                     "message_count": meta_info.get("message_count", 0),
+                    "created_at": meta_info.get("created_at", 0),
                     "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
                     "summary": meta_info.get("summary", ""),
                     "forked_from_session_id": meta_info.get("forked_from_session_id"),

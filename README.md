@@ -710,7 +710,7 @@ crabcode --model-profile smart    # short: -M smart
 **Switch inside the REPL:**
 
 ```
-/model              # show active model, list all configured profiles
+/model              # open the searchable model picker and switch profiles
 /model fast         # switch to the "fast" (ollama) profile
 /model smart        # switch to the "smart" (anthropic) profile
 /model code         # switch to the "code" (openai) profile
@@ -1051,7 +1051,7 @@ new sessions or after reconnecting an existing session.
 | `/logs <name>` | Show tail of a specific log |
 | `/logs -f <name>` | Follow a specific log in real time (`Ctrl+C` to stop) |
 | `/logs --clear <name>` | Clear a specific log file |
-| `/model` | Show active model and all configured named models |
+| `/model` | Open a searchable model picker organized by group; ↑/↓ select, Enter switches, Esc cancels, Tab and ←/→ filter groups |
 | `/model <name>` | Switch to a named model from `settings.models` |
 | `/effort` | Show the active reasoning effort |
 | `/effort <none\|minimal\|low\|medium\|high\|xhigh\|max>` | Set reasoning effort for subsequent requests in the current runtime session |
@@ -1092,7 +1092,7 @@ new sessions or after reconnecting an existing session.
 | `/sessions` | List recent saved sessions for current project |
 | `/recent` | List recent sessions across all projects |
 | `/search <query>` | Search sessions by title or message content |
-| `/resume <id>` | Resume a saved session by full/partial id or index (supports cross-project) |
+| `/resume [id]` | Browse searchable history, or resume by full/partial id or index (supports cross-project) |
 | `/archive <id>` | Archive a session (hide from listings) |
 | `/export [md\|json] [path]` | Export current session to Markdown or JSON |
 | `/stats` | Show usage statistics (tokens, sessions, models) |
@@ -1110,7 +1110,7 @@ new sessions or after reconnecting an existing session.
 - For commands that take `<id>`, you can usually pass the leading prefix shown by `/agents`.
 - `/agent-send` live output is controlled by `agent.stream_send_input_output` in `settings.json`.
 - `Ctrl+C` interrupts the current operation; pressing `Ctrl+C` again within a few seconds exits.
-- `/resume` supports cross-project sessions — if the session ID belongs to another project it will be resolved automatically via the metadata database.
+- `/resume` opens a keyboard-driven history picker: type to search, ↑/↓ to browse, Enter to resume, Esc/Ctrl+C to return. Tab focuses the project filter (Cwd/All) or sort order (Updated/Created); ←/→ changes the option. `/resume <id>` still supports cross-project sessions via the metadata database.
 
 ### Plan Mode Workflow
 

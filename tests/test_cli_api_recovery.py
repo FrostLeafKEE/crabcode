@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from io import StringIO
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from prompt_toolkit.application import Application
@@ -149,6 +149,116 @@ class CliApiRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_connection_exception_keeps_cli_usable(self):
         await self.assert_recovery(httpx.ConnectError("Connection refused"), "Connection refused")
+
+    async def test_resume_picker_select_cancel_and_continue_in_actual_repl(self):
+        from crabcode_cli import session_picker
+
+        session = RecoverySession(None)
+        pickers = []
+        real_picker = session_picker.SessionPicker
+
+        def make_picker(*args):
+            picker = real_picker(*args)
+            pickers.append(picker)
+            return picker
+
+        remote = dict(id="remote-session", cwd="/other-project", title="历史 session",
+                      updated_at=100, created_at=50)
+        with (
+            patch.object(session_picker, "SessionPicker", side_effect=make_picker),
+            patch.object(session_picker, "run_io", new=AsyncMock(return_value=[remote])),
+            patch("crabcode_core.session.storage.SessionStorage.list_sessions", return_value=[]),
+            patch("crabcode_core.session.meta_db.SessionMetaStore.get", return_value=remote),
+            patch.object(session, "resume", new=AsyncMock(return_value=True)) as resume,
+        ):
+            async with self.running_repl(session) as (pipe, composer, output, wait_for):
+                pipe.send_text("/resume\r")
+                await wait_for(lambda: pickers and pickers[0].app.is_running and not pickers[0].loading)
+                self.assertFalse(composer.prompt_session.app.is_running)
+                # Browse all projects, return search focus, then resume.
+                pipe.send_text("\t\x1b[C\t\t历史")
+                await wait_for(lambda: len(pickers[0].matches) == 1)
+                pipe.send_text("\r")
+                await wait_for(lambda: "Resumed session" in output.getvalue())
+                resume.assert_awaited_once_with("remote-session")
+                self.assertIn("Found in project: /other-project", output.getvalue())
+                pipe.send_text("/resume\r")
+                await wait_for(lambda: len(pickers) == 2 and pickers[1].app.is_running)
+                pipe.send_text("\x1b")
+                await wait_for(lambda: not pickers[1].app.is_running)
+                await wait_for(lambda: composer.prompt_session.app.is_running)
+                resume.assert_awaited_once()
+                pipe.send_text("after picker\r")
+                await wait_for(lambda: session.completed == ["after picker"] and not composer._busy)
+
+    async def test_resume_with_argument_does_not_open_picker(self):
+        session = RecoverySession(None)
+        with (
+            patch("crabcode_cli.session_picker.select_session", new=AsyncMock()) as picker,
+            patch("crabcode_core.session.storage.SessionStorage.list_sessions",
+                  return_value=[{"session_id": "saved-session"}]),
+            patch.object(session, "resume", new=AsyncMock(return_value=True)) as resume,
+        ):
+            for argument in ("saved-session", "saved", "1"):
+                await repl._handle_command(f"/resume {argument}", session, session.settings, [])
+                resume.assert_awaited_with("saved-session")
+            picker.assert_not_awaited()
+
+    async def test_model_picker_switch_failure_cancel_and_continue_in_actual_repl(self):
+        from crabcode_cli import model_picker
+
+        session = RecoverySession(None)
+        pickers = []
+        real_picker = model_picker.ModelPicker
+
+        def make_picker(*args):
+            picker = real_picker(*args)
+            pickers.append(picker)
+            return picker
+
+        with patch.object(model_picker, "ModelPicker", side_effect=make_picker):
+            async with self.running_repl(session) as (pipe, composer, output, wait_for):
+                pipe.send_text("/model broken\r")
+                await wait_for(lambda: "Switched to broken" in output.getvalue())
+                self.assertEqual(pickers, [])
+                adapter = session._api_adapter
+
+                async def open_picker():
+                    previous = len(pickers)
+                    pipe.send_text("/model\r")
+                    await wait_for(lambda: len(pickers) > previous and pickers[-1].app.is_running)
+                    self.assertFalse(composer.prompt_session.app.is_running)
+                    return pickers[-1]
+
+                picker = await open_picker()
+                pipe.send_text("invalid\r")
+                await wait_for(lambda: "Failed to switch model" in output.getvalue()
+                               and composer.prompt_session.app.is_running)
+                self.assertEqual(session._current_model_name, "broken")
+                self.assertIs(session._api_adapter, adapter)
+
+                picker = await open_picker()
+                pipe.send_text("healthy")
+                await wait_for(lambda: len(picker.matches) == 1)
+                pipe.send_text("\r")
+                await wait_for(lambda: "Switched to healthy" in output.getvalue()
+                               and composer.prompt_session.app.is_running)
+                self.assertEqual(session._current_model_name, "healthy")
+                adapter = session._api_adapter
+
+                picker = await open_picker()
+                self.assertEqual(picker.matches[picker.selected]["name"], "healthy")
+                pipe.send_text("\x1b[B\x1b")
+                await wait_for(lambda: not picker.app.is_running and composer.prompt_session.app.is_running)
+                self.assertEqual(session._current_model_name, "healthy")
+                self.assertIs(session._api_adapter, adapter)
+
+                await open_picker()
+                pipe.send_text("\r")  # Accepting the active model is a no-op.
+                await wait_for(lambda: composer.prompt_session.app.is_running)
+                self.assertIs(session._api_adapter, adapter)
+                pipe.send_text("after model picker\r")
+                await wait_for(lambda: session.completed == ["after model picker"] and not composer._busy)
 
     async def test_timeout_exception_keeps_cli_usable(self):
         await self.assert_recovery(httpx.ReadTimeout("Request timed out"), "Request timed out")

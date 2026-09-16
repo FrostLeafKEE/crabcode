@@ -2144,6 +2144,12 @@ async def run_repl(
             ctrl_c_exit.clear()
 
             if user_input.startswith("/"):
+                # A modal picker shares the terminal's input parser. Stop the
+                # composer first so its pending Escape flush cannot steal keys
+                # from the picker while in_terminal() has detached its input.
+                modal_picker = user_input.split() in (["/resume"], ["/model"])
+                if modal_picker:
+                    await composer.close()
                 async with in_terminal():
                     try:
                         result = await _handle_command(
@@ -2156,6 +2162,9 @@ async def run_repl(
                         logger.exception("REPL command failed")
                         _render_repl_error(f"{type(exc).__name__}: {exc}")
                         continue
+                    finally:
+                        if modal_picker:
+                            composer.start()
                 if result is False:
                     break
                 if isinstance(result, str):
@@ -2698,7 +2707,7 @@ async def _handle_command(
             "[bold]/logs --tail 200 <name>[/] — show more log lines\n"
             "[bold]/logs -f <name>[/] — follow a background log live\n"
             "[bold]/logs --clear <name>[/] — clear a background log\n"
-            "[bold]/model[/] — show current model and list configured models\n"
+            "[bold]/model[/] — browse and switch configured models\n"
             "[bold]/model <name>[/] — switch to a named model\n"
             "[bold]/new[/] — start a new session\n"
             "[bold]/compact[/] — compact conversation\n"
@@ -2714,7 +2723,7 @@ async def _handle_command(
             "[bold]/rollback <id|#>[/] — rollback conversation to a checkpoint\n"
             "[bold]/revert <id|#>[/] — revert files + conversation to a checkpoint\n"
             "[bold]/undo[/] — revert last checkpoint (files + conversation)\n"
-            "[bold]/resume <id>[/] — resume a previous session\n"
+            "[bold]/resume [id][/] — browse history or resume a previous session\n"
             "[bold]/fork [message-uuid][/] — fork at an assistant reply\n"
             "[bold]/image <path>[/] — attach image(s) to your next message\n"
             "[bold]/exit[/] — exit CrabCode\n"
@@ -2952,33 +2961,11 @@ async def _handle_command(
 
     if cmd == "/model":
         if not arg:
-            # Show current model
-            current_name = getattr(session, "_current_model_name", None)
-            active_cfg = session.settings.get_api_config(current_name)
-            provider = active_cfg.provider
-            model = active_cfg.model
-            group = active_cfg.group or "default"
-            label = f"[bold cyan]{current_name}[/]  " if current_name else ""
-            console.print(
-                f"Current: {label}"
-                f"provider=[bold]{provider or '[yellow]not set[/]'}[/]  "
-                f"model=[bold]{model or '[yellow]not set[/]'}[/]  "
-                f"group=[bold]{group}[/]"
-            )
-            named = session.list_models()
-            if named:
-                console.print("\nConfigured models (use [bold]/model <name>[/] to switch):")
-                grouped: dict[str, list[tuple[str, str]]] = {}
-                for name, desc in named.items():
-                    model_cfg = session.settings.get_api_config(name)
-                    model_group = model_cfg.group or "default"
-                    grouped.setdefault(model_group, []).append((name, desc))
-                for model_group, entries in grouped.items():
-                    console.print(f"  [bold magenta]{model_group}[/]")
-                    for name, desc in entries:
-                        marker = " [bold green]← active[/]" if name == current_name else ""
-                        console.print(f"    [cyan]{name}[/]  {desc}{marker}")
-            return True
+            from crabcode_cli.model_picker import select_model
+
+            arg = await select_model(session)
+            if not arg or arg == getattr(session, "_current_model_name", None):
+                return True
 
         # /model <name>  — switch to named model
         named = session.list_models()
@@ -4410,8 +4397,11 @@ async def _handle_command(
 
     if cmd == "/resume":
         if not arg:
-            console.print("[dim]Usage: /resume <session-id>[/]")
-            return True
+            from crabcode_cli.session_picker import select_session
+
+            arg = await select_session(session.cwd, session.session_id)
+            if not arg:
+                return True
 
         from crabcode_core.session.storage import SessionStorage
         sessions = SessionStorage.list_sessions(session.cwd)

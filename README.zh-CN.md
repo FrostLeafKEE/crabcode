@@ -692,7 +692,7 @@ crabcode --model-profile smart    # 简写：-M smart
 **在 REPL 中切换：**
 
 ```
-/model              # 查看当前使用的模型，并列出所有已配置的模型
+/model              # 打开模型选择页，搜索并切换已配置的模型
 /model fast         # 切换到 "fast" 模型
 /model local        # 切换到 "local"（如 Ollama 本地模型）
 ```
@@ -1026,7 +1026,7 @@ Desktop 的“设置 → 运行与工具”可以直接编辑这些字段，也�
 | `/logs <名称>` | 查看指定日志尾部 |
 | `/logs -f <名称>` | 实时跟随指定日志（`Ctrl+C` 停止） |
 | `/logs --clear <名称>` | 清空指定日志文件 |
-| `/model` | 查看当前模型与全部命名模型 |
+| `/model` | 打开按分组展示、可搜索的模型选择页；↑/↓ 选择、Enter 切换、Esc 返回，Tab 与 ←/→ 筛选分组 |
 | `/model <名称>` | 切换到 `settings.models` 中的命名模型 |
 | `/effort` | 查看当前 reasoning effort |
 | `/effort <none\|minimal\|low\|medium\|high\|xhigh\|max>` | 设置当前运行会话后续请求的 reasoning effort |
@@ -1067,7 +1067,7 @@ Desktop 的“设置 → 运行与工具”可以直接编辑这些字段，也�
 | `/sessions` | 列出当前项目最近保存的会话 |
 | `/recent` | 列出所有项目的最近会话 |
 | `/search <关键词>` | 按标题或消息内容搜索会话 |
-| `/resume <id>` | 通过完整/前缀 id 或序号恢复会话（支持跨项目） |
+| `/resume [id]` | 打开可搜索的历史选择界面，或通过完整/前缀 id、序号恢复会话（支持跨项目） |
 | `/archive <id>` | 归档会话（从列表中隐藏） |
 | `/export [md\|json] [路径]` | 将当前会话导出为 Markdown 或 JSON |
 | `/stats` | 显示使用统计（token 消耗、会话数、模型分布） |
@@ -1085,7 +1085,7 @@ Desktop 的“设置 → 运行与工具”可以直接编辑这些字段，也�
 - 需要 `<id>` 的命令一般都支持使用 `/agents` 展示的短前缀。
 - `/agent-send` 是否实时回显由 `settings.json` 中 `agent.stream_send_input_output` 控制。
 - `Ctrl+C` 会中断当前操作；在短时间内再次按 `Ctrl+C` 会退出。
-- `/resume` 支持跨项目会话恢复——如果会话 ID 属于其他项目，会通过元数据数据库自动定位。
+- `/resume` 不带参数时打开历史选择界面：直接输入搜索，↑/↓ 选择，Enter 恢复，Esc/Ctrl+C 返回。Tab 聚焦项目筛选（当前目录/全部）或排序（更新时间/创建时间），←/→ 切换选项。`/resume <id>` 仍支持通过元数据数据库定位跨项目会话。
 
 ### Plan 模式流程
 
