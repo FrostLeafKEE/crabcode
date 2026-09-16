@@ -7,6 +7,8 @@ use std::io::{self, BufRead, BufReader, Read};
 use std::net::{IpAddr, ToSocketAddrs};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+#[cfg(target_os = "macos")]
+use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Mutex;
 use std::thread;
@@ -275,15 +277,110 @@ fn python_version(candidate: &str) -> Option<(u32, u32)> {
     Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
 }
 
-fn detect_python(configured: Option<&str>) -> Result<String, String> {
+fn push_unique(candidates: &mut Vec<String>, candidate: String) {
+    if !candidates.contains(&candidate) {
+        candidates.push(candidate);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn push_path(candidates: &mut Vec<String>, path: &Path) {
+    push_unique(candidates, path.to_string_lossy().into_owned());
+}
+
+#[cfg(target_os = "macos")]
+fn extend_version_managed_pythons(candidates: &mut Vec<String>, root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let mut paths = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("bin/python3"))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.reverse();
+    for path in paths {
+        push_path(candidates, &path);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn extend_homebrew_pythons(candidates: &mut Vec<String>, root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        if !entry.file_name().to_string_lossy().starts_with("python@") {
+            continue;
+        }
+        for relative in ["libexec/bin/python3", "bin/python3"] {
+            let path = entry.path().join(relative);
+            if path.is_file() {
+                push_path(candidates, &path);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn extend_macos_python_candidates(candidates: &mut Vec<String>, home: Option<&Path>) {
+    for path in [
+        "/opt/homebrew/bin/python3",
+        "/usr/local/bin/python3",
+        "/opt/local/bin/python3",
+        "/opt/anaconda3/bin/python3",
+        "/opt/miniconda3/bin/python3",
+        "/opt/miniforge3/bin/python3",
+        "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
+    ] {
+        push_path(candidates, Path::new(path));
+    }
+    for root in [Path::new("/opt/homebrew/opt"), Path::new("/usr/local/opt")] {
+        extend_homebrew_pythons(candidates, root);
+    }
+    if let Some(home) = home {
+        for relative in [
+            "anaconda3/bin/python3",
+            "miniconda3/bin/python3",
+            "miniforge3/bin/python3",
+            "mambaforge/bin/python3",
+            ".local/bin/python3",
+            ".pyenv/shims/python3",
+            ".asdf/shims/python3",
+        ] {
+            push_path(candidates, &home.join(relative));
+        }
+        for relative in [
+            ".pyenv/versions",
+            ".asdf/installs/python",
+            ".local/share/uv/python",
+        ] {
+            extend_version_managed_pythons(candidates, &home.join(relative));
+        }
+    }
+}
+
+fn python_candidates(configured: Option<&str>) -> Vec<String> {
     let mut candidates = Vec::new();
     if let Some(value) = configured.filter(|value| !value.trim().is_empty()) {
-        candidates.push(value.to_string());
+        push_unique(&mut candidates, value.to_string());
     }
-    candidates.extend(["python3".to_string(), "python".to_string()]);
+    push_unique(&mut candidates, "python3".to_string());
+    push_unique(&mut candidates, "python".to_string());
     #[cfg(target_os = "windows")]
-    candidates.push("py".to_string());
-    for candidate in candidates {
+    push_unique(&mut candidates, "py".to_string());
+
+    // Finder-launched macOS apps do not inherit the user's shell PATH. Check
+    // common package-manager and version-manager locations explicitly so the
+    // packaged app sees the same Python installations as a terminal session.
+    #[cfg(target_os = "macos")]
+    extend_macos_python_candidates(&mut candidates, dirs::home_dir().as_deref());
+    candidates
+}
+
+fn detect_python(configured: Option<&str>) -> Result<String, String> {
+    for candidate in python_candidates(configured) {
         if let Some((major, minor)) = python_version(&candidate) {
             if major > MIN_PYTHON_MAJOR || (major == MIN_PYTHON_MAJOR && minor >= MIN_PYTHON_MINOR)
             {
@@ -295,14 +392,7 @@ fn detect_python(configured: Option<&str>) -> Result<String, String> {
 }
 
 fn detect_document_engine_python(configured: Option<&str>) -> Result<String, String> {
-    let mut candidates = Vec::new();
-    if let Some(value) = configured.filter(|value| !value.trim().is_empty()) {
-        candidates.push(value.to_string());
-    }
-    candidates.extend(["python3".to_string(), "python".to_string()]);
-    #[cfg(target_os = "windows")]
-    candidates.push("py".to_string());
-    for candidate in candidates {
+    for candidate in python_candidates(configured) {
         if python_version(&candidate)
             .is_some_and(|(major, minor)| major == 3 && (10..=13).contains(&minor))
         {
@@ -924,6 +1014,24 @@ mod tests {
             "https://example.com:4096/"
         );
         assert!(parse_base_url("ws://localhost:4096").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finds_conda_python_without_a_shell_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let python = directory.path().join("anaconda3/bin/python3");
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, "#!/bin/sh\nprintf 'Python 3.12.4\\n'\n").unwrap();
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut candidates = Vec::new();
+        extend_macos_python_candidates(&mut candidates, Some(directory.path()));
+        let discovered = python.to_string_lossy().into_owned();
+        assert!(candidates.contains(&discovered));
+        assert_eq!(python_version(&discovered), Some((3, 12)));
     }
 
     #[test]

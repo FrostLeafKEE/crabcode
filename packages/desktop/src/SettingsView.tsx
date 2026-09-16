@@ -149,6 +149,25 @@ const SECTION_ICONS = {
 
 const DARK_DOCK_ICON = new URL("../src-tauri/icons/icon.png", import.meta.url).href;
 const LIGHT_DOCK_ICON = new URL("../src-tauri/resources/dock-icon-light.png", import.meta.url).href;
+const DOCK_ICON_SIZE = 512;
+const DOCK_ICON_CORNER_RADIUS = 112;
+
+function clipDockIconShape(context: CanvasRenderingContext2D): void {
+  const size = DOCK_ICON_SIZE;
+  const radius = DOCK_ICON_CORNER_RADIUS;
+  context.beginPath();
+  context.moveTo(radius, 0);
+  context.lineTo(size - radius, 0);
+  context.quadraticCurveTo(size, 0, size, radius);
+  context.lineTo(size, size - radius);
+  context.quadraticCurveTo(size, size, size - radius, size);
+  context.lineTo(radius, size);
+  context.quadraticCurveTo(0, size, 0, size - radius);
+  context.lineTo(0, radius);
+  context.quadraticCurveTo(0, 0, radius, 0);
+  context.closePath();
+  context.clip();
+}
 
 async function normalizeDockIcon(file: File): Promise<{ bytes: Uint8Array; preview: string }> {
   const sourceUrl = URL.createObjectURL(file);
@@ -160,15 +179,24 @@ async function normalizeDockIcon(file: File): Promise<{ bytes: Uint8Array; previ
       image.onerror = () => reject(new Error("无法读取这张图片"));
     });
     const canvas = document.createElement("canvas");
-    canvas.width = 512;
-    canvas.height = 512;
+    canvas.width = DOCK_ICON_SIZE;
+    canvas.height = DOCK_ICON_SIZE;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("无法处理这张图片");
-    context.clearRect(0, 0, 512, 512);
-    const scale = Math.min(512 / image.naturalWidth, 512 / image.naturalHeight);
+    context.clearRect(0, 0, DOCK_ICON_SIZE, DOCK_ICON_SIZE);
+    context.save();
+    clipDockIconShape(context);
+    const scale = Math.min(DOCK_ICON_SIZE / image.naturalWidth, DOCK_ICON_SIZE / image.naturalHeight);
     const width = Math.round(image.naturalWidth * scale);
     const height = Math.round(image.naturalHeight * scale);
-    context.drawImage(image, (512 - width) / 2, (512 - height) / 2, width, height);
+    context.drawImage(
+      image,
+      (DOCK_ICON_SIZE - width) / 2,
+      (DOCK_ICON_SIZE - height) / 2,
+      width,
+      height,
+    );
+    context.restore();
     const blob = await new Promise<Blob>((resolve, reject) => {
       canvas.toBlob((value) => value ? resolve(value) : reject(new Error("无法生成 PNG 图标")), "image/png");
     });
