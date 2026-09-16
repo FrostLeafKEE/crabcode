@@ -3596,11 +3596,13 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           continue;
         }
         if (type === "image") {
+          if (blocks.some((candidate) => candidate.type === "tool_result")) continue;
           const source = asRecord(block.source);
           if (typeof source.data === "string" && source.data) {
             pendingImages.push({
               media_type: typeof source.media_type === "string" ? source.media_type : "image/png",
               data: source.data,
+              ...(typeof block.description === "string" && block.description ? { description: block.description } : {}),
             });
           }
           continue;
@@ -3648,6 +3650,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
               return {
                 media_type: typeof source.media_type === "string" ? source.media_type : "image/png",
                 data: typeof source.data === "string" ? source.data : "",
+                ...(typeof candidate.description === "string" && candidate.description ? { description: candidate.description } : {}),
               };
             })
             .filter((image) => image.data);
@@ -6152,6 +6155,20 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       border-radius: 6px;
       background: var(--surface);
     }
+    .tool-result-figure {
+      margin: 10px 0 0;
+      min-width: 0;
+      max-width: 100%;
+    }
+    .tool-result-figure .tool-result-image { margin-top: 0; }
+    .tool-result-figure figcaption {
+      margin-top: 6px;
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
 
     :root[data-panel-width="narrow"] #messages {
       padding-left: 8px;
@@ -7446,7 +7463,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
       const inputHtml = renderToolInput(card.toolName, card.input, presentation);
       const imagesHtml = (card.images || []).map(function(img, index) {
-        return '<img class="tool-result-image" src="data:' + escapeAttr(img.media_type) + ';base64,' + img.data + '" alt="图片 ' + (index + 1) + '" loading="lazy" />';
+        const caption = typeof img.description === 'string' && img.description
+          ? '<figcaption>' + escapeHtml(img.description) + '</figcaption>' : '';
+        return '<figure class="tool-result-figure"><img class="tool-result-image" src="data:' + escapeAttr(img.media_type) + ';base64,' + img.data + '" alt="图片 ' + (index + 1) + '" loading="lazy" />' + caption + '</figure>';
       }).join('');
       let bodyHtml = '';
       if (!card.collapsed) {
@@ -7527,7 +7546,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       terminal: ['command', 'paths', 'linter', 'file_path', 'path', 'language', 'timeout'],
       search: ['query', 'pattern', 'path', 'target_directory', 'glob', 'num_results', 'case_insensitive'],
       web: ['action', 'url', 'selector', 'text', 'script', 'path', 'session_id', 'tab_id', 'headless', 'wait_until', 'return_format', 'timeout_seconds', 'options'],
-      image: ['prompt', 'reference_image_paths', 'path', 'mime_type', 'mimeType'],
+      image: ['prompt', 'reference_image_paths', 'path', 'description', 'mime_type', 'mimeType'],
       debug: ['action', 'session_id', 'program', 'pid', 'language', 'path', 'address', 'base_address', 'lines', 'thread_id', 'frame_id', 'expression', 'query', 'pattern', 'value', 'value_hex', 'patch_hex', 'args', 'cwd'],
       memory: ['action', 'title', 'query', 'content', 'memory_id', 'id'],
       task: ['action', 'task_id', 'description', 'command', 'ws', 'persistent', 'interval', 'timeout_ms', 'timeout'],

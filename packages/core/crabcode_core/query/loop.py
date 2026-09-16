@@ -723,6 +723,41 @@ def _parse_context_limit_from_error(error_msg: str) -> int | None:
     return None
 
 
+def _is_request_size_error(error: str | Exception) -> bool:
+    """Recognize byte-size rejections independently of model context limits."""
+    import re
+
+    status = getattr(error, "status_code", None)
+    if status is None:
+        status = getattr(getattr(error, "response", None), "status_code", None)
+    if status == 413:
+        return True
+    text = str(error).lower()
+    return bool(re.search(
+        r"(?:^|\bhttp(?:/[\d.]+)?\s+|\bstatus(?:_code)?\s*[:=]?\s*|\berror code:\s*)413\b",
+        text,
+    )) or any(phrase in text for phrase in (
+        "request entity too large",
+        "request body too large",
+        "payload too large",
+        "content too large",
+        "request_too_large",
+        "content_length_exceeded",
+    ))
+
+
+def _request_size_error_event(detail: str) -> ErrorEvent:
+    return ErrorEvent(
+        message=(
+            "The provider rejected the request body as too large. "
+            "Reduce attachment file sizes or send fewer images in a new conversation. "
+            f"Provider error: {detail}"
+        ),
+        recoverable=True,
+        error_type="request_too_large",
+    )
+
+
 def _is_context_overflow_error(error_msg: str) -> bool:
     """Recognize provider size-limit errors without matching arbitrary HTTP 400s."""
     text = error_msg.lower()
@@ -1427,6 +1462,9 @@ async def query_loop(
                         _set_request_usage(chunk.usage)
 
                 elif chunk.type == "error":
+                    if _is_request_size_error(chunk.error):
+                        yield _request_size_error_event(chunk.error)
+                        return
                     has_response_evidence = _has_response_evidence()
                     is_ctx_err = _is_context_overflow_error(chunk.error)
                     if (
@@ -1475,6 +1513,9 @@ async def query_loop(
 
         except Exception as e:
             error_str = _format_exception_message(e)
+            if _is_request_size_error(e):
+                yield _request_size_error_event(error_str)
+                return
             has_response_evidence = _has_response_evidence()
             is_context_error = _is_context_overflow_error(error_str)
             if (

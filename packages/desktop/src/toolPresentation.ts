@@ -237,7 +237,7 @@ const FIELD_ORDER: Partial<Record<ToolKind, string[]>> = {
   terminal: ["command", "paths", "linter", "file_path", "path", "language", "timeout"],
   search: ["query", "pattern", "path", "target_directory", "glob", "num_results", "case_insensitive"],
   web: ["action", "url", "selector", "text", "script", "path", "session_id", "tab_id", "headless", "wait_until", "return_format", "timeout_seconds", "options"],
-  image: ["prompt", "reference_image_paths", "path", "mime_type", "mimeType"],
+  image: ["prompt", "reference_image_paths", "path", "description", "mime_type", "mimeType"],
   debug: ["action", "session_id", "program", "pid", "language", "path", "address", "base_address", "lines", "thread_id", "frame_id", "expression", "query", "pattern", "value", "value_hex", "patch_hex", "args", "cwd"],
   memory: ["action", "title", "query", "content", "memory_id", "id"],
   task: ["action", "task_id", "description", "command", "ws", "persistent", "interval", "timeout_ms", "timeout"],

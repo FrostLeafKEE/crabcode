@@ -12,6 +12,7 @@
 export interface ImageAttachment {
   media_type: string;
   data: string;
+  description?: string;
 }
 
 export interface WorkspaceDirectoryEntry {

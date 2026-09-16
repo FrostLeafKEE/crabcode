@@ -30,6 +30,7 @@ MAX_IMAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024
 class ImageAttachment(BaseModel):
     media_type: str
     data: str
+    description: str = ""
 
     @field_validator("media_type")
     @classmethod

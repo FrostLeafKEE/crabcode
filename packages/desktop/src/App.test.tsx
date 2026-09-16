@@ -305,6 +305,29 @@ s_\theta(x_t,y,t) \approx \nabla_{x_t}\log p_t(x_t\mid y)
     });
   });
 
+  it.each([1, 2])("renders %i captioned tool images as separate figures", (count) => {
+    (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const descriptions = ["单图说明 <script>alert(1)</script>\n第二行", "另一张的说明"];
+    act(() => root.render(
+      <ChatItemView
+        item={{ id: "image-tool", kind: "tool", title: "Image", collapsed: false, result: "attached", images: descriptions.slice(0, count).map((description) => ({ media_type: "image/png", data: "YQ==", description })) }}
+        now={0} showTurnDuration turnDurationFormat="hms"
+        onPermission={vi.fn()} onToggleChoice={vi.fn()} onSubmitChoice={vi.fn()} onPlan={vi.fn()}
+      />,
+    ));
+    const figures = container.querySelectorAll(".message-images figure");
+    expect(figures).toHaveLength(count);
+    figures.forEach((figure, index) => {
+      expect(figure.firstElementChild?.tagName).toBe("IMG");
+      expect(figure.querySelector("figcaption")?.textContent).toBe(descriptions[index]);
+      expect(figure.querySelector("script")).toBeNull();
+    });
+    act(() => root.unmount());
+    container.remove();
+  });
+
   it("renders assistant image attachments", () => {
     (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     const container = document.createElement("div");

@@ -59,6 +59,11 @@ DEFAULT_SUMMARY_CHUNK_TOKENS = 24_000
 TOOL_RESULT_SUMMARY_CHARS = 2_000
 TAIL_TOOL_RESULT_CHARS = 2_000
 CURRENT_TURN_TOOL_RESULT_CHARS = 8_000
+# Provider-independent planning allowance per image, not an exact billing count.
+# Visual token costs depend on the model, resolution and detail level; encoded
+# file size is not a proxy for any of them. Provider usage remains authoritative.
+# Keep byte limits in attachment validation / provider request handling instead.
+DEFAULT_IMAGE_TOKEN_ESTIMATE = 4_096
 
 _INTERNAL_USER_PREFIXES = (
     "<system-reminder>",
@@ -85,9 +90,10 @@ def estimate_token_count(
     system: list[str] | None = None,
     tools: list[dict[str, Any]] | None = None,
 ) -> int:
-    """Estimate the complete provider request, including tools and media payloads."""
+    """Estimate context tokens, separately from encoded request-body bytes."""
     total_bytes = 0
     total_chars = 0
+    image_tokens = 0
 
     def account(value: object) -> None:
         nonlocal total_bytes, total_chars
@@ -124,17 +130,17 @@ def estimate_token_count(
                 account(block.name)
                 account(json.dumps(block.input, ensure_ascii=False, separators=(",", ":")))
             elif isinstance(block, ImageBlock):
-                # Adapters send base64 data in the request. Counting its serialized size is
-                # intentionally conservative and prevents media-driven compaction loops.
-                account(json.dumps(block.source, ensure_ascii=False, separators=(",", ":")))
+                # Base64 and image URLs are transport, not text for tokenization.
+                # Count every occurrence, including intentionally repeated images.
+                image_tokens += DEFAULT_IMAGE_TOKEN_ESTIMATE
             elif isinstance(block, SignatureBlock):
                 account(block.signature)
 
     if total_chars == 0:
-        return framing_tokens
+        return framing_tokens + image_tokens
     ratio = total_bytes / total_chars
     tokens_per_char = 0.25 + (ratio - 1.0) * 0.625
-    return framing_tokens + max(1, int(total_chars * tokens_per_char))
+    return framing_tokens + image_tokens + max(1, int(total_chars * tokens_per_char))
 
 
 def compaction_input_limit(
@@ -201,7 +207,13 @@ def _truncate_middle(text: str, max_chars: int) -> str:
 def _image_descriptor(block: ImageBlock) -> str:
     source = block.source
     media_type = source.get("media_type", "image")
-    name = source.get("filename") or source.get("url") or "inline attachment"
+    url = source.get("url") or ""
+    # A data URL must not turn back into megabytes of text during compaction.
+    name = (
+        source.get("filename")
+        or (url if not url.startswith("data:") else "")
+        or "inline attachment"
+    )
     return f"[Attached {media_type}: {name}; binary content omitted during compaction]"
 
 

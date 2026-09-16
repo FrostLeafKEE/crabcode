@@ -121,6 +121,7 @@ function historyItems(messages: Array<Record<string, unknown>>): ChatItem[] {
               ? (source as Record<string, unknown>).media_type as string
               : "image/png",
             data: (source as Record<string, unknown>).data as string,
+            ...(typeof block.description === "string" && block.description ? { description: block.description } : {}),
           });
         }
         return;
@@ -171,7 +172,12 @@ function historyItems(messages: Array<Record<string, unknown>>): ChatItem[] {
           .map((rawImage) => {
             const source = (rawImage as Record<string, unknown>).source;
             const record = source && typeof source === "object" ? source as Record<string, unknown> : {};
-            return { media_type: typeof record.media_type === "string" ? record.media_type : "image/png", data: typeof record.data === "string" ? record.data : "" };
+            const description = (rawImage as Record<string, unknown>).description;
+            return {
+              media_type: typeof record.media_type === "string" ? record.media_type : "image/png",
+              data: typeof record.data === "string" ? record.data : "",
+              ...(typeof description === "string" && description ? { description } : {}),
+            };
           })
           .filter((image) => image.data);
         const toolIndex = tools.get(toolUseId);

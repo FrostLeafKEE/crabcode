@@ -83,6 +83,29 @@ describe("Gateway event reducer", () => {
     });
   });
 
+  it("preserves captioned image batches in live results and restored history", () => {
+    const images = [
+      { media_type: "image/png", data: "YQ==", description: "修改前" },
+      { media_type: "image/jpeg", data: "Yg==", description: "修改后\n细节" },
+    ];
+    const live = applyGatewayEvent(state(), {
+      type: "tool_result", tool_use_id: "image-batch", tool_name: "Image", result: "attached", images,
+    });
+    const restored = applyGatewayEvent(state(), {
+      type: "session_history",
+      messages: [
+        { role: "assistant", content: [{ type: "tool_use", id: "image-batch", name: "Image", input: { path: ["a.png", "b.jpg"] } }] },
+        { role: "user", content: [
+          { type: "tool_result", tool_use_id: "image-batch", content: "attached" },
+          ...images.map(({ description, ...source }) => ({ type: "image", source: { type: "base64", ...source }, description })),
+        ] },
+      ],
+    });
+    expect(live.items[0].images).toEqual(images);
+    expect(restored.items).toHaveLength(1);
+    expect(restored.items[0]).toMatchObject({ images, collapsed: false });
+  });
+
   it("records live and completed step durations", () => {
     const now = vi.spyOn(Date, "now");
     now.mockReturnValueOnce(1_000);

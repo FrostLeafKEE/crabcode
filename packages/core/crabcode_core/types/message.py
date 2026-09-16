@@ -63,6 +63,8 @@ class ImageBlock(BaseModel):
     """
     type: Literal["image"] = "image"
     source: dict[str, Any]  # {"type": "base64", "media_type": "image/png", "data": "..."}
+    # Persist UI captions outside source so provider image payloads stay valid.
+    description: str = ""
 
 
 ContentBlock = Union[TextBlock, ToolUseBlock, ToolResultBlock, ThinkingBlock, SignatureBlock, ImageBlock]
@@ -160,6 +162,7 @@ def create_tool_result_message(
                     "media_type": image.get("media_type", "image/png"),
                     "data": image.get("data", ""),
                 },
+                description=image.get("description", ""),
             )
             for image in (images or [])
             if image.get("data")

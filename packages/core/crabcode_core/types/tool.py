@@ -47,7 +47,7 @@ class ToolResult:
     result_for_display: str | None = None
     is_error: bool = False
     # Inline image attachments for the conversation UI. Each entry carries
-    # ``media_type`` and base64-encoded ``data``.
+    # ``media_type``, base64-encoded ``data``, and an optional ``description``.
     images: list[dict[str, str]] = field(default_factory=list)
 
 
@@ -83,7 +83,7 @@ class ToolContext:
     # one another.
     emitted_images: list[dict[str, str]] = field(default_factory=list, repr=False)
 
-    def emit_image(self, data: bytes, mime_type: str) -> None:
+    def emit_image(self, data: bytes, mime_type: str, *, description: str = "") -> None:
         """Append an inline image to this tool invocation's result.
 
         This mirrors Codex's ``emitImage({ bytes, mimeType })`` boundary:
@@ -103,6 +103,7 @@ class ToolContext:
         self.emitted_images.append({
             "media_type": media_type,
             "data": base64.b64encode(raw).decode("ascii"),
+            **({"description": description} if description else {}),
         })
 
 

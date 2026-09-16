@@ -5698,17 +5698,19 @@ function MessageBlockCopy({ text, label }: { text: string; label: string }) {
   );
 }
 
-function InlineImages({ images }: { images?: Array<{ media_type: string; data: string }> }) {
+function InlineImages({ images }: { images?: Array<{ media_type: string; data: string; description?: string }> }) {
   if (!images?.length) return null;
   return (
     <div className="message-images" aria-label="图片附件">
       {images.map((image, index) => (
-        <img
-          key={`${image.media_type}-${index}`}
-          src={`data:${image.media_type};base64,${image.data}`}
-          alt={`图片 ${index + 1}`}
-          loading="lazy"
-        />
+        <figure className="message-image" key={`${image.media_type}-${index}`}>
+          <img
+            src={`data:${image.media_type};base64,${image.data}`}
+            alt={`图片 ${index + 1}`}
+            loading="lazy"
+          />
+          {image.description && <figcaption>{image.description}</figcaption>}
+        </figure>
       ))}
     </div>
   );

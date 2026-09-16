@@ -13963,6 +13963,21 @@ html[data-theme-visuals="true"] :is(.composer-box, .welcome-composer)::after {
   margin-top: 10px;
 }
 
+.message-image {
+  margin: 0;
+  min-width: 0;
+  max-width: min(100%, 560px);
+}
+
+.message-image figcaption {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .message-images img {
   display: block;
   max-width: min(100%, 560px);
