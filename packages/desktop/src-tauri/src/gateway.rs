@@ -669,7 +669,6 @@ fn run_probe_command(command: &mut Command, timeout: Duration) -> Result<String,
     }
 }
 
-#[cfg(any(not(debug_assertions), test))]
 fn check_gateway_installation(python: &str) -> Result<(), String> {
     let script = r#"
 import sys
@@ -921,7 +920,6 @@ fn managed_gateway_python_path(environment: &Path) -> PathBuf {
     return environment.join("bin").join("python");
 }
 
-#[cfg(any(not(debug_assertions), test))]
 fn ensure_managed_gateway_python_at(
     base_python: &str,
     environment: &Path,
@@ -1048,7 +1046,15 @@ fn run_streaming_command(
 }
 
 fn install_gateway(python: &str, on_output: &(impl Fn(&str) + Sync)) -> Result<(), String> {
-    let package = format!("crabcode[gateway]=={}", env!("CARGO_PKG_VERSION"));
+    let package = gateway_suite_package("gateway")?;
+    install_gateway_package(python, &package, on_output)
+}
+
+fn install_gateway_package(
+    python: &str,
+    package: &str,
+    on_output: &(impl Fn(&str) + Sync),
+) -> Result<(), String> {
     let mut command = Command::new(python);
     configure_python_utf8(&mut command);
     command.args([
@@ -1069,6 +1075,221 @@ fn install_gateway(python: &str, on_output: &(impl Fn(&str) + Sync)) -> Result<(
     Err(format!(
         "Failed to install {package}. Run `{python} -m pip install --upgrade \"{package}\"` manually. {detail}"
     ))
+}
+
+const GATEWAY_INSTALL_FEATURES: &[&str] = &["search", "debugger"];
+
+fn legacy_gateway_suite_features(suite: &str) -> Result<Vec<String>, String> {
+    match suite {
+        "gateway" => Ok(Vec::new()),
+        "search" => Ok(vec!["search".to_string()]),
+        "debugger" => Ok(vec!["debugger".to_string()]),
+        "search-debugger" => Ok(vec!["search".to_string(), "debugger".to_string()]),
+        _ => Err("Unknown CrabCode suite".to_string()),
+    }
+}
+
+fn normalize_gateway_install_features(features: Vec<String>) -> Result<Vec<String>, String> {
+    for feature in &features {
+        if !GATEWAY_INSTALL_FEATURES.contains(&feature.as_str()) {
+            return Err(format!("Unknown CrabCode feature: {feature}"));
+        }
+    }
+    Ok(GATEWAY_INSTALL_FEATURES
+        .iter()
+        .filter(|feature| {
+            features
+                .iter()
+                .any(|selected| selected.as_str() == **feature)
+        })
+        .map(|feature| (*feature).to_string())
+        .collect())
+}
+
+fn gateway_install_features(
+    features: Option<Vec<String>>,
+    legacy_suite: Option<&str>,
+) -> Result<Vec<String>, String> {
+    if let Some(features) = features {
+        return normalize_gateway_install_features(features);
+    }
+    legacy_gateway_suite_features(legacy_suite.unwrap_or("gateway"))
+}
+
+fn gateway_features_package(features: &[String]) -> Result<String, String> {
+    let features = normalize_gateway_install_features(features.to_vec())?;
+    let mut extras = vec!["gateway".to_string()];
+    extras.extend(features);
+    Ok(format!(
+        "crabcode[{}]=={}",
+        extras.join(","),
+        env!("CARGO_PKG_VERSION")
+    ))
+}
+
+fn gateway_suite_package(suite: &str) -> Result<String, String> {
+    gateway_features_package(&legacy_gateway_suite_features(suite)?)
+}
+
+fn gateway_feature_modules(features: &[String]) -> Result<Vec<&'static str>, String> {
+    let features = normalize_gateway_install_features(features.to_vec())?;
+    let mut modules = Vec::new();
+    if features.iter().any(|feature| feature == "search") {
+        modules.extend([
+            "crabcode_search",
+            "usearch",
+            "tree_sitter_language_pack",
+            "sentence_transformers",
+            "modelscope",
+        ]);
+    }
+    if features.iter().any(|feature| feature == "debugger") {
+        modules.push("crabcode_debugger");
+    }
+    Ok(modules)
+}
+
+fn gateway_suite_name(features: &[String]) -> String {
+    if features.is_empty() {
+        "gateway".to_string()
+    } else {
+        features.join("-")
+    }
+}
+
+fn check_gateway_feature_installation(python: &str, features: &[String]) -> Result<(), String> {
+    check_gateway_installation(python)?;
+    let modules = gateway_feature_modules(features)?;
+    if modules.is_empty() {
+        return Ok(());
+    }
+    let encoded = serde_json::to_string(&modules).map_err(|error| error.to_string())?;
+    let script = r#"
+import importlib.util, json, sys
+modules = json.loads(sys.argv[1])
+missing = [name for name in modules if importlib.util.find_spec(name) is None]
+if missing:
+    raise RuntimeError("Missing suite modules: " + ", ".join(missing))
+"#;
+    let mut command = Command::new(python);
+    configure_python_utf8(&mut command);
+    if let Some(home) = dirs::home_dir() {
+        command.current_dir(home);
+    }
+    command.args(["-c", script, &encoded]);
+    run_probe_command(&mut command, Duration::from_secs(15)).map(|_| ())
+}
+
+fn resolve_gateway_install_python(configured: Option<&str>) -> Result<String, String> {
+    let base_candidates = python_candidates(configured, false);
+    let mut installed_candidates = base_candidates.clone();
+    if let Ok(environment) = managed_gateway_environment_dir() {
+        push_unique(
+            &mut installed_candidates,
+            managed_gateway_python_path(&environment)
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    for candidate in installed_candidates {
+        if supported_gateway_python(&candidate) && check_gateway_installation(&candidate).is_ok() {
+            return Ok(candidate);
+        }
+    }
+
+    let base_python = base_candidates
+        .into_iter()
+        .find(|candidate| supported_gateway_python(candidate))
+        .ok_or_else(|| {
+            "Python 3.10 or newer was not found. Install Python or set a Python path in Desktop settings."
+                .to_string()
+        })?;
+    let environment = managed_gateway_environment_dir()?;
+    ensure_managed_gateway_python_at(&base_python, &environment, &|_| {})
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewaySuiteInstallProgress {
+    operation_id: String,
+    stage: String,
+    detail: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewaySuiteInstallResult {
+    suite: String,
+    features: Vec<String>,
+    package_spec: String,
+    python: String,
+}
+
+fn emit_gateway_suite_progress(app: &AppHandle, operation_id: &str, stage: &str, detail: &str) {
+    let _ = app.emit(
+        "gateway-suite-install-progress",
+        GatewaySuiteInstallProgress {
+            operation_id: operation_id.to_string(),
+            stage: stage.to_string(),
+            detail: detail.to_string(),
+        },
+    );
+}
+
+#[tauri::command]
+pub async fn install_gateway_suite(
+    app: AppHandle,
+    python_path: Option<String>,
+    features: Option<Vec<String>>,
+    suite: Option<String>,
+    operation_id: String,
+) -> Result<GatewaySuiteInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let features = gateway_install_features(features, suite.as_deref())?;
+        let package_spec = gateway_features_package(&features)?;
+        let processes = app.state::<GatewayProcesses>();
+        let _startup = processes
+            .startup
+            .lock()
+            .map_err(|_| "Gateway setup registry is unavailable".to_string())?;
+        emit_gateway_suite_progress(
+            &app,
+            &operation_id,
+            "selecting_environment",
+            "正在定位 Desktop 使用的本地 Python 环境",
+        );
+        let python = resolve_gateway_install_python(python_path.as_deref())?;
+        emit_gateway_suite_progress(
+            &app,
+            &operation_id,
+            "installing",
+            &format!("正在安装 {package_spec} · {python}"),
+        );
+        install_gateway_package(&python, &package_spec, &|line| {
+            emit_gateway_suite_progress(&app, &operation_id, "installing", line)
+        })?;
+        emit_gateway_suite_progress(
+            &app,
+            &operation_id,
+            "verifying",
+            "正在验证套件模块与 Gateway 版本",
+        );
+        check_gateway_feature_installation(&python, &features)?;
+        emit_gateway_suite_progress(
+            &app,
+            &operation_id,
+            "complete",
+            &format!("{package_spec} 安装完成"),
+        );
+        Ok(GatewaySuiteInstallResult {
+            suite: gateway_suite_name(&features),
+            features,
+            package_spec,
+            python,
+        })
+    })
+    .await
+    .map_err(|error| format!("Gateway suite installer task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1254,6 +1475,56 @@ fn stop_registered_gateway(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gateway_suite_specs_keep_gateway_and_desktop_version() {
+        assert_eq!(
+            gateway_suite_package("gateway").unwrap(),
+            format!("crabcode[gateway]=={}", env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            gateway_suite_package("search").unwrap(),
+            format!("crabcode[gateway,search]=={}", env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            gateway_suite_package("debugger").unwrap(),
+            format!("crabcode[gateway,debugger]=={}", env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            gateway_suite_package("search-debugger").unwrap(),
+            format!(
+                "crabcode[gateway,search,debugger]=={}",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        assert!(gateway_suite_package("unknown").is_err());
+    }
+
+    #[test]
+    fn gateway_features_are_independent_canonical_and_backward_compatible() {
+        let selected = gateway_install_features(
+            Some(vec![
+                "debugger".to_string(),
+                "search".to_string(),
+                "debugger".to_string(),
+            ]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(selected, vec!["search".to_string(), "debugger".to_string()]);
+        assert_eq!(
+            gateway_features_package(&selected).unwrap(),
+            format!(
+                "crabcode[gateway,search,debugger]=={}",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        assert_eq!(
+            gateway_install_features(None, Some("search-debugger")).unwrap(),
+            selected
+        );
+        assert!(gateway_install_features(Some(vec!["unknown".to_string()]), None).is_err());
+    }
 
     #[cfg(unix)]
     #[test]

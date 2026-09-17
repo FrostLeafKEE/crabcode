@@ -110,6 +110,7 @@ function changeInput(input: HTMLInputElement, value: string) {
 describe("settings search", () => {
   it("matches section names, item labels, and descriptions", () => {
     expect(filterSettingsSections("Python").map((section) => section.id)).toEqual(["general"]);
+    expect(filterSettingsSections("Debugger").map((section) => section.id)).toEqual(["general"]);
     expect(filterSettingsSections("凭据").map((section) => section.id)).toEqual(["connections"]);
     expect(filterSettingsSections("工作目录").map((section) => section.id)).toEqual(["projects"]);
     expect(filterSettingsSections("Dock 图标").map((section) => section.id)).toEqual(["appearance"]);
@@ -148,6 +149,7 @@ describe("SettingsView", () => {
   const callbacks = () => ({
     onBack: vi.fn(),
     onSavePythonPath: vi.fn(),
+    onInstallGatewaySuite: vi.fn().mockResolvedValue(undefined),
     onConversationChange: vi.fn(),
     onDocumentChange: vi.fn(),
     onThemeModeChange: vi.fn(),
@@ -216,6 +218,38 @@ describe("SettingsView", () => {
     act(() => input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
 
     expect(handlers.onSavePythonPath).toHaveBeenCalledWith("/opt/python3");
+  });
+
+  it("checks independent CrabCode features and installs them together", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+    const handlers = callbacks();
+    act(() => root.render(
+      <SettingsView
+        {...handlers}
+        settings={settings}
+        gateways={{ local: onlineGateway }}
+        activeConnection={settings.connections[0]}
+        activeProject={settings.connections[0].projects[0]}
+        activeSection="general"
+        onSectionChange={vi.fn()}
+      />,
+    ));
+
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search"]')!;
+    const debuggerOption = container.querySelector<HTMLInputElement>('input[aria-label="Debugger"]')!;
+    expect(search.checked).toBe(true);
+    expect(debuggerOption.checked).toBe(false);
+    act(() => {
+      debuggerOption.click();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+        .find((button) => button.textContent?.includes("安装套件"))!
+        .click();
+      await Promise.resolve();
+    });
+
+    expect(handlers.onInstallGatewaySuite).toHaveBeenCalledWith(["search", "debugger"], null);
   });
 
   it("controls turn duration visibility and format", () => {

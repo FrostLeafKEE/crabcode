@@ -130,6 +130,7 @@ import {
   ensureLocalGateway,
   getDocumentEngineStatus,
   installDocumentEngine,
+  installGatewaySuite,
   isDesktopShell,
   isInsecureRemoteUrl,
   isLoopbackUrl,
@@ -140,6 +141,8 @@ import {
   setDockIcon,
   storeCredential,
   type DocumentEngineInstallProgress,
+  type GatewayInstallFeature,
+  type GatewaySuiteInstallProgress,
 } from "./native";
 import type {
   BackgroundTaskInfo,
@@ -727,6 +730,10 @@ function App() {
   const [documentEngineBusy, setDocumentEngineBusy] = useState<"install" | "remove" | null>(null);
   const [documentEngineProgress, setDocumentEngineProgress] = useState<DocumentEngineInstallProgress | null>(null);
   const [documentEngineError, setDocumentEngineError] = useState<string | null>(null);
+  const [gatewaySuiteBusy, setGatewaySuiteBusy] = useState(false);
+  const [gatewaySuiteProgress, setGatewaySuiteProgress] = useState<GatewaySuiteInstallProgress | null>(null);
+  const [gatewaySuiteError, setGatewaySuiteError] = useState<string | null>(null);
+  const [gatewaySuiteSuccess, setGatewaySuiteSuccess] = useState<string | null>(null);
   const [referencePathModal, setReferencePathModal] = useState<"all" | "file" | null>(null);
   const [goalModal, setGoalModal] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2964,6 +2971,30 @@ function App() {
           onSavePythonPath={(pythonPath) => {
             commitSettings((current) => ({ ...current, python_path: pythonPath || null }));
           }}
+          gatewaySuiteBusy={gatewaySuiteBusy}
+          gatewaySuiteProgress={gatewaySuiteProgress}
+          gatewaySuiteError={gatewaySuiteError}
+          gatewaySuiteSuccess={gatewaySuiteSuccess}
+          onInstallGatewaySuite={async (features: readonly GatewayInstallFeature[], pythonPath) => {
+            setGatewaySuiteBusy(true);
+            setGatewaySuiteError(null);
+            setGatewaySuiteSuccess(null);
+            setGatewaySuiteProgress({
+              operationId: "pending",
+              stage: "preparing",
+              detail: "正在准备安装 CrabCode 套件",
+            });
+            try {
+              const result = await installGatewaySuite(pythonPath, features, setGatewaySuiteProgress);
+              setGatewaySuiteSuccess(`${result.packageSpec} 已安装到 ${result.python}`);
+            } catch (reason) {
+              setGatewaySuiteError(reason instanceof Error ? reason.message : String(reason));
+              throw reason;
+            } finally {
+              setGatewaySuiteBusy(false);
+              setGatewaySuiteProgress(null);
+            }
+          }}
           onConversationChange={(changes) => {
             commitSettings((current) => ({ ...current, ...changes }));
           }}
@@ -3907,7 +3938,11 @@ function App() {
         gateway={activeGateway}
         startup={activeConnection ? gatewayStartups[activeConnection.id] : undefined}
         project={activeProject}
-        activity={documentEngineBusy ? documentEngineProgress?.detail ?? (documentEngineBusy === "install" ? "正在安装高精度 PDF 引擎…" : "正在移除高精度 PDF 引擎…") : null}
+        activity={gatewaySuiteBusy
+          ? gatewaySuiteProgress?.detail ?? "正在安装 CrabCode 套件…"
+          : documentEngineBusy
+            ? documentEngineProgress?.detail ?? (documentEngineBusy === "install" ? "正在安装高精度 PDF 引擎…" : "正在移除高精度 PDF 引擎…")
+            : null}
         onConnections={() => setConnectionModal(activeConnection?.id ?? "new")}
         onRetry={activeConnection ? () => void connectGateway(activeConnection, settings.python_path) : undefined}
       />

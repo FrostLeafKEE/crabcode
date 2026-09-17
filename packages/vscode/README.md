@@ -24,7 +24,11 @@ checkpoint recovery without leaving the editor.
 
    The default Gateway WebSocket address is `ws://localhost:4096/ws`.
    The extension can also detect, install, and start a local Gateway when
-   `crabcode.gatewayAutoInstall` is enabled.
+   `crabcode.gatewayAutoInstall` is enabled. Automatic installation intentionally
+   stays on the lightweight `gateway` extra. From CrabCode settings, select
+   **选择并安装其他套件**, or run **CrabCode：选择并安装本地套件**, to add
+   optional capabilities through a multi-select checklist. Gateway is always
+   included; Search and Debugger can be checked independently.
 3. Configure the model provider, model, and credentials on the Gateway machine
    using `~/.crabcode/settings.json`. See the
    [model configuration examples](https://github.com/ylzz1997/crabcode#multi-api-support-1).
@@ -68,6 +72,11 @@ Open **Settings** and search for `CrabCode`, or add settings such as:
   "crabcode.showDiffOnFileChange": false
 }
 ```
+
+Installing a suite provides its Python package and dependencies. Search and
+Debugger remain disabled until their import paths are added to the Gateway's
+`extra_tools` configuration. Remote Gateway suites must be installed on the
+remote host.
 
 ### Gateway authentication
 

@@ -40,6 +40,13 @@ starts and passes its health check. Unusable candidates are skipped with a
 diagnostic in the startup log. If none is usable, Desktop creates or reuses
 `~/.crabcode/desktop/gateway-venv` and installs CrabCode there as needed; it does
 not install into or upgrade external system, Homebrew, or Conda environments.
+This rule applies to automatic provisioning. **Settings → General → CrabCode
+Suite** provides a component checklist and install button. Gateway is always
+selected, while Search, Debugger, and future optional capabilities can be
+checked independently for the Python environment Desktop resolves for the
+local Gateway. Search has substantially larger dependencies. Installation does
+not enable tools automatically; add their import paths under **Runtime & Tools**
+when they should be available to new sessions.
 `npm run tauri dev` instead uses the configured Python or
 the terminal's active Python environment directly so Gateway source and local
 editable installs can be debugged.

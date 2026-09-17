@@ -32,6 +32,28 @@ function loadDetection(probe, platform = "win32") {
   return exports.detectPython;
 }
 
+function loadGatewayManager() {
+  const filename = path.join(__dirname, "../src/gatewayManager.ts");
+  const source = ts.transpileModule(fs.readFileSync(filename, "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const exports = {};
+  vm.runInNewContext(source, {
+    exports,
+    process: { platform: "linux", env: {} },
+    URL,
+    require(name) {
+      if (name === "vscode") return {
+        extensions: { getExtension: () => undefined },
+        window: { showWarningMessage() {} },
+      };
+      if (name === "child_process") return {};
+      return require(name);
+    },
+  }, { filename });
+  return exports;
+}
+
 const config = { get: (_key, fallback) => fallback };
 
 test("Windows py-only installation returns its concrete interpreter with spaces", async () => {
@@ -68,4 +90,25 @@ test("Configured Python stays higher priority than py", async () => {
 test("POSIX discovery does not probe the Windows launcher", async () => {
   const detect = loadDetection((command) => { assert.notEqual(command, "py"); }, "linux");
   assert.equal(await detect(config), null);
+});
+
+test("independent feature package specs always keep Gateway, stable order, and paired version", () => {
+  const { gatewayPackageSpec } = loadGatewayManager();
+  assert.equal(gatewayPackageSpec("0.1.5", []), "crabcode[gateway]==0.1.5");
+  assert.equal(gatewayPackageSpec("0.1.5", ["search"]), "crabcode[gateway,search]==0.1.5");
+  assert.equal(gatewayPackageSpec("0.1.5", ["debugger"]), "crabcode[gateway,debugger]==0.1.5");
+  assert.equal(
+    gatewayPackageSpec("0.1.5", ["debugger", "search", "debugger"]),
+    "crabcode[gateway,search,debugger]==0.1.5",
+  );
+  assert.throws(() => gatewayPackageSpec("0.1.5", ["unknown"]), /Unknown CrabCode feature/);
+
+  // Legacy scalar suite IDs stay supported for existing callers.
+  assert.equal(gatewayPackageSpec("0.1.5", "gateway"), "crabcode[gateway]==0.1.5");
+  assert.equal(gatewayPackageSpec("0.1.5", "search"), "crabcode[gateway,search]==0.1.5");
+  assert.equal(gatewayPackageSpec("0.1.5", "debugger"), "crabcode[gateway,debugger]==0.1.5");
+  assert.equal(
+    gatewayPackageSpec("0.1.5", "search-debugger"),
+    "crabcode[gateway,search,debugger]==0.1.5",
+  );
 });

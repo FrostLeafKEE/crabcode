@@ -34,6 +34,7 @@
     "onCommand:crabcode.newSession",
     "onCommand:crabcode.connect",
     "onCommand:crabcode.disconnect",
+    "onCommand:crabcode.installGatewaySuite",
     "onView:crabcode.chatPanel"
   ],
   "main": "./dist/extension.js",
@@ -86,6 +87,10 @@
       {
         "command": "crabcode.restartGateway",
         "title": "CrabCode：重启网关"
+      },
+      {
+        "command": "crabcode.installGatewaySuite",
+        "title": "CrabCode：选择并安装本地套件"
       }
     ],
     "viewsContainers": {
@@ -188,7 +193,8 @@
         "crabcode.gatewayAutoInstall": {
           "type": "boolean",
           "default": true,
-          "description": "当检测不到 crabcode-gateway 时是否自动安装并启动"
+          "description": "当检测不到 crabcode-gateway 时是否自动安装并启动",
+          "markdownDescription": "当检测不到本地 Gateway 时，自动安装轻量的 `crabcode[gateway]` 并启动。需要可选能力时，可[勾选并安装其他组件](command:crabcode.installGatewaySuite)。"
         },
         "crabcode.debugLogRawWsPayload": {
           "type": "boolean",

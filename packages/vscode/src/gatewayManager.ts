@@ -49,6 +49,57 @@ interface InstalledGatewayInfo extends ProtocolSupport {
   version: string;
 }
 
+export type GatewayInstallFeature = "search" | "debugger";
+export type GatewayInstallSuite = "gateway" | "search" | "debugger" | "search-debugger";
+type GatewayInstallSelection = GatewayInstallSuite | readonly GatewayInstallFeature[];
+
+export const GATEWAY_INSTALL_FEATURES: ReadonlyArray<{
+  id: GatewayInstallFeature;
+  label: string;
+  description: string;
+  detail: string;
+}> = [
+  {
+    id: "search",
+    label: "Search",
+    description: "语义代码搜索",
+    detail: "增加 Search 索引与本地嵌入依赖，下载体积较大。",
+  },
+  {
+    id: "debugger",
+    label: "Debugger",
+    description: "DAP 与进程调试",
+    detail: "增加 Debugger 套件；实际能力取决于本机调试器、权限与平台。",
+  },
+];
+
+function normalizeGatewayInstallFeatures(selection: GatewayInstallSelection): GatewayInstallFeature[] {
+  const legacyFeatures: Record<GatewayInstallSuite, readonly GatewayInstallFeature[]> = {
+    gateway: [],
+    search: ["search"],
+    debugger: ["debugger"],
+    "search-debugger": ["search", "debugger"],
+  };
+  const requested = typeof selection === "string" ? legacyFeatures[selection] : selection;
+  if (!requested) throw new Error("Unknown CrabCode suite");
+  for (const feature of requested) {
+    if (!GATEWAY_INSTALL_FEATURES.some((candidate) => candidate.id === feature)) {
+      throw new Error(`Unknown CrabCode feature: ${feature}`);
+    }
+  }
+  return GATEWAY_INSTALL_FEATURES
+    .map((feature) => feature.id)
+    .filter((feature) => requested.includes(feature));
+}
+
+export function gatewayPackageSpec(
+  version: string,
+  selection: GatewayInstallSelection = [],
+): string {
+  const features = normalizeGatewayInstallFeatures(selection);
+  return `crabcode[gateway${features.map((feature) => `,${feature}`).join("")}]==${version}`;
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function execAsync(
@@ -476,8 +527,9 @@ async function installGateway(
   python: string,
   version: string,
   outputChannel: vscode.OutputChannel,
+  selection: GatewayInstallSelection = [],
 ): Promise<boolean> {
-  const packageSpec = `${GATEWAY_PKG}==${version}`;
+  const packageSpec = gatewayPackageSpec(version, selection);
   outputChannel.show(true);
   outputChannel.appendLine(`[CrabCode] 正在安装 ${packageSpec} ...`);
 
@@ -510,6 +562,82 @@ async function installGateway(
       resolve(false);
     });
   });
+}
+
+/** Let the user install an optional CrabCode suite into the selected local Python. */
+export async function chooseAndInstallGatewaySuite(
+  config: vscode.WorkspaceConfiguration,
+  outputChannel: vscode.OutputChannel,
+  expectedVersion: string,
+): Promise<boolean> {
+  const serverUrl = config.get<string>("serverUrl", "ws://localhost:4096/ws");
+  const target = parseGatewayTarget(serverUrl);
+  if (!target) {
+    vscode.window.showErrorMessage("CrabCode：serverUrl 必须是有效的 ws:// 或 wss:// 地址。");
+    return false;
+  }
+  if (!target.isLocal) {
+    vscode.window.showWarningMessage(
+      "CrabCode：当前配置的是远程 Gateway。请在远程主机上安装可选套件，本机不会代为修改。",
+    );
+    return false;
+  }
+  if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(expectedVersion)) {
+    vscode.window.showErrorMessage(
+      `CrabCode：扩展版本“${expectedVersion}”无效，无法确定匹配的套件版本。`,
+    );
+    return false;
+  }
+
+  const selected = await vscode.window.showQuickPick(
+    GATEWAY_INSTALL_FEATURES.map((feature) => ({
+      label: feature.label,
+      description: feature.description,
+      detail: feature.detail,
+      feature: feature.id,
+    })),
+    {
+      title: "安装 CrabCode 套件",
+      placeHolder: "勾选要安装的可选能力；基础 Gateway 始终安装",
+      ignoreFocusOut: true,
+      canPickMany: true,
+    },
+  );
+  if (!selected) return false;
+  const features = selected.map((item) => item.feature);
+  const selectedLabel = selected.length > 0
+    ? `Gateway + ${selected.map((item) => item.label).join(" + ")}`
+    : "基础 Gateway";
+
+  const python = await detectPython(config);
+  if (!python) {
+    vscode.window.showErrorMessage(
+      "CrabCode：未找到 Python >= 3.10，请安装 Python 或在设置中指定 crabcode.pythonPath。",
+    );
+    return false;
+  }
+
+  const packageSpec = gatewayPackageSpec(expectedVersion, features);
+  const ok = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `CrabCode：正在安装 ${selectedLabel}`,
+      cancellable: false,
+    },
+    () => installGateway(python, expectedVersion, outputChannel, features),
+  );
+  if (!ok) {
+    vscode.window.showErrorMessage(
+      `CrabCode：安装 ${packageSpec} 失败，请检查输出面板或手动执行 ` +
+      `python -m pip install --upgrade "${packageSpec}"`,
+    );
+    return false;
+  }
+
+  vscode.window.showInformationMessage(
+    `CrabCode：${selectedLabel} 已安装。新会话可使用新增依赖；如 Gateway 已运行，可按需重启。`,
+  );
+  return true;
 }
 
 // ── Gateway start / stop ─────────────────────────────────────────────
@@ -661,7 +789,7 @@ async function installExpectedGateway(
   expectedVersion: string,
   outputChannel: vscode.OutputChannel,
 ): Promise<boolean> {
-  const packageSpec = `${GATEWAY_PKG}==${expectedVersion}`;
+  const packageSpec = gatewayPackageSpec(expectedVersion);
   const ok = await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,

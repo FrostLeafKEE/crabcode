@@ -1012,6 +1012,12 @@ Desktop 的“设置 → 运行与工具”可以直接编辑这些字段，也�
 上新增或移除 `extra_tools` 导入路径；对应工具包必须安装在 Gateway 环境中。
 修改会对新建会话或重新连接的现有会话生效。
 
+对于本地 Gateway，Desktop 还会在“设置 → 常规 → CrabCode 套件”中提供套件
+安装入口。自动配置仍只安装轻量的 `gateway` extra；主动安装时会固定勾选 Gateway，
+并允许独立勾选 Search、Debugger 以及未来新增的可选能力。VS Code 扩展也通过
+“CrabCode：选择并安装本地套件”命令，或 `crabcode.gatewayAutoInstall` 旁边的链接
+提供同样的多选方式。两个客户端都不会修改远程环境。
+
 **网关 API：**
 
 | 端点 | 方法 | 说明 |

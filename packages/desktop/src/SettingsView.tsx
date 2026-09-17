@@ -9,6 +9,7 @@ import {
   FolderCog,
   Image as ImageIcon,
   Info,
+  LoaderCircle,
   Minus,
   Pencil,
   Paintbrush,
@@ -42,6 +43,8 @@ import {
   loadCustomDockIcon,
   saveThemeExport,
   type DocumentEngineInstallProgress,
+  type GatewayInstallFeature,
+  type GatewaySuiteInstallProgress,
 } from "./native";
 import type {
   CodeFontFamily,
@@ -80,7 +83,7 @@ export const SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     id: "general",
     title: "常规",
     description: "运行环境、文件上传、文件查看与会话设置",
-    searchText: "常规 运行环境 Python 路径 自动检测 本地启动 浏览器模式 文件 上传 内容 路径 引用 查看 浏览 标签 标签页 最大标签数 最大数量 上限 会话 显示 处理用时 耗时 仅秒数 时分秒 发送快捷键 Enter 回车 Ctrl Cmd Command",
+    searchText: "常规 运行环境 Python 路径 自动检测 本地启动 CrabCode 套件 安装 Gateway Search Debugger 语义搜索 调试 浏览器模式 文件 上传 内容 路径 引用 查看 浏览 标签 标签页 最大标签数 最大数量 上限 会话 显示 处理用时 耗时 仅秒数 时分秒 发送快捷键 Enter 回车 Ctrl Cmd Command",
   },
   {
     id: "appearance",
@@ -242,6 +245,11 @@ interface SettingsViewProps {
   onSectionChange: (section: SettingsSectionId) => void;
   onBack: () => void;
   onSavePythonPath: (path: string) => void;
+  gatewaySuiteBusy?: boolean;
+  gatewaySuiteProgress?: GatewaySuiteInstallProgress | null;
+  gatewaySuiteError?: string | null;
+  gatewaySuiteSuccess?: string | null;
+  onInstallGatewaySuite?: (features: readonly GatewayInstallFeature[], pythonPath: string | null) => Promise<void>;
   onConversationChange: (changes: ConversationSettingsUpdate) => void;
   onDocumentChange: (changes: DocumentSettingsUpdate) => void;
   onThemeModeChange: (mode: ThemeMode) => void;
@@ -506,6 +514,11 @@ export function SettingsView({
   onSectionChange,
   onBack,
   onSavePythonPath,
+  gatewaySuiteBusy = false,
+  gatewaySuiteProgress = null,
+  gatewaySuiteError = null,
+  gatewaySuiteSuccess = null,
+  onInstallGatewaySuite,
   onConversationChange,
   onDocumentChange,
   onThemeModeChange,
@@ -546,6 +559,7 @@ export function SettingsView({
 }: SettingsViewProps) {
   const [query, setQuery] = useState("");
   const [pythonPath, setPythonPath] = useState(settings.python_path ?? "");
+  const [gatewayFeatures, setGatewayFeatures] = useState<GatewayInstallFeature[]>(["search"]);
   const [customIconPreview, setCustomIconPreview] = useState<string | null>(null);
   const [dockIconBusy, setDockIconBusy] = useState(false);
   const [appearanceError, setAppearanceError] = useState<string | null>(null);
@@ -591,6 +605,26 @@ export function SettingsView({
     const normalized = pythonPath.trim();
     setPythonPath(normalized);
     if (normalized !== (settings.python_path ?? "")) onSavePythonPath(normalized);
+  };
+
+  const installSelectedGatewaySuite = async () => {
+    if (!onInstallGatewaySuite) return;
+    const normalizedPythonPath = pythonPath.trim();
+    setPythonPath(normalizedPythonPath);
+    if (normalizedPythonPath !== (settings.python_path ?? "")) {
+      onSavePythonPath(normalizedPythonPath);
+    }
+    try {
+      await onInstallGatewaySuite(gatewayFeatures, normalizedPythonPath || null);
+    } catch {
+      // The application-level task owner preserves and displays the error.
+    }
+  };
+
+  const setGatewayFeatureSelected = (feature: GatewayInstallFeature, selected: boolean) => {
+    setGatewayFeatures((current) => (["search", "debugger"] as const).filter((candidate) => (
+      candidate === feature ? selected : current.includes(candidate)
+    )));
   };
 
   const activeDefinition = SETTINGS_SECTIONS.find((section) => section.id === activeSection)!;
@@ -777,40 +811,94 @@ export function SettingsView({
             {activeSection === "general" && (
               <section className="settings-section" aria-labelledby="runtime-settings-title">
                 <h2 id="runtime-settings-title">运行环境</h2>
-                <div className="settings-group">
+                <div className="settings-group gateway-environment-group">
                   {isDesktopShell() ? (
-                    <div className="settings-row">
-                      <div className="settings-row-copy">
-                        <strong>Python 路径</strong>
-                        <span>用于自动安装和启动本地 Gateway，留空时自动检测 python3 或 python。</span>
-                      </div>
-                      <div className="settings-input-control">
-                        <input
-                          aria-label="Python 路径"
-                          value={pythonPath}
-                          placeholder="自动检测 python3 / python"
-                          onBlur={savePythonPath}
-                          onChange={(event) => setPythonPath(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") event.currentTarget.blur();
-                          }}
-                        />
-                        {pythonPath && (
-                          <button
-                            className="icon-button small"
-                            type="button"
-                            title="恢复自动检测"
-                            aria-label="恢复自动检测"
-                            onClick={() => {
-                              setPythonPath("");
-                              onSavePythonPath("");
+                    <>
+                      <div className="settings-row">
+                        <div className="settings-row-copy">
+                          <strong>Python 路径</strong>
+                          <span>用于自动安装和启动本地 Gateway，留空时自动检测 python3 或 python。</span>
+                        </div>
+                        <div className="settings-input-control">
+                          <input
+                            aria-label="Python 路径"
+                            value={pythonPath}
+                            placeholder="自动检测 python3 / python"
+                            onBlur={savePythonPath}
+                            onChange={(event) => setPythonPath(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") event.currentTarget.blur();
                             }}
-                          >
-                            <RotateCcw />
-                          </button>
-                        )}
+                          />
+                          {pythonPath && (
+                            <button
+                              className="icon-button small"
+                              type="button"
+                              title="恢复自动检测"
+                              aria-label="恢复自动检测"
+                              onClick={() => {
+                                setPythonPath("");
+                                onSavePythonPath("");
+                              }}
+                            >
+                              <RotateCcw />
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    </div>
+                      <div className="settings-row gateway-suite-row">
+                        <div className="settings-row-copy">
+                          <strong>CrabCode 套件</strong>
+                          <span>基础 Gateway 始终安装；按需勾选其他能力。新增能力会作为独立选项加入；安装后仍需在“运行与工具”中启用。</span>
+                        </div>
+                        <div className="gateway-suite-install">
+                          <div className="gateway-feature-list" role="group" aria-label="CrabCode 安装组件">
+                            <label className="gateway-feature-option is-required">
+                              <input type="checkbox" checked disabled readOnly />
+                              <span><strong>Gateway</strong><small>必装 · 本地服务与客户端协议</small></span>
+                            </label>
+                            <label className="gateway-feature-option">
+                              <input
+                                type="checkbox"
+                                aria-label="Search"
+                                checked={gatewayFeatures.includes("search")}
+                                disabled={gatewaySuiteBusy}
+                                onChange={(event) => setGatewayFeatureSelected("search", event.target.checked)}
+                              />
+                              <span><strong>Search</strong><small>语义代码搜索 · 依赖体积较大</small></span>
+                            </label>
+                            <label className="gateway-feature-option">
+                              <input
+                                type="checkbox"
+                                aria-label="Debugger"
+                                checked={gatewayFeatures.includes("debugger")}
+                                disabled={gatewaySuiteBusy}
+                                onChange={(event) => setGatewayFeatureSelected("debugger", event.target.checked)}
+                              />
+                              <span><strong>Debugger</strong><small>DAP 与进程级调试</small></span>
+                            </label>
+                          </div>
+                          <div className="gateway-suite-actions">
+                            <button
+                              className="settings-command primary"
+                              type="button"
+                              disabled={gatewaySuiteBusy || !onInstallGatewaySuite}
+                              onClick={() => void installSelectedGatewaySuite()}
+                            >
+                              {gatewaySuiteBusy ? <LoaderCircle className="spin" /> : <Download />}
+                              <span>{gatewaySuiteBusy ? "正在安装" : "安装套件"}</span>
+                            </button>
+                          </div>
+                          {gatewaySuiteBusy && gatewaySuiteProgress && (
+                            <small className="gateway-suite-progress" role="status" title={gatewaySuiteProgress.detail}>
+                              {gatewaySuiteProgress.detail}
+                            </small>
+                          )}
+                          {gatewaySuiteError && <small className="gateway-suite-error" role="alert">{gatewaySuiteError}</small>}
+                          {gatewaySuiteSuccess && <small className="gateway-suite-success" role="status">{gatewaySuiteSuccess}</small>}
+                        </div>
+                      </div>
+                    </>
                   ) : (
                     <div className="settings-row">
                       <div className="settings-row-copy">

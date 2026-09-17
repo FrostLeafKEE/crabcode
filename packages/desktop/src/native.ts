@@ -46,6 +46,40 @@ interface EnsureGatewayResult {
   message: string;
 }
 
+export type GatewayInstallFeature = "search" | "debugger";
+export type GatewayInstallSuite = "gateway" | "search" | "debugger" | "search-debugger";
+export type GatewayInstallSelection = GatewayInstallSuite | readonly GatewayInstallFeature[];
+
+export interface GatewaySuiteInstallProgress {
+  operationId: string;
+  stage: string;
+  detail: string;
+}
+
+export interface GatewaySuiteInstallResult {
+  /** Legacy summary retained for older callers; use features for new UI. */
+  suite: string;
+  features: GatewayInstallFeature[];
+  packageSpec: string;
+  python: string;
+}
+
+function normalizeGatewayInstallFeatures(selection: GatewayInstallSelection): GatewayInstallFeature[] {
+  const legacyFeatures: Record<GatewayInstallSuite, readonly GatewayInstallFeature[]> = {
+    gateway: [],
+    search: ["search"],
+    debugger: ["debugger"],
+    "search-debugger": ["search", "debugger"],
+  };
+  const requested = typeof selection === "string" ? legacyFeatures[selection] : selection;
+  const supported: readonly GatewayInstallFeature[] = ["search", "debugger"];
+  if (!requested) throw new Error("未知的 CrabCode 套件");
+  for (const feature of requested) {
+    if (!supported.includes(feature)) throw new Error(`未知的 CrabCode 可选能力：${feature}`);
+  }
+  return supported.filter((feature) => requested.includes(feature));
+}
+
 const DEFAULT_SETTINGS: DesktopSettings = {
   schema_version: 4,
   active_connection_id: "local",
@@ -449,6 +483,31 @@ export async function ensureLocalGateway(
 export async function shutdownGateway(connectionId: string): Promise<boolean> {
   if (!isDesktopShell()) return false;
   return invoke<boolean>("shutdown_gateway", { connectionId });
+}
+
+export async function installGatewaySuite(
+  pythonPath: string | null,
+  selection: GatewayInstallSelection,
+  onProgress?: (progress: GatewaySuiteInstallProgress) => void,
+): Promise<GatewaySuiteInstallResult> {
+  if (!isDesktopShell()) throw new Error("CrabCode 套件只能由桌面应用安装");
+  const features = normalizeGatewayInstallFeatures(selection);
+  const operationId = randomUuid();
+  const unlisten = onProgress
+    ? await listen<GatewaySuiteInstallProgress>("gateway-suite-install-progress", (event) => {
+        if (event.payload.operationId === operationId) onProgress(event.payload);
+      })
+    : null;
+  try {
+    return await invoke<GatewaySuiteInstallResult>("install_gateway_suite", {
+      pythonPath,
+      features,
+      suite: typeof selection === "string" ? selection : null,
+      operationId,
+    });
+  } finally {
+    unlisten?.();
+  }
 }
 
 export async function installDocumentEngine(

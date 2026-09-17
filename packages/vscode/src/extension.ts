@@ -8,7 +8,7 @@ import * as vscode from "vscode";
 
 import { CrabCodeConnection } from "./connection";
 import { ChatPanelProvider } from "./chatPanel";
-import { ensureGateway, GatewayProcess } from "./gatewayManager";
+import { chooseAndInstallGatewaySuite, ensureGateway, GatewayProcess } from "./gatewayManager";
 import { PendingEditManager } from "./pendingEdits";
 import type { IdeContextSnapshot } from "./ideContext";
 
@@ -470,6 +470,18 @@ function registerCommands(
       vscode.commands.executeCommand(
         "workbench.action.openSettings",
         "crabcode",
+      );
+    }),
+  );
+
+  // Install optional local dependencies without changing lightweight auto-install.
+  push(
+    vscode.commands.registerCommand("crabcode.installGatewaySuite", async () => {
+      if (!outputChannel) return;
+      await chooseAndInstallGatewaySuite(
+        vscode.workspace.getConfiguration("crabcode"),
+        outputChannel,
+        extensionVersion,
       );
     }),
   );

@@ -1038,6 +1038,14 @@ section can add or remove `extra_tools` import paths on the remote Gateway;
 the package must be installed in that Gateway environment. Changes apply to
 new sessions or after reconnecting an existing session.
 
+For a local Gateway, Desktop also exposes **Settings → General → CrabCode
+Suite**. Automatic provisioning keeps the lightweight `gateway` extra, while
+the explicit installer keeps Gateway selected and lets you independently check
+Search, Debugger, and future optional capabilities. The VS Code extension uses
+the same multi-select model through **CrabCode: Select and Install Local Suite**
+and the link beside `crabcode.gatewayAutoInstall`. Remote environments are
+never modified by either client.
+
 **Gateway API:**
 
 | Endpoint | Method | Description |
