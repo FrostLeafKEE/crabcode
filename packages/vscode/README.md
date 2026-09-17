@@ -44,6 +44,10 @@ be installed and running; the extension does not install them remotely.
   permissions, choices, and plans.
 - Explain, fix, refactor, test, or send the selected editor code to chat.
 - Create, resume, interrupt, and fork conversation sessions.
+- Choose reasoning effort from the composer capsule (none through max). Enable
+  Ultra mode from **+**, and click its gradient capsule to turn it off. These
+  settings are saved per session in the workspace and restored on reconnect.
+  Ultra uses the Desktop spectrum animation and respects reduced motion.
 - Review and keep or undo pending file edits.
 - Start, reconnect to, or restart a local Gateway from the editor.
 - Send the active editor context, selection, cursor position, and visible files

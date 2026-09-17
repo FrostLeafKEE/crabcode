@@ -14,6 +14,7 @@ import * as vscode from "vscode";
 import * as os from "os";
 import * as path from "path";
 import type { CrabCodeConnection, SessionLaunchOverrides } from "./connection";
+import { RuntimeControls } from "./runtimeControls";
 import {
   buildChoiceResponseCommand,
   buildPermissionResponseCommand,
@@ -375,6 +376,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   private logFollowAbort: AbortController | null = null;
   private shellTerminal: vscode.Terminal | null = null;
   private shellTerminalCwd: string | null = null;
+  private readonly runtimeControls: RuntimeControls;
   private pendingEditReview: PendingEditReviewSummary | null = null;
   private readonly pendingEditActionEmitter = new vscode.EventEmitter<PendingEditActionMessage>();
   public readonly onPendingEditAction = this.pendingEditActionEmitter.event;
@@ -418,7 +420,39 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     private readonly extensionUri: vscode.Uri,
     private readonly connection: CrabCodeConnection,
     private readonly outputChannel?: vscode.OutputChannel,
+    workspaceState?: vscode.Memento,
   ) {
+    this.runtimeControls = new RuntimeControls(
+      workspaceState,
+      async (endpoint, sessionId, preference) => {
+        const url = new URL(this._gatewayUrl(endpoint));
+        if (!preference) url.searchParams.set("session_id", sessionId);
+        const response = await fetch(url.toString(), {
+          method: preference ? "POST" : "GET",
+          headers: { ...this._gatewayHeaders(), "Content-Type": "application/json" },
+          body: preference ? JSON.stringify({
+            session_id: sessionId,
+            ...(preference.reasoning_effort ? { effort: preference.reasoning_effort } : { enabled: preference.ultra_mode }),
+          }) : undefined,
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!response.ok) throw new Error(await this.gatewayError(response));
+        const status = await response.json() as SessionRuntimeStatus;
+        if (status.mode === "agent" || status.mode === "plan") {
+          this.getSessionState(sessionId).mode = status.mode;
+          if (sessionId === this.displayedSessionId) this.postMessage({ type: "modeChange", mode: status.mode });
+        }
+        return status;
+      },
+      (sessionId, state) => {
+        if (sessionId === this.displayedSessionId) {
+          this.postMessage({ type: "runtimeControls", sessionId, ...state, connected: this.connection.connected });
+        }
+      },
+      (sessionId, message) => this.addSessionSystemMessage(sessionId, message),
+      () => new URL(this._gatewayUrl("/")).origin,
+    );
+    connection.on("disconnected", () => this.pushRuntimeControls());
     // Forward server events to the webview
     connection.on("message", (payload: EventPayload) => {
       this.handleServerEvent(payload);
@@ -464,6 +498,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           void this.pushChatOptions();
           break;
         case "webviewReady":
+          this.sendCurrentSessionInfo();
+          this.pushRuntimeControls();
+          if (this.displayedSessionId && this.connection.connected) {
+            void this.runtimeControls.refresh(this.displayedSessionId, true);
+          }
           this.postMessage({ type: "history", items: this.history });
           void this.pushChatOptions();
           this.postMessage({ type: "busyState", busy: this.isBusy });
@@ -617,6 +656,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           void this.fetchAndShowStatus();
           break;
         }
+        case "refreshRuntimeControls":
+          if (this.displayedSessionId) void this.runtimeControls.refresh(this.displayedSessionId, true);
+          break;
         case "setEffort":
           void this.showOrSetReasoningEffort(
             typeof msg.effort === "string" ? msg.effort : null,
@@ -929,6 +971,15 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private pushRuntimeControls(): void {
+    const sessionId = this.displayedSessionId;
+    this.postMessage({
+      type: "runtimeControls", sessionId,
+      ...(sessionId ? this.runtimeControls.get(sessionId) : { ready: false, pending: false }),
+      connected: this.connection.connected,
+    });
+  }
+
   private async fetchAndApplyContextUsage(sessionId: string): Promise<void> {
     try {
       const url = this._gatewayUrl(`/session/status`);
@@ -1070,11 +1121,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     if (!effort) {
-      const status = await this.fetchSessionRuntimeStatus(sessionId);
-      if (!status) {
-        this.addSessionSystemMessage(sessionId, "CrabCode：暂时无法读取 reasoning effort。");
-        return;
-      }
+      await this.runtimeControls.refresh(sessionId);
+      const status = this.runtimeControls.get(sessionId);
+      if (!status.ready) return;
       const current = status.reasoning_effort || "auto";
       this.addSessionSystemMessage(
         sessionId,
@@ -1083,28 +1132,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    try {
-      const response = await fetch(this._gatewayUrl("/config/reasoning-effort"), {
-        method: "POST",
-        headers: { ...this._gatewayHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, effort }),
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({})) as { detail?: string };
-        this.addSessionSystemMessage(
-          sessionId,
-          `CrabCode：设置 effort 失败：${payload.detail || response.statusText}`,
-        );
-        return;
-      }
-      const payload = await response.json() as { reasoning_effort?: string };
-      this.addSessionSystemMessage(
-        sessionId,
-        `Reasoning effort 已设为 **${payload.reasoning_effort || effort}**，下一次请求生效。`,
-      );
-    } catch {
-      this.addSessionSystemMessage(sessionId, "CrabCode：设置 effort 失败，无法连接网关。");
-    }
+    await this.runtimeControls.setEffort(sessionId, effort);
   }
 
   private async setUltraMode(enabled: boolean | null): Promise<void> {
@@ -1113,29 +1141,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       this.addMessage("system", "CrabCode：当前没有活动会话。");
       return;
     }
-
-    try {
-      const response = await fetch(this._gatewayUrl("/config/ultra-mode"), {
-        method: "POST",
-        headers: { ...this._gatewayHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, enabled }),
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({})) as { detail?: string };
-        this.addSessionSystemMessage(
-          sessionId,
-          `CrabCode：设置 ultra mode 失败：${payload.detail || response.statusText}`,
-        );
-        return;
-      }
-      const payload = await response.json() as { ultra_mode?: boolean };
-      this.addSessionSystemMessage(
-        sessionId,
-        `Ultra mode 已**${payload.ultra_mode ? "开启" : "关闭"}**，下一次请求生效。`,
-      );
-    } catch {
-      this.addSessionSystemMessage(sessionId, "CrabCode：设置 ultra mode 失败，无法连接网关。");
-    }
+    await this.runtimeControls.setUltra(sessionId, enabled);
   }
 
   private async copyTextToClipboard(text: string, requestId: string): Promise<void> {
@@ -1257,12 +1263,12 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         throw new Error(`switch mode failed: ${response.status}`);
       }
       state.mode = mode;
-      this.postMessage({ type: "modeChange", mode });
+      if (sessionId === this.displayedSessionId) this.postMessage({ type: "modeChange", mode });
     } catch {
       // The webview updates optimistically when the menu is clicked.  Roll it
       // back to the last confirmed per-session mode if the gateway rejects the
       // request or is unavailable.
-      this.postMessage({ type: "modeChange", mode: state.mode });
+      if (sessionId === this.displayedSessionId) this.postMessage({ type: "modeChange", mode: state.mode });
       this.addSessionSystemMessage(sessionId, "CrabCode：切换模式失败，会话模式未改变。");
     }
   }
@@ -1428,6 +1434,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     // Immediately update displayed session before processing
     this.displayedSessionId = sessionId;
     this.postMessage({ type: "sessionInfo", sessionId, title: null, origin: null, status: this.busySessions.has(sessionId) ? "running" : "done" });
+    this.pushRuntimeControls();
 
     // If we already have cached state for this session, render it immediately
     const cached = this.sessionStates.get(sessionId);
@@ -1454,6 +1461,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         hasOverrides ? selector : sessionId,
         overrides,
       );
+    } else {
+      void this.runtimeControls.refresh(sessionId, true);
     }
 
     this.sendCurrentSessionInfo();
@@ -3148,18 +3157,24 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
   // ── Internals ──────────────────────────────────────────────────
 
-  private handleUserMessage(text: string, images?: ImageAttachment[]): void {
+  private async handleUserMessage(text: string, images?: ImageAttachment[]): Promise<void> {
     this.ensureSessionIfNeeded();
-    if (this.isBusy) {
-      this.queueSteeringMessageOnState(this.currentState, text, images);
-      this.connection.steer(text, {
-        sessionId: this.displayedSessionId ?? this.connection.sessionId ?? undefined,
-        images,
-      });
+    const sessionId = this.displayedSessionId ?? this.connection.sessionId;
+    if (sessionId) await this.runtimeControls.whenSettled(sessionId);
+    const state = sessionId ? this.getSessionState(sessionId) : this.currentState;
+    const updateWebview = sessionId === this.displayedSessionId;
+    if (state.isBusy) {
+      this.queueSteeringMessageOnState(state, text, images);
+      this.connection.steer(text, { sessionId: sessionId ?? undefined, images });
     } else {
-      this.addMessage("user", text, images);
-      this.setBusy(true);
-      this.sendForegroundMessage(text, images);
+      this.addMessageOnState(state, "user", text, updateWebview, images);
+      state.isBusy = true;
+      if (updateWebview) this.postMessage({ type: "busyState", busy: true });
+      const operationId = this.connection.send(text, { sessionId: sessionId ?? undefined, images });
+      if (sessionId) {
+        state.activeOperationId = operationId;
+        this.busySessions.add(sessionId);
+      }
     }
   }
 
@@ -3255,6 +3270,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           }
         }
         this.sendCurrentSessionInfo();
+        this.pushRuntimeControls();
+        if (connSid) void this.runtimeControls.refresh(connSid, true);
         this.notifyConfigurationChanged();
         break;
       }
@@ -5872,7 +5889,15 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       font-size: 12px;
     }
     .plus-menu button:hover { background: var(--vscode-menu-selectionBackground, rgba(127,127,127,0.18)); }
-    .model-pill-wrap { flex: 1; min-width: 0; max-width: 100%; }
+    .composer-primary-controls {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex: 1 1 150px;
+      min-width: 0;
+      max-width: 290px;
+    }
+    .model-pill-wrap { flex: 1 1 90px; min-width: 0; max-width: 180px; }
     .tb-model-wrap {
       position: relative;
       width: 100%;
@@ -6007,50 +6032,6 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       background: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 9%, transparent);
     }
     .tb-stop-circle[hidden] { display: none; }
-
-    /* ── Mode selector ─────────────────────────────────────────── */
-    .tb-mode-wrap { position: relative; flex-shrink: 0; }
-    .tb-mode-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      height: 26px;
-      padding: 0 8px 0 9px;
-      border-radius: 7px;
-      border: 1px solid var(--border);
-      background: transparent;
-      color: var(--vscode-foreground);
-      font-size: 11.5px;
-      font-weight: 500;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-    .tb-mode-btn:hover { background: color-mix(in srgb, var(--vscode-input-background) 70%, transparent); }
-    .tb-mode-btn .mode-chevron { font-size: 9px; opacity: 0.6; }
-    .mode-menu {
-      position: fixed;
-      top: 0; left: 0;
-      background: var(--vscode-menu-background);
-      color: var(--vscode-menu-foreground);
-      border: 1px solid var(--vscode-menu-border, #444);
-      border-radius: 10px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.35);
-      z-index: 200;
-      padding: 3px 0;
-      min-width: 130px;
-    }
-    .mode-menu.hidden { display: none; }
-    .mode-item {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 7px 12px;
-      font-size: 12.5px;
-      cursor: pointer;
-    }
-    .mode-item:hover { background: var(--vscode-menu-selectionBackground, rgba(127,127,127,0.18)); }
-    .mode-item .mode-check { width: 14px; text-align: center; opacity: 0; font-size: 11px; }
-    .mode-item.active .mode-check { opacity: 1; }
 
     /* ── Footer ────────────────────────────────────────────────── */
     #footer-bar {
@@ -6508,6 +6489,88 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       font-size: 12px;
       color: var(--text-muted);
     }
+    /* Desktop composer capsules, using the active VS Code theme. */
+    #composer-card { position: relative; isolation: isolate; overflow: visible; border-radius: 18px; }
+    .composer-meta { border-radius: 18px 18px 0 0; }
+    .composer-toolbar { align-items: flex-end; padding: 8px; border-top: 0; }
+    .toolbar-left { flex-wrap: wrap; gap: 5px; }
+    .tb-model-btn, .runtime-pill, .composer-mode-chip {
+      display: inline-flex; align-items: center; gap: 5px; height: 29px;
+      max-width: 100%; padding: 0 9px; border-radius: 999px;
+      border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+      background: color-mix(in srgb, var(--vscode-foreground) 4%, var(--surface-elevated));
+      color: var(--vscode-foreground); font: inherit; font-size: 11px;
+      white-space: nowrap; cursor: pointer;
+      transition: background-color 150ms, border-color 150ms, color 150ms;
+    }
+    .tb-model-btn svg, .runtime-pill svg, .composer-mode-chip svg { width: 14px; height: 14px; flex-shrink: 0; }
+    #effort-btn { flex: 0 1 auto; min-width: 0; }
+    #effort-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .runtime-pill:hover:not(:disabled), .composer-mode-chip:hover:not(:disabled),
+    .runtime-pill[aria-expanded="true"] { background: var(--accent-muted); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+    .runtime-pill:disabled, .composer-mode-chip:disabled, .plus-menu button:disabled { opacity: .45; cursor: default; }
+    .runtime-pill:focus-visible, .composer-mode-chip:focus-visible, .effort-option:focus-visible,
+    .tb-model-btn:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
+    .composer-mode-chip[hidden] { display: none; }
+    .composer-mode-chip .chip-close { width: 11px; height: 11px; opacity: .65; }
+    .composer-mode-chip.plan { color: var(--vscode-textLink-foreground); background: var(--accent-muted); }
+    .composer-mode-chip.ultra {
+      border-color: color-mix(in srgb, #b882ff 36%, var(--border));
+      background: linear-gradient(100deg, #5ccaff18, #b369ff20, #ff6fb718);
+      color: color-mix(in srgb, var(--vscode-foreground) 76%, #b882ff);
+    }
+    .tb-icon-btn, .tb-send-circle, .tb-stop-circle { border-radius: 50%; }
+    .tb-perm-btn { border-radius: 999px; }
+    #footer-bar { flex-wrap: wrap; }
+    @media (max-width: 320px) {
+      .composer-primary-controls { gap: 4px; }
+      .composer-primary-controls .tb-model-btn,
+      .composer-primary-controls .runtime-pill { padding-inline: 7px; }
+      .composer-primary-controls .tb-model-btn > svg,
+      .composer-primary-controls .tb-model-btn .model-chevron { display: none; }
+    }
+    .effort-menu {
+      position: fixed; z-index: 220; width: min(210px, calc(100vw - 16px));
+      max-height: calc(100vh - 16px); overflow-y: auto; padding: 5px;
+      border: 1px solid var(--vscode-menu-border, var(--border)); border-radius: 14px;
+      background: var(--vscode-menu-background, var(--surface-elevated));
+      color: var(--vscode-menu-foreground, var(--vscode-foreground));
+      box-shadow: 0 16px 42px #0005;
+    }
+    .effort-menu.hidden { display: none; }
+    .picker-menu-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 8px; margin-bottom: 4px; border-bottom: 1px solid var(--border); font-size: 12px; }
+    .picker-menu-heading small { color: var(--text-muted); font-size: 10px; }
+    .effort-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; height: 33px; padding: 0 9px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+    .effort-option small { margin-left: 8px; color: var(--text-muted); font-size: 10px; }
+    .effort-option:hover, .effort-option:focus-visible, .effort-option[aria-checked="true"] { background: var(--vscode-menu-selectionBackground, var(--accent-muted)); }
+    .effort-option .picker-check { opacity: 0; }
+    .effort-option[aria-checked="true"] .picker-check { opacity: 1; }
+    .plus-menu { padding: 5px; border-radius: 14px; }
+    .plus-menu button { display: flex; align-items: center; gap: 8px; border-radius: 8px; }
+    .plus-menu button svg { width: 15px; height: 15px; }
+    .plus-menu .menu-divider { height: 1px; background: var(--border); margin: 5px; }
+    .plus-menu [aria-checked="true"]::after { content: '✓'; margin-left: auto; }
+    #composer-card.ultra-mode { animation: ultra-border-awaken 900ms ease-out both; }
+    #composer-card.ultra-mode::after {
+      content: ''; position: absolute; inset: 0; z-index: 90; overflow: hidden;
+      border-radius: inherit; pointer-events: none; clip-path: inset(0 round 18px);
+      background: linear-gradient(105deg, transparent 0%, #50dcff26 20%, #8567ff9e 42%, #ff5baeae 58%, #ffd35b6b 74%, transparent 100%);
+      background-position: -70% 0; background-repeat: no-repeat; background-size: 38% 100%;
+      filter: blur(5px); animation: ultra-spectrum-sweep 950ms cubic-bezier(.2,.72,.2,1) both;
+    }
+    @keyframes ultra-spectrum-sweep {
+      from { background-position: -70% 0; opacity: 0; }
+      18% { opacity: 1; } 82% { opacity: .9; }
+      to { background-position: 170% 0; opacity: 0; }
+    }
+    @keyframes ultra-border-awaken {
+      45% { border-color: #ae7cffb3; box-shadow: 0 0 0 2px #64cdff1a, 0 18px 55px #8253ff2e; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #composer-card.ultra-mode, #composer-card.ultra-mode::after { animation: none; }
+      #composer-card.ultra-mode::after { content: none; }
+      .runtime-pill, .composer-mode-chip { transition: none; }
+    }
   </style>
 </head>
 <body>
@@ -6586,16 +6649,29 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       <div id="input-toolbar" class="composer-toolbar">
         <div class="toolbar-left">
           <div class="tb-left-wrap">
-            <button type="button" class="tb-icon-btn" id="plus-btn" title="添加文件或图片" aria-haspopup="menu" aria-expanded="false">+</button>
+            <button type="button" class="tb-icon-btn" id="plus-btn" title="添加附件或切换模式" aria-haspopup="menu" aria-expanded="false">+</button>
           </div>
-          <div class="model-pill-wrap">
-            <div id="model-select-wrap" class="tb-model-wrap is-empty">
-              <button type="button" class="tb-model-btn" id="model-btn" title="选择模型" aria-haspopup="menu" aria-expanded="false" disabled>
-                <span id="model-select-label" class="tb-model-label">（正在连接网关…）</span>
-                <span class="model-chevron">▾</span>
-              </button>
+          <div class="composer-primary-controls">
+            <div class="model-pill-wrap">
+              <div id="model-select-wrap" class="tb-model-wrap is-empty">
+                <button type="button" class="tb-model-btn" id="model-btn" title="选择模型" aria-haspopup="menu" aria-expanded="false" disabled>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="4" y="7" width="16" height="13" rx="4"/><path d="M12 3v4M8 12v3m8-3v3M1 11v5m22-5v5"/></svg>
+                  <span id="model-select-label" class="tb-model-label">（正在连接网关…）</span>
+                  <span class="model-chevron">▾</span>
+                </button>
+              </div>
             </div>
+            <button type="button" class="runtime-pill" id="effort-btn" title="选择思考强度" aria-haspopup="menu" aria-controls="effort-menu" aria-expanded="false" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M12 5c-2-5-8-2-7 2-4 1-4 6-1 8-2 4 3 8 6 5l2-2V5Zm0 0c2-5 8-2 7 2 4 1 4 6 1 8 2 4-3 8-6 5l-2-2M8 8l-3-1m3 6-4 2m12-7 3-1m-3 6 4 2"/></svg>
+              <span id="effort-label">思考 自动</span><span aria-hidden="true">▾</span>
+            </button>
           </div>
+          <button type="button" class="composer-mode-chip plan" id="plan-chip" title="关闭计划模式" aria-label="关闭计划模式" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m3 6 2 2 4-4M12 6h9M3 13h3m6 0h9M3 20h3m6 0h9"/></svg><span>计划模式</span><span aria-hidden="true">×</span>
+          </button>
+          <button type="button" class="composer-mode-chip ultra" id="ultra-chip" title="关闭 Ultra 模式" aria-label="关闭 Ultra 模式" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3ZM20 2v4m-2-2h4"/></svg><span>Ultra 模式</span><span aria-hidden="true">×</span>
+          </button>
           <div id="context-meter" class="context-meter" hidden tabindex="0" role="img" aria-label="背景信息窗口用量" aria-describedby="context-tooltip">
             <span class="ctx-ring" aria-hidden="true"></span>
           </div>
@@ -6612,12 +6688,6 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     </div>
     <div id="footer-bar">
       <span class="footer-left muted">CrabCode</span>
-      <div class="tb-mode-wrap">
-        <button type="button" class="tb-mode-btn" id="mode-btn" title="切换模式" aria-haspopup="menu" aria-expanded="false">
-          <span id="mode-label">Agent</span>
-          <span class="mode-chevron">▾</span>
-        </button>
-      </div>
       <div class="tb-perm-wrap">
         <button type="button" class="tb-perm-btn" id="perm-btn" title="切换权限模式" aria-haspopup="menu" aria-expanded="false">
           <span id="perm-icon" class="perm-icon">⚙</span>
@@ -6636,14 +6706,13 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   <div id="plus-menu" class="plus-menu hidden" role="menu">
     <button type="button" role="menuitem" data-action="image">添加图片…</button>
     <button type="button" role="menuitem" data-action="file">添加文件…</button>
+    <div class="menu-divider" role="separator"></div>
+    <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="plan">☷ 计划模式</button>
+    <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="ultra" disabled>✧ Ultra 模式</button>
   </div>
-  <div id="mode-menu" class="mode-menu hidden" role="menu">
-    <div class="mode-item active" data-mode="agent" role="menuitem">
-      <span class="mode-check">✓</span>Agent
-    </div>
-    <div class="mode-item" data-mode="plan" role="menuitem">
-      <span class="mode-check">✓</span>Plan
-    </div>
+  <div id="effort-menu" class="effort-menu hidden" role="menu" aria-label="思考强度">
+    <div class="picker-menu-heading"><span>思考强度</span><small>随会话保存</small></div>
+    <div id="effort-options"></div>
   </div>
   <div id="perm-menu" class="perm-menu hidden" role="menu">
     <div class="perm-item active" data-perm="default" role="menuitem">
@@ -6700,12 +6769,16 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         const modelMenu = document.getElementById('model-menu');
         const modelMenuList = document.getElementById('model-menu-list');
         const modelSearch = document.getElementById('model-search');
+        const effortBtn = document.getElementById('effort-btn');
+        const effortLabel = document.getElementById('effort-label');
+        const effortMenu = document.getElementById('effort-menu');
+        const effortOptions = document.getElementById('effort-options');
+        const ultraChip = document.getElementById('ultra-chip');
+        const planChip = document.getElementById('plan-chip');
+        const ultraMenuItem = plusMenu.querySelector('[data-action="ultra"]');
         const contextMeter = document.getElementById('context-meter');
         const contextTooltip = document.getElementById('context-tooltip');
         const pendingEditsBar = document.getElementById('pending-edits-bar');
-        const modeBtn = document.getElementById('mode-btn');
-        const modeLabel = document.getElementById('mode-label');
-        const modeMenu = document.getElementById('mode-menu');
         const permBtn = document.getElementById('perm-btn');
         const permLabel = document.getElementById('perm-label');
         const permIcon = document.getElementById('perm-icon');
@@ -6756,6 +6829,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     const turns = [];
     const SEND_ICON_HTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>';
     let composerSendKey = 'enter';
+    let runtimeState = { ready: false, pending: false, connected: false };
+    const effortLabels = { none: '关闭', minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '极高', max: '最大' };
 
     function isMacPlatform() {
       return /Macintosh|MacIntel|MacPPC|Mac68K/i.test(navigator.platform || navigator.userAgent || '');
@@ -9899,61 +9974,117 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
     // ── Mode menu ────────────────────────────────────────────────
 
+    function renderRuntimeControls(state) {
+      runtimeState = state;
+      const disabled = !state.ready || !state.connected || state.pending;
+      effortBtn.disabled = !state.connected || state.pending;
+      effortBtn.title = state.ready ? '选择思考强度' : '读取会话设置，点击重试';
+      ultraChip.disabled = disabled;
+      ultraMenuItem.disabled = disabled;
+      effortBtn.setAttribute('aria-busy', state.pending ? 'true' : 'false');
+      effortLabel.textContent = '思考 ' + (effortLabels[state.reasoning_effort] || '自动');
+      const ultra = state.ultra_mode === true;
+      ultraChip.hidden = !ultra;
+      ultraMenuItem.setAttribute('aria-checked', String(ultra));
+      composerCard.classList.toggle('ultra-mode', ultra);
+      effortOptions.querySelectorAll('[data-effort]').forEach(function(button) {
+        button.setAttribute('aria-checked', String(button.dataset.effort === state.reasoning_effort));
+      });
+      if (disabled) closeEffortMenu();
+    }
+
+    function closeEffortMenu() {
+      effortMenu.classList.add('hidden');
+      effortBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    function positionEffortMenu() {
+      const rect = effortBtn.getBoundingClientRect();
+      effortMenu.style.maxHeight = Math.max(80, Math.min(window.innerHeight - 16, rect.top - 14)) + 'px';
+      const menu = effortMenu.getBoundingClientRect();
+      effortMenu.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - menu.width - 8)) + 'px';
+      effortMenu.style.top = Math.max(8, rect.top - menu.height - 6) + 'px';
+    }
+
+    function openEffortMenu() {
+      if (effortBtn.disabled) return;
+      if (!runtimeState.ready) {
+        renderRuntimeControls(Object.assign({}, runtimeState, { pending: true }));
+        vscode.postMessage({ type: 'refreshRuntimeControls' });
+        return;
+      }
+      closeModelMenu(); closePlusMenu(); closePermMenu();
+      effortMenu.classList.remove('hidden');
+      positionEffortMenu();
+      effortBtn.setAttribute('aria-expanded', 'true');
+      const selected = effortOptions.querySelector('[aria-checked="true"]') || effortOptions.firstElementChild;
+      if (selected) selected.focus();
+    }
+
+    Object.keys(effortLabels).forEach(function(effort) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'effort-option';
+      button.dataset.effort = effort;
+      button.setAttribute('role', 'menuitemradio');
+      button.setAttribute('aria-checked', 'false');
+      button.innerHTML = '<span>' + effortLabels[effort] + '<small>' + effort + '</small></span><span class="picker-check" aria-hidden="true">✓</span>';
+      button.addEventListener('click', function() {
+        if (effortBtn.disabled) return;
+        closeEffortMenu();
+        effortBtn.focus();
+        renderRuntimeControls(Object.assign({}, runtimeState, { pending: true }));
+        vscode.postMessage({ type: 'setEffort', effort: effort });
+      });
+      effortOptions.appendChild(button);
+    });
+    effortBtn.addEventListener('click', function(event) {
+      event.stopPropagation();
+      if (effortMenu.classList.contains('hidden')) openEffortMenu(); else closeEffortMenu();
+    });
+    effortBtn.addEventListener('keydown', function(event) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); openEffortMenu(); }
+    });
+    effortMenu.addEventListener('click', function(event) { event.stopPropagation(); });
+    effortMenu.addEventListener('keydown', function(event) {
+      const buttons = Array.from(effortOptions.querySelectorAll('button'));
+      const index = buttons.indexOf(document.activeElement);
+      let next = index;
+      if (event.key === 'ArrowDown') next = (index + 1) % buttons.length;
+      else if (event.key === 'ArrowUp') next = (index + buttons.length - 1) % buttons.length;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = buttons.length - 1;
+      else if (event.key === 'Tab') { closeEffortMenu(); effortBtn.focus(); return; }
+      else return;
+      event.preventDefault(); buttons[next].focus();
+    });
+    document.addEventListener('click', closeEffortMenu);
+    document.addEventListener('keydown', function(event) {
+      if (event.key === 'Escape' && !effortMenu.classList.contains('hidden')) {
+        closeEffortMenu(); effortBtn.focus(); event.preventDefault();
+      }
+    });
+    window.addEventListener('resize', function() {
+      if (!effortMenu.classList.contains('hidden')) positionEffortMenu();
+    });
+    function requestUltra(enabled) {
+      if (!runtimeState.ready || !runtimeState.connected || runtimeState.pending) return;
+      renderRuntimeControls(Object.assign({}, runtimeState, { pending: true }));
+      vscode.postMessage({ type: 'setUltra', enabled: enabled });
+    }
+    ultraChip.addEventListener('click', function() { requestUltra(false); });
+    planChip.addEventListener('click', function() {
+      vscode.postMessage({ type: 'switchMode', mode: 'agent' });
+    });
+
     let currentMode = 'agent';
 
     function updateModeButton(mode) {
       currentMode = mode;
-      if (modeLabel) modeLabel.textContent = mode === 'plan' ? 'Plan' : 'Agent';
+      planChip.hidden = mode !== 'plan';
+      plusMenu.querySelector('[data-action="plan"]').setAttribute('aria-checked', String(mode === 'plan'));
       updateComposerPlaceholder();
-      if (modeMenu) modeMenu.querySelectorAll('.mode-item').forEach(function(el) {
-        el.classList.toggle('active', el.getAttribute('data-mode') === mode);
-      });
     }
-
-    function positionModeMenu() {
-      if (!modeMenu || !modeBtn) return;
-      modeMenu.classList.remove('hidden');
-      modeMenu.style.visibility = 'hidden';
-      modeMenu.style.left = '0px';
-      modeMenu.style.top = '0px';
-      const btnRect = modeBtn.getBoundingClientRect();
-      const menuRect = modeMenu.getBoundingClientRect();
-      const margin = 8;
-      const gap = 4;
-      const left = Math.min(Math.max(btnRect.left, margin), window.innerWidth - menuRect.width - margin);
-      const top = Math.max(margin, btnRect.top - menuRect.height - gap);
-      modeMenu.style.left = left + 'px';
-      modeMenu.style.top = top + 'px';
-      modeMenu.style.visibility = '';
-    }
-
-    function openModeMenu() {
-      positionModeMenu();
-      if (modeBtn) modeBtn.setAttribute('aria-expanded', 'true');
-    }
-
-    function closeModeMenu() {
-      if (modeMenu) modeMenu.classList.add('hidden');
-      if (modeBtn) modeBtn.setAttribute('aria-expanded', 'false');
-    }
-
-    modeBtn && modeBtn.addEventListener('click', function(e) {
-      e.stopPropagation();
-      if (modeMenu.classList.contains('hidden')) openModeMenu();
-      else closeModeMenu();
-    });
-
-    modeMenu && modeMenu.querySelectorAll('.mode-item').forEach(function(el) {
-      el.addEventListener('click', function() {
-        const mode = el.getAttribute('data-mode');
-        updateModeButton(mode);
-        vscode.postMessage({ type: 'switchMode', mode: mode });
-        closeModeMenu();
-      });
-    });
-
-    document.addEventListener('click', function() { closeModeMenu(); });
-    modeMenu && modeMenu.addEventListener('click', function(e) { e.stopPropagation(); });
 
     // ── Permission menu ──────────────────────────────────────────
 
@@ -9975,8 +10106,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     function openPermMenu() {
+      closeEffortMenu(); closePlusMenu(); closeModelMenu();
       positionPermMenu();
-      closeModeMenu();
       if (permBtn) permBtn.setAttribute('aria-expanded', 'true');
     }
 
@@ -10073,11 +10204,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     function openModelMenu() {
+      closeEffortMenu(); closePlusMenu();
       renderModelMenuItems(currentModelList, currentModelValue, '');
       if (modelSearch) modelSearch.value = '';
       positionModelMenu();
       closePermMenu();
-      closeModeMenu();
       if (modelBtn) modelBtn.setAttribute('aria-expanded', 'true');
       if (modelSearch) setTimeout(function() { modelSearch.focus(); }, 0);
     }
@@ -10126,6 +10257,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     function openPlusMenu() {
+      closeEffortMenu(); closeModelMenu(); closePermMenu();
       positionPlusMenu();
       plusBtn.setAttribute('aria-expanded', 'true');
     }
@@ -10149,6 +10281,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         closePlusMenu();
         if (act === 'image') fileInputImage.click();
         else if (act === 'file') vscode.postMessage({ type: 'pickFiles' });
+        else if (act === 'ultra') requestUltra(!runtimeState.ultra_mode);
+        else if (act === 'plan') vscode.postMessage({ type: 'switchMode', mode: currentMode === 'plan' ? 'agent' : 'plan' });
         else if (act === 'screenshot') vscode.postMessage({ type: 'screenshotHint' });
       });
     });
@@ -10455,6 +10589,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         case 'options':
           applyOptions(msg);
           break;
+        case 'runtimeControls':
+          if (msg.sessionId === currentSessionId) renderRuntimeControls(msg);
+          break;
         case 'addAttachments':
           mergeHostAttachments(msg);
           break;
@@ -10468,6 +10605,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           renderHistoryList(msg.sessions, historySearchQuery);
           break;
         case 'sessionInfo':
+          if (msg.sessionId !== undefined && msg.sessionId !== currentSessionId) {
+            closeEffortMenu(); closePlusMenu();
+            renderRuntimeControls({ ready: false, pending: false, connected: false });
+            updateModeButton('agent');
+          }
           if (msg.sessionId !== undefined) currentSessionId = msg.sessionId;
           if (msg.title) setSessionTitle(msg.title);
           if (msg.origin !== undefined) setSessionOrigin(msg.origin);

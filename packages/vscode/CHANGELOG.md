@@ -3,6 +3,17 @@
 All notable changes to the CrabCode Visual Studio Code extension are documented
 in this file.
 
+## Unreleased
+
+- Add Desktop-style composer capsules for reasoning effort, models, and modes.
+- Add the seven reasoning effort levels and an Ultra toggle in the **+** menu,
+  with a removable gradient capsule and bounded spectrum animation.
+- Restore confirmed effort and Ultra settings per workspace, Gateway, and session.
+- Support narrow sidebars, theme colors, keyboard effort selection, and reduced motion.
+- Keep model and reasoning capsules on one adaptive row in narrow sidebars, and
+  remove the redundant footer Agent/Plan selector now that Plan lives in the
+  composer menu and active-mode capsule.
+
 ## 0.1.5
 
 ### Marketplace preparation
