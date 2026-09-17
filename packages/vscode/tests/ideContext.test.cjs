@@ -118,6 +118,18 @@ test('composer HTML exposes the removable context capsule and nested IDE context
   assert.ok(html.includes('id="ide-pick-reference"'));
   assert.match(html, /data-remove-ide-reference/);
   assert.match(html, /type: 'pickIdeReferences'/);
+  assert.match(html, /ideContextCloseTimer = setTimeout\(function\(\) \{[\s\S]*?closeIdeContextMenu\(\);[\s\S]*?\}, 500\);/);
+  assert.match(html, /ideContextTrigger\.addEventListener\('mouseleave', scheduleIdeContextMenuClose\)/);
+  assert.match(html, /ideContextMenu\.addEventListener\('mouseenter', cancelIdeContextMenuClose\)/);
+});
+
+test('composer ignores Enter while an IME composition is being confirmed', () => {
+  const h = loadPanel(async () => ({ ok: true, json: async () => ({}) }));
+  const html = h.panel.getHtmlForWebview({});
+  assert.match(html, /input\.addEventListener\('compositionstart'/);
+  assert.match(html, /input\.addEventListener\('compositionend'/);
+  assert.match(html, /e\.isComposing \|\| composerIsComposing \|\| e\.keyCode === 229 \|\| e\.which === 229/);
+  assert.match(html, /composerIsComposing = false;[\s\S]*?\}, 0\);/);
 });
 
 test('reference picker uses a searchable VS Code Quick Pick for workspace files and folders', async () => {

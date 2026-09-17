@@ -6980,11 +6980,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     <button type="button" role="menuitem" data-action="image">添加图片…</button>
     <button type="button" role="menuitem" data-action="file">添加文件…</button>
     <div class="menu-divider" role="separator"></div>
+    <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="plan">☷ 计划模式</button>
+    <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="ultra" disabled>✧ Ultra 模式</button>
     <button type="button" class="plus-submenu-trigger" id="ide-context-trigger" role="menuitem" aria-haspopup="menu" aria-expanded="false">
       <span>IDE 上下文</span><span class="submenu-chevron" aria-hidden="true">›</span>
     </button>
-    <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="plan">☷ 计划模式</button>
-    <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="ultra" disabled>✧ Ultra 模式</button>
     <div id="ide-context-menu" class="ide-context-menu hidden" role="menu" aria-label="IDE 上下文">
       <button type="button" id="ide-current-file" role="menuitemcheckbox" aria-checked="false" disabled>
         <span aria-hidden="true">▤</span>
@@ -7121,6 +7121,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     const turns = [];
     const SEND_ICON_HTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>';
     let composerSendKey = 'enter';
+    let composerIsComposing = false;
+    let compositionResetTimer = null;
     let runtimeState = { ready: false, pending: false, connected: false };
     const effortLabels = { none: '关闭', minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '极高', max: '最大' };
 
@@ -9490,7 +9492,26 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       }
     });
 
+    input.addEventListener('compositionstart', function() {
+      if (compositionResetTimer !== null) {
+        clearTimeout(compositionResetTimer);
+        compositionResetTimer = null;
+      }
+      composerIsComposing = true;
+    });
+
+    input.addEventListener('compositionend', function() {
+      if (compositionResetTimer !== null) clearTimeout(compositionResetTimer);
+      // Some WebViews dispatch the candidate-confirming Enter immediately after
+      // compositionend, so keep composition active through the current task.
+      compositionResetTimer = setTimeout(function() {
+        composerIsComposing = false;
+        compositionResetTimer = null;
+      }, 0);
+    });
+
     input.addEventListener('keydown', function(e) {
+      if (e.isComposing || composerIsComposing || e.keyCode === 229 || e.which === 229) return;
       if (!mentionPopup.classList.contains('hidden')) {
         if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
           e.preventDefault();
@@ -10691,6 +10712,22 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     document.addEventListener('click', function() { closePlusMenu(); });
     plusMenu.addEventListener('click', function(e) { e.stopPropagation(); });
 
+    let ideContextCloseTimer = null;
+
+    function cancelIdeContextMenuClose() {
+      if (ideContextCloseTimer === null) return;
+      clearTimeout(ideContextCloseTimer);
+      ideContextCloseTimer = null;
+    }
+
+    function scheduleIdeContextMenuClose() {
+      cancelIdeContextMenuClose();
+      ideContextCloseTimer = setTimeout(function() {
+        ideContextCloseTimer = null;
+        closeIdeContextMenu();
+      }, 500);
+    }
+
     function renderIdeContextMenu() {
       const hasCurrentFile = Boolean(currentIdeContext && currentIdeContext.active_file);
       ideCurrentFile.disabled = !hasCurrentFile;
@@ -10736,6 +10773,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     function openIdeContextMenu(focusFirst) {
+      cancelIdeContextMenuClose();
       renderIdeContextMenu();
       positionIdeContextMenu();
       ideContextTrigger.setAttribute('aria-expanded', 'true');
@@ -10746,12 +10784,16 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     function closeIdeContextMenu() {
+      cancelIdeContextMenuClose();
       ideContextMenu.classList.add('hidden');
       ideContextMenu.style.visibility = '';
       ideContextTrigger.setAttribute('aria-expanded', 'false');
     }
 
     ideContextTrigger.addEventListener('mouseenter', function() { openIdeContextMenu(false); });
+    ideContextTrigger.addEventListener('mouseleave', scheduleIdeContextMenuClose);
+    ideContextMenu.addEventListener('mouseenter', cancelIdeContextMenuClose);
+    ideContextMenu.addEventListener('mouseleave', scheduleIdeContextMenuClose);
     ideContextTrigger.addEventListener('click', function(event) {
       event.stopPropagation();
       if (ideContextMenu.classList.contains('hidden')) openIdeContextMenu(true);
