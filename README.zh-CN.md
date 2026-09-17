@@ -695,9 +695,14 @@ crabcode --model-profile smart    # 简写：-M smart
 /model              # 打开模型选择页，搜索并切换已配置的模型
 /model fast         # 切换到 "fast" 模型
 /model local        # 切换到 "local"（如 Ollama 本地模型）
+/add                # 进入引导菜单，添加模型或共享 group
+/add model          # 直接进入添加模型向导
+/del group          # 选择并删除一个 group 定义
 ```
 
 切换模型不会清空对话历史，可以在同一会话中混用不同模型。
+`/add` 与 `/del` 向导可选择用户级、项目共享或项目本地配置层；删除列表会
+明确显示定义所在层。当前正在使用的模型及其 group 需先切换后才能删除。
 
 ## 内置工具
 
@@ -1028,6 +1033,8 @@ Desktop 的“设置 → 运行与工具”可以直接编辑这些字段，也�
 | `/logs --clear <名称>` | 清空指定日志文件 |
 | `/model` | 打开按分组展示、可搜索的模型选择页；↑/↓ 选择、Enter 切换、Esc 返回，Tab 与 ←/→ 筛选分组 |
 | `/model <名称>` | 切换到 `settings.models` 中的命名模型 |
+| `/add [model\|group]` | 通过可搜索的引导向导添加命名模型或共享 group |
+| `/del [model\|group]` | 从指定的可写配置层删除模型或 group |
 | `/effort` | 查看当前 reasoning effort |
 | `/effort <none\|minimal\|low\|medium\|high\|xhigh\|max>` | 设置当前运行会话后续请求的 reasoning effort |
 | `/ultra` | 切换后续请求的 ultra mode |

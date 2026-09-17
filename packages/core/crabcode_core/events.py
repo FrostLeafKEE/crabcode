@@ -3748,6 +3748,27 @@ class CoreSession:
             result[name] = "/".join(parts) if parts else "(no model set)"
         return result
 
+    def reload_model_catalog(self) -> None:
+        """Reload named models/groups after a local configuration mutation.
+
+        This intentionally refreshes only the catalog.  Existing sessions keep
+        their live adapter and other project resources; callers must not remove
+        or alter the active model/group before invoking this method.
+        """
+        from crabcode_core.config.manager import ConfigManager
+
+        file_settings = ConfigManager(cwd=self.cwd).load()
+        merged = self._merge_project_settings(file_settings)
+        current = self._current_model_name
+        if current is not None and current not in merged.models:
+            raise RuntimeError(
+                f'Cannot reload after removing active model "{current}"; '
+                "switch models first."
+            )
+        self.settings.groups = merged.groups
+        self.settings.models = merged.models
+        self.settings.default_model = merged.default_model
+
     def switch_model(self, name: str) -> bool:
         """Switch to a named model defined in settings.models.
 

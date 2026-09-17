@@ -714,9 +714,15 @@ crabcode --model-profile smart    # short: -M smart
 /model fast         # switch to the "fast" (ollama) profile
 /model smart        # switch to the "smart" (anthropic) profile
 /model code         # switch to the "code" (openai) profile
+/add                # guided menu: add a model or shared group
+/add model          # open the add-model wizard directly
+/del group          # choose and delete a group definition
 ```
 
 Switching does not clear conversation history — you can mix models freely within a single session.
+The `/add` and `/del` wizards let you choose user, shared-project, or local-project
+settings. Delete targets show their exact source layer; the active model (or its
+group) is protected until you switch away from it.
 
 ## Built-in Tools
 
@@ -1053,6 +1059,8 @@ new sessions or after reconnecting an existing session.
 | `/logs --clear <name>` | Clear a specific log file |
 | `/model` | Open a searchable model picker organized by group; ↑/↓ select, Enter switches, Esc cancels, Tab and ←/→ filter groups |
 | `/model <name>` | Switch to a named model from `settings.models` |
+| `/add [model\|group]` | Add a named model or shared group with a guided, searchable configuration wizard |
+| `/del [model\|group]` | Delete a model or group from a selected writable settings layer |
 | `/effort` | Show the active reasoning effort |
 | `/effort <none\|minimal\|low\|medium\|high\|xhigh\|max>` | Set reasoning effort for subsequent requests in the current runtime session |
 | `/ultra` | Toggle ultra mode for subsequent requests |

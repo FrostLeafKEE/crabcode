@@ -201,6 +201,8 @@ _SLASH_COMMANDS: dict[str, list[str]] = {
     "/ultra": ["true", "false"],
     "/logs": ["-f", "--follow", "--clear", "--tail"],
     "/model": [],  # Dynamic: model names
+    "/add": ["model", "group"],
+    "/del": ["model", "group"],
     "/new": [],
     "/compact": [],
     "/clear": [],
@@ -284,7 +286,7 @@ class _CrabCodeCompleter(Completer):
                             )
                 return
 
-            if cmd in {"/effort", "/ultra"}:
+            if cmd in {"/effort", "/ultra", "/add", "/del"}:
                 for value in _SLASH_COMMANDS[cmd]:
                     if value.startswith(word_before_cursor):
                         yield Completion(
@@ -382,6 +384,8 @@ class _CrabCodeCompleter(Completer):
             "/ultra": "toggle/set ultra mode",
             "/logs": "show background logs",
             "/model": "show/switch model",
+            "/add": "add a model or group",
+            "/del": "delete a model or group",
             "/new": "start new session",
             "/compact": "compact conversation",
             "/clear": "clear history",
@@ -2147,7 +2151,12 @@ async def run_repl(
                 # A modal picker shares the terminal's input parser. Stop the
                 # composer first so its pending Escape flush cannot steal keys
                 # from the picker while in_terminal() has detached its input.
-                modal_picker = user_input.split() in (["/resume"], ["/model"])
+                command_parts = user_input.split()
+                command_name = command_parts[0].lower()
+                modal_picker = (
+                    command_parts in (["/resume"], ["/model"])
+                    or command_name in {"/add", "/del"}
+                )
                 if modal_picker:
                     await composer.close()
                 async with in_terminal():
@@ -2709,6 +2718,8 @@ async def _handle_command(
             "[bold]/logs --clear <name>[/] — clear a background log\n"
             "[bold]/model[/] — browse and switch configured models\n"
             "[bold]/model <name>[/] — switch to a named model\n"
+            "[bold]/add [model|group][/] — add a model profile or shared group\n"
+            "[bold]/del [model|group][/] — delete a model profile or shared group\n"
             "[bold]/new[/] — start a new session\n"
             "[bold]/compact[/] — compact conversation\n"
             "[bold]/clear[/] — clear conversation history\n"
@@ -2987,6 +2998,43 @@ async def _handle_command(
             )
         else:
             console.print(f"[bold red]Failed to switch model to: {arg}[/]")
+        return True
+
+    if cmd in {"/add", "/del"}:
+        kind_value = arg.casefold()
+        if kind_value not in {"", "model", "group"}:
+            console.print(f"[dim]Usage: {cmd} [model|group][/]")
+            return True
+
+        from crabcode_cli.model_manager import manage_model_catalog
+        from crabcode_core.config.model_catalog import ModelCatalogError
+
+        try:
+            result = await manage_model_catalog(
+                session,
+                "add" if cmd == "/add" else "delete",
+                kind_value or None,
+            )
+        except ModelCatalogError as exc:
+            error = Text("Model configuration error: ", style="bold red")
+            error.append(str(exc))
+            console.print(error)
+            return True
+        if result is None:
+            console.print("[dim]Model configuration unchanged.[/]")
+            return True
+
+        message = Text()
+        message.append("✓ ", style="green")
+        message.append("Added" if result.action == "add" else "Deleted", style="bold green")
+        message.append(f" {result.kind} ")
+        message.append(result.name, style="bold cyan")
+        message.append(f" · {result.path}", style="dim")
+        if result.cleared_default:
+            message.append(" · cleared this layer's default", style="yellow")
+        console.print(message)
+        if result.action == "add" and result.kind == "model":
+            console.print(Text(f"  Switch now with /model {result.name}", style="dim"))
         return True
 
     if cmd == "/effort":
