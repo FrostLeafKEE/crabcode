@@ -10,6 +10,7 @@ import { CrabCodeConnection } from "./connection";
 import { ChatPanelProvider } from "./chatPanel";
 import { ensureGateway, GatewayProcess } from "./gatewayManager";
 import { PendingEditManager } from "./pendingEdits";
+import type { IdeContextSnapshot } from "./ideContext";
 
 import {
   buildPermissionResponseCommand,
@@ -156,7 +157,10 @@ class ContextProvider implements vscode.Disposable {
     this.schedulePush(0);
   }
 
-  constructor(private readonly connection: CrabCodeConnection) {
+  constructor(
+    private readonly connection: CrabCodeConnection,
+    private readonly onContext: (context: IdeContextSnapshot | null) => void = () => {},
+  ) {
     this.activeEditor = vscode.window.activeTextEditor;
     this.schedulePush(0);
 
@@ -229,33 +233,35 @@ class ContextProvider implements vscode.Disposable {
   private pushContext(): void {
     const editor = this.activeEditor;
     const sessionId = this.connection.sessionId;
-    if (!editor || !sessionId) {
-      return;
-    }
-
-    const doc = editor.document;
-    if (!this.isSupportedDocument(doc)) {
-      return;
-    }
-    const selection = editor.selection;
-    const context = {
-      active_file: this.getDocumentIdentity(doc),
-      selected_text: doc.getText(selection) || null,
-      cursor_line: selection.active.line,
-      cursor_column: selection.active.character,
-      open_files: this.getOpenFiles(),
-      language_id: doc.languageId,
-    };
+    const doc = editor?.document;
+    const context: IdeContextSnapshot | null = editor && doc && this.isSupportedDocument(doc)
+      ? {
+          active_file: this.getDocumentIdentity(doc),
+          selected_text: doc.getText(editor.selection) || null,
+          cursor_line: editor.selection.active.line,
+          cursor_column: editor.selection.active.character,
+          open_files: this.getOpenFiles(),
+          language_id: doc.languageId,
+        }
+      : null;
     const signature = JSON.stringify({
       session_id: sessionId,
-      ...context,
+      context,
     });
     if (signature === this.lastContextSignature) {
       return;
     }
     this.lastContextSignature = signature;
-
-    this.connection.pushContext(context, sessionId);
+    this.onContext(context);
+    if (!sessionId) return;
+    this.connection.pushContext(context ?? {
+      active_file: null,
+      selected_text: null,
+      cursor_line: null,
+      cursor_column: null,
+      open_files: [],
+      language_id: null,
+    }, sessionId);
   }
 
   dispose(): void {
@@ -667,7 +673,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   push(choiceHandler);
 
   // 6. Register ContextProvider and FileChangeHandler
-  const contextProvider = new ContextProvider(activeConnection);
+  const contextProvider = new ContextProvider(
+    activeConnection,
+    (ideContext) => activeChatProvider.updateIdeContext(ideContext),
+  );
   push(contextProvider);
   push(new FileChangeHandler(activeConnection, context));
   push(new PendingEditManager(activeConnection, activeChatProvider));

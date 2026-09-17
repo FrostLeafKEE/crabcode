@@ -16,6 +16,12 @@ import * as path from "path";
 import type { CrabCodeConnection, SessionLaunchOverrides } from "./connection";
 import { RuntimeControls } from "./runtimeControls";
 import {
+  buildIdeContextPrompt,
+  displayIdeContextPrompt,
+  type IdeContextSnapshot,
+  type IdePathReference,
+} from "./ideContext";
+import {
   buildChoiceResponseCommand,
   buildPermissionResponseCommand,
   serializeCommand,
@@ -377,6 +383,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   private shellTerminal: vscode.Terminal | null = null;
   private shellTerminalCwd: string | null = null;
   private readonly runtimeControls: RuntimeControls;
+  private ideContext: IdeContextSnapshot | null = null;
   private pendingEditReview: PendingEditReviewSummary | null = null;
   private readonly pendingEditActionEmitter = new vscode.EventEmitter<PendingEditActionMessage>();
   public readonly onPendingEditAction = this.pendingEditActionEmitter.event;
@@ -482,9 +489,17 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         this.flushPendingWebviewMessages();
       }
       switch (msg.type) {
-        case "sendMessage":
-          this.handleUserMessage(msg.text, msg.images);
+        case "sendMessage": {
+          const text = typeof msg.text === "string" ? msg.text : "";
+          const references = this.normalizeIdeReferences(msg.references);
+          const prompt = buildIdeContextPrompt(
+            text,
+            msg.includeIdeContext === true ? this.ideContext : null,
+            references,
+          );
+          this.handleUserMessage(prompt, msg.images, displayIdeContextPrompt(prompt));
           break;
+        }
         case "copyText":
           if (typeof msg.text === "string") void this.copyTextToClipboard(msg.text, typeof msg.requestId === "string" ? msg.requestId : "");
           break;
@@ -508,6 +523,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           this.postMessage({ type: "busyState", busy: this.isBusy });
           this.postMessage({ type: "contextUsage", usage: this.latestContextUsage ?? null });
           this.postMessage({ type: "pendingEditReview", summary: this.pendingEditReview });
+          this.postMessage({ type: "ideContext", context: this.ideContext });
           this.postMessage({
             type: "steeringQueue",
             messages: this.currentState.pendingSteeringMessages,
@@ -538,6 +554,14 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           break;
         case "pickFiles":
           void this.pickFilesForChat();
+          break;
+        case "pickIdeReferences":
+          void this.pickIdeReferencesForChat();
+          break;
+        case "addIdeReference":
+          if (typeof msg.path === "string") {
+            void this.addIdeReferenceForChat(msg.path, msg.kind === "folder" ? "folder" : "file");
+          }
           break;
         case "searchWorkspaceFiles":
           void this.searchWorkspaceFilesForChat(
@@ -961,6 +985,34 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     // Reset cooldown so the next pushChatOptions actually fetches
     this._lastModelsFetchTime = 0;
     void this.pushChatOptions();
+  }
+
+  public updateIdeContext(context: IdeContextSnapshot | null): void {
+    this.ideContext = context;
+    this.postMessage({ type: "ideContext", context });
+  }
+
+  private normalizeIdeReferences(value: unknown): IdePathReference[] {
+    if (!Array.isArray(value)) return [];
+    const result: IdePathReference[] = [];
+    const seen = new Set<string>();
+    for (const candidate of value.slice(0, 50)) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const source = candidate as Record<string, unknown>;
+      if (source.kind !== "file" && source.kind !== "folder") continue;
+      if (typeof source.path !== "string" || !source.path) continue;
+      const uri = vscode.Uri.file(path.normalize(source.path));
+      if (!vscode.workspace.getWorkspaceFolder(uri)) continue;
+      const key = `${source.kind}:${uri.fsPath}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({
+        kind: source.kind,
+        path: uri.fsPath,
+        name: typeof source.name === "string" && source.name ? source.name : path.basename(uri.fsPath),
+      });
+    }
+    return result;
   }
 
   private sendCurrentSessionInfo(): void {
@@ -3036,6 +3088,136 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     await this.attachTextFilesForChat(picked);
   }
 
+  private async pickIdeReferencesForChat(): Promise<void> {
+    type ReferenceItem = vscode.QuickPickItem & {
+      referenceKind: IdePathReference["kind"];
+      uri: vscode.Uri;
+      relativePath: string;
+    };
+    const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+    if (workspaceFolders.length === 0) {
+      void vscode.window.showInformationMessage("CrabCode：请先打开一个工作区。");
+      return;
+    }
+
+    const fileUris = await vscode.workspace.findFiles(
+      "**/*",
+      "**/{.git,node_modules,dist,build,out,target,.venv,venv}/**",
+      5_000,
+    );
+    const folderUris = new Map<string, { uri: vscode.Uri; relativePath: string; workspaceName: string }>();
+    for (const workspaceFolder of workspaceFolders) {
+      folderUris.set(workspaceFolder.uri.fsPath, {
+        uri: workspaceFolder.uri,
+        relativePath: workspaceFolder.name,
+        workspaceName: workspaceFolder.name,
+      });
+    }
+    for (const uri of fileUris) {
+      const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+      if (!workspaceFolder) continue;
+      let current = path.dirname(uri.fsPath);
+      while (current && current !== workspaceFolder.uri.fsPath) {
+        if (!folderUris.has(current)) {
+          folderUris.set(current, {
+            uri: vscode.Uri.file(current),
+            relativePath: path.relative(workspaceFolder.uri.fsPath, current).split(path.sep).join("/"),
+            workspaceName: workspaceFolder.name,
+          });
+        }
+        const parent = path.dirname(current);
+        if (parent === current) break;
+        current = parent;
+      }
+    }
+
+    const referenceItem = (
+      uri: vscode.Uri,
+      referenceKind: IdePathReference["kind"],
+      relativePath: string,
+      workspaceName: string,
+    ): ReferenceItem => {
+      const directory = path.posix.dirname(relativePath.split(path.sep).join("/"));
+      return {
+        label: `$(${referenceKind === "folder" ? "folder" : "file"}) ${path.basename(uri.fsPath) || workspaceName}`,
+        description: directory === "." ? workspaceName : `${workspaceName}/${directory}`,
+        referenceKind,
+        uri,
+        relativePath,
+      };
+    };
+    const folders = [...folderUris.values()]
+      .map((folder) => referenceItem(folder.uri, "folder", folder.relativePath, folder.workspaceName))
+      .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+    const files = fileUris.map((uri) => {
+      const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri)!;
+      const relativePath = path.relative(workspaceFolder.uri.fsPath, uri.fsPath).split(path.sep).join("/");
+      return referenceItem(uri, "file", relativePath, workspaceFolder.name);
+    }).sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+    const visiblePaths = new Set(
+      vscode.window.visibleTextEditors.map((editor) => editor.document.uri.fsPath),
+    );
+    const recent = files.filter((item) => visiblePaths.has(item.uri.fsPath));
+    const recentPaths = new Set(recent.map((item) => item.uri.fsPath));
+    const items: Array<ReferenceItem | vscode.QuickPickItem> = [
+      ...(recent.length > 0
+        ? [
+            { label: "最近打开", kind: vscode.QuickPickItemKind.Separator },
+            ...recent,
+          ]
+        : []),
+      { label: "文件夹", kind: vscode.QuickPickItemKind.Separator },
+      ...folders,
+      { label: "文件", kind: vscode.QuickPickItemKind.Separator },
+      ...files.filter((item) => !recentPaths.has(item.uri.fsPath)),
+    ];
+    const picked = await vscode.window.showQuickPick(items, {
+      placeHolder: "搜索附件",
+      matchOnDescription: true,
+    });
+    if (!picked || !("uri" in picked)) return;
+    const reference = await this.ideReferenceFromUri(picked.uri);
+    if (reference) {
+      this.postMessage({ type: "addIdeReferences", references: [reference] });
+    }
+  }
+
+  private async addIdeReferenceForChat(
+    rawPath: string,
+    expectedKind: IdePathReference["kind"],
+  ): Promise<void> {
+    const reference = await this.ideReferenceFromUri(vscode.Uri.file(path.normalize(rawPath)));
+    if (!reference || reference.kind !== expectedKind) return;
+    this.postMessage({ type: "addIdeReferences", references: [reference] });
+  }
+
+  private async ideReferenceFromUri(
+    uri: vscode.Uri,
+  ): Promise<(IdePathReference & { relativePath: string }) | null> {
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+    if (!workspaceFolder) {
+      void vscode.window.showWarningMessage("CrabCode：只能引用当前工作区内的文件或文件夹。");
+      return null;
+    }
+    try {
+      const stat = await vscode.workspace.fs.stat(uri);
+      const kind: IdePathReference["kind"] = (stat.type & vscode.FileType.Directory) !== 0
+        ? "folder"
+        : "file";
+      const relativePath = path.relative(workspaceFolder.uri.fsPath, uri.fsPath).split(path.sep).join("/")
+        || workspaceFolder.name;
+      return {
+        kind,
+        path: uri.fsPath,
+        name: path.basename(uri.fsPath) || workspaceFolder.name,
+        relativePath,
+      };
+    } catch {
+      void vscode.window.showWarningMessage(`CrabCode：无法引用\n${uri.fsPath}`);
+      return null;
+    }
+  }
+
   private async attachTextFilesForChat(uris: vscode.Uri[]): Promise<void> {
     const textSnippets: { name: string; text: string; path: string }[] = [];
     const maxSizeMb = normalizeFileUploadMaxSizeMb(
@@ -3097,7 +3279,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         const relativePath = workspaceFolder
           ? path.relative(workspaceFolder.uri.fsPath, uri.fsPath).split(path.sep).join("/")
           : path.basename(uri.fsPath);
-        return { path: uri.fsPath, relativePath, name: path.basename(uri.fsPath) };
+        return { kind: "file" as const, path: uri.fsPath, relativePath, name: path.basename(uri.fsPath) };
       })
       .filter((item) => supportedExtensions.has(path.extname(item.name).slice(1).toLocaleLowerCase()))
       .filter((item) => !normalizedQuery || item.relativePath.toLocaleLowerCase().includes(normalizedQuery))
@@ -3157,17 +3339,21 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
   // ── Internals ──────────────────────────────────────────────────
 
-  private async handleUserMessage(text: string, images?: ImageAttachment[]): Promise<void> {
+  private async handleUserMessage(
+    text: string,
+    images?: ImageAttachment[],
+    displayText = text,
+  ): Promise<void> {
     this.ensureSessionIfNeeded();
     const sessionId = this.displayedSessionId ?? this.connection.sessionId;
     if (sessionId) await this.runtimeControls.whenSettled(sessionId);
     const state = sessionId ? this.getSessionState(sessionId) : this.currentState;
     const updateWebview = sessionId === this.displayedSessionId;
     if (state.isBusy) {
-      this.queueSteeringMessageOnState(state, text, images);
+      this.queueSteeringMessageOnState(state, displayText, images);
       this.connection.steer(text, { sessionId: sessionId ?? undefined, images });
     } else {
-      this.addMessageOnState(state, "user", text, updateWebview, images);
+      this.addMessageOnState(state, "user", displayText, updateWebview, images);
       state.isBusy = true;
       if (updateWebview) this.postMessage({ type: "busyState", busy: true });
       const operationId = this.connection.send(text, { sessionId: sessionId ?? undefined, images });
@@ -3595,7 +3781,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         const chatMsg: ChatMessage = {
           id: segment === 0 ? baseId : `${baseId}:part-${segment}`,
           role,
-          text: pendingText,
+          text: role === "user" ? displayIdeContextPrompt(pendingText) : pendingText,
           timestamp,
           images: pendingImages.length > 0 ? pendingImages : undefined,
           parentId,
@@ -3614,7 +3800,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         const block = blocks[index];
         const type = typeof block.type === "string" ? block.type : "";
         if (type === "text") {
-          if (typeof block.text === "string") pendingText += block.text;
+          if (typeof block.text === "string") {
+            pendingText += block.text;
+          }
           continue;
         }
         if (type === "image") {
@@ -5533,6 +5721,44 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       font-size: 11px;
     }
     .text-file-chip .remove-btn:hover { opacity: 1; }
+    .ide-reference-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      max-width: min(240px, 100%);
+      height: 25px;
+      padding: 0 5px 0 8px;
+      border: 1px solid color-mix(in srgb, var(--vscode-textLink-foreground, var(--accent)) 35%, var(--border));
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--vscode-textLink-foreground, var(--accent)) 9%, var(--surface-elevated));
+      color: var(--vscode-foreground);
+      font-size: 10.5px;
+    }
+    .ide-reference-chip.folder {
+      border-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 42%, var(--border));
+      background: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 9%, var(--surface-elevated));
+    }
+    .ide-reference-chip.current {
+      border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+      background: var(--accent-muted);
+    }
+    .ide-reference-icon { flex: 0 0 auto; opacity: .78; }
+    .ide-reference-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ide-reference-chip .remove-btn {
+      width: 17px;
+      height: 17px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: inherit;
+      opacity: .6;
+      cursor: pointer;
+    }
+    .ide-reference-chip .remove-btn:hover { opacity: 1; background: color-mix(in srgb, currentColor 12%, transparent); }
 
     /* ── Composer editor ───────────────────────────────────────── */
     #input {
@@ -5577,6 +5803,14 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     .composer-inline-mention.image {
       border-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 48%, var(--border));
       color: var(--vscode-charts-green, #89d185);
+    }
+    .composer-inline-mention.folder {
+      border-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 48%, var(--border));
+      color: var(--vscode-charts-yellow, #cca700);
+    }
+    .composer-inline-mention.context {
+      border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+      color: var(--vscode-textLink-foreground, var(--vscode-foreground));
     }
     .composer-inline-mention-label { overflow: hidden; text-overflow: ellipsis; }
     .composer-inline-mention button {
@@ -6549,7 +6783,46 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     .plus-menu button { display: flex; align-items: center; gap: 8px; border-radius: 8px; }
     .plus-menu button svg { width: 15px; height: 15px; }
     .plus-menu .menu-divider { height: 1px; background: var(--border); margin: 5px; }
-    .plus-menu [aria-checked="true"]::after { content: '✓'; margin-left: auto; }
+    .plus-menu > [aria-checked="true"]::after { content: '✓'; margin-left: auto; }
+    .plus-submenu-trigger .submenu-chevron { margin-left: auto; opacity: .7; }
+    .plus-submenu-trigger[aria-expanded="true"] {
+      background: var(--vscode-menu-selectionBackground, var(--accent-muted));
+      color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
+    }
+    .ide-context-menu {
+      position: fixed;
+      z-index: 230;
+      width: min(360px, calc(100vw - 16px));
+      padding: 5px;
+      border: 1px solid var(--vscode-menu-border, var(--border));
+      border-radius: 14px;
+      background: var(--vscode-menu-background, var(--surface-elevated));
+      color: var(--vscode-menu-foreground, var(--vscode-foreground));
+      box-shadow: 0 16px 42px #0005;
+    }
+    .ide-context-menu.hidden { display: none; }
+    .ide-context-menu button {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      min-height: 34px;
+      padding: 6px 9px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .ide-context-menu button:hover:not(:disabled),
+    .ide-context-menu button:focus-visible { background: var(--vscode-menu-selectionBackground, var(--accent-muted)); outline: none; }
+    .ide-context-menu button:disabled { opacity: .45; cursor: default; }
+    .ide-context-current-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+    .ide-context-current-copy small { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ide-context-check { width: 14px; margin-left: auto; text-align: center; opacity: 0; }
+    #ide-current-file[aria-checked="true"] .ide-context-check { opacity: 1; }
     #composer-card.ultra-mode { animation: ultra-border-awaken 900ms ease-out both; }
     #composer-card.ultra-mode::after {
       content: ''; position: absolute; inset: 0; z-index: 90; overflow: hidden;
@@ -6707,8 +6980,22 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     <button type="button" role="menuitem" data-action="image">添加图片…</button>
     <button type="button" role="menuitem" data-action="file">添加文件…</button>
     <div class="menu-divider" role="separator"></div>
+    <button type="button" class="plus-submenu-trigger" id="ide-context-trigger" role="menuitem" aria-haspopup="menu" aria-expanded="false">
+      <span>IDE 上下文</span><span class="submenu-chevron" aria-hidden="true">›</span>
+    </button>
     <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="plan">☷ 计划模式</button>
     <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="ultra" disabled>✧ Ultra 模式</button>
+    <div id="ide-context-menu" class="ide-context-menu hidden" role="menu" aria-label="IDE 上下文">
+      <button type="button" id="ide-current-file" role="menuitemcheckbox" aria-checked="false" disabled>
+        <span aria-hidden="true">▤</span>
+        <span class="ide-context-current-copy"><span>当前打开文件</span><small id="ide-current-file-name">没有打开的文件</small></span>
+        <span class="ide-context-check" aria-hidden="true">✓</span>
+      </button>
+      <div class="menu-divider" role="separator"></div>
+      <button type="button" id="ide-pick-reference" role="menuitem">
+        <span aria-hidden="true">＋</span><span>引用文件或文件夹…</span>
+      </button>
+    </div>
   </div>
   <div id="effort-menu" class="effort-menu hidden" role="menu" aria-label="思考强度">
     <div class="picker-menu-heading"><span>思考强度</span><small>随会话保存</small></div>
@@ -6759,6 +7046,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         const ctxToggle = document.getElementById('ctx-toggle');
         const plusBtn = document.getElementById('plus-btn');
         const plusMenu = document.getElementById('plus-menu');
+        const ideContextTrigger = document.getElementById('ide-context-trigger');
+        const ideContextMenu = document.getElementById('ide-context-menu');
+        const ideCurrentFile = document.getElementById('ide-current-file');
+        const ideCurrentFileName = document.getElementById('ide-current-file-name');
+        const idePickReference = document.getElementById('ide-pick-reference');
         const slashPopup = document.getElementById('slash-popup');
         const slashPopupList = document.getElementById('slash-popup-list');
         const mentionPopup = document.getElementById('mention-popup');
@@ -6847,6 +7139,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     // Pending attachments carry stable keys so inline @ capsules survive list reordering.
     const pendingImages = [];
     const pendingTextFiles = [];
+    const pendingIdeReferences = [];
+    let currentIdeContext = null;
+    let includeIdeContext = true;
     const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
     let maxTextFileSizeMb = 5;
     let attachmentSequence = 0;
@@ -6854,6 +7149,20 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     function nextAttachmentKey(kind) {
       attachmentSequence += 1;
       return kind + ':' + attachmentSequence;
+    }
+
+    function referenceName(value) {
+      const normalized = String(value || '').replace(/[\\/]+$/, '');
+      const parts = normalized.split(/[\\/]/);
+      return parts[parts.length - 1] || normalized || '引用';
+    }
+
+    function ideReferenceKey(reference) {
+      return 'ide-reference:' + reference.kind + ':' + reference.path;
+    }
+
+    function currentIdeContextKey(context) {
+      return 'ide-current:' + (context && context.active_file ? context.active_file : 'none');
     }
 
     function composerNodeText(node) {
@@ -8559,6 +8868,33 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       renderAttachmentBar();
     }
 
+    function removeIdeReference(index) {
+      const reference = pendingIdeReferences[index];
+      if (reference) removeMentionCapsules(ideReferenceKey(reference));
+      pendingIdeReferences.splice(index, 1);
+      renderAttachmentBar();
+    }
+
+    function appendIdeReferenceChip(reference, index, current) {
+      const chip = document.createElement('div');
+      chip.className = 'ide-reference-chip ' + (current ? 'current' : reference.kind);
+      chip.title = current ? 'IDE 上下文 · ' + reference.path : reference.path;
+      const icon = document.createElement('span');
+      icon.className = 'ide-reference-icon';
+      icon.textContent = current ? '▤' : (reference.kind === 'folder' ? '▰' : '▧');
+      const label = document.createElement('span');
+      label.className = 'ide-reference-name';
+      label.textContent = current ? '当前文件 · ' + reference.name : reference.name;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'remove-btn';
+      remove.dataset.removeIdeReference = current ? 'current' : String(index);
+      remove.setAttribute('aria-label', '移除引用 ' + reference.name);
+      remove.textContent = '×';
+      chip.append(icon, label, remove);
+      attachmentBar.appendChild(chip);
+    }
+
     function renderAttachmentBar() {
       attachmentBar.innerHTML = '';
       pendingImages.forEach(function(img, idx) {
@@ -8575,12 +8911,35 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           '<button type="button" class="remove-btn" data-kind="txt" data-idx="' + idx + '" title="移除">✕</button>';
         attachmentBar.appendChild(chip);
       });
-      attachmentBar.querySelectorAll('.remove-btn').forEach(function(btn) {
+      if (includeIdeContext && currentIdeContext && currentIdeContext.active_file) {
+        appendIdeReferenceChip({
+          kind: 'file',
+          path: currentIdeContext.active_file,
+          name: referenceName(currentIdeContext.active_file),
+        }, -1, true);
+      }
+      pendingIdeReferences.forEach(function(reference, idx) {
+        appendIdeReferenceChip(reference, idx, false);
+      });
+      attachmentBar.querySelectorAll('.remove-btn[data-kind]').forEach(function(btn) {
         btn.addEventListener('click', function() {
           const k = btn.getAttribute('data-kind');
           const i = parseInt(btn.getAttribute('data-idx'), 10);
           if (k === 'img') removeImage(i);
-          else removeTextFile(i);
+          else if (k === 'txt') removeTextFile(i);
+        });
+      });
+      attachmentBar.querySelectorAll('[data-remove-ide-reference]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          const value = btn.dataset.removeIdeReference;
+          if (value === 'current') {
+            if (currentIdeContext) removeMentionCapsules(currentIdeContextKey(currentIdeContext));
+            includeIdeContext = false;
+            renderAttachmentBar();
+          } else {
+            removeIdeReference(parseInt(value, 10));
+          }
+          renderIdeContextMenu();
         });
       });
       syncComposerChrome();
@@ -8588,10 +8947,13 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
     let prevAttachCount = 0;
     function syncComposerChrome() {
-      const n = pendingImages.length + pendingTextFiles.length;
+      const n = pendingImages.length
+        + pendingTextFiles.length
+        + pendingIdeReferences.length
+        + (includeIdeContext && currentIdeContext?.active_file ? 1 : 0);
       composerCard.classList.toggle('has-attachments', n > 0);
       const sum = document.getElementById('ctx-summary');
-      if (sum) sum.textContent = n ? (n + ' 个附件') : '';
+      if (sum) sum.textContent = n ? (n + ' 个附件与引用') : '';
       if (n > 0 && prevAttachCount === 0) composerCard.classList.add('ctx-open');
       ctxToggle.setAttribute('aria-expanded', composerCard.classList.contains('ctx-open') ? 'true' : 'false');
       prevAttachCount = n;
@@ -8608,6 +8970,22 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         pendingTextFiles.push({ key: key, name: s.name, text: s.text, path: s.path || '' });
       });
       renderAttachmentBar();
+    }
+
+    function mergeIdeReferences(references) {
+      (Array.isArray(references) ? references : []).forEach(function(reference) {
+        if (!reference || (reference.kind !== 'file' && reference.kind !== 'folder') || !reference.path) return;
+        const key = ideReferenceKey(reference);
+        if (pendingIdeReferences.some(function(item) { return ideReferenceKey(item) === key; })) return;
+        pendingIdeReferences.push({
+          kind: reference.kind,
+          path: reference.path,
+          name: reference.name || referenceName(reference.path),
+          relativePath: reference.relativePath || reference.path,
+        });
+      });
+      renderAttachmentBar();
+      renderIdeContextMenu();
     }
 
     function applyOptions(msg) {
@@ -8931,7 +9309,26 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           path: file.path || '',
           attached: true,
         };
+      })).concat(pendingIdeReferences.map(function(reference) {
+        return {
+          key: ideReferenceKey(reference),
+          kind: reference.kind,
+          name: reference.name,
+          detail: (reference.kind === 'folder' ? '文件夹引用 · ' : '文件引用 · ') + (reference.relativePath || reference.path),
+          path: reference.path,
+          attached: true,
+        };
       }));
+      if (currentIdeContext && currentIdeContext.active_file) {
+        items.unshift({
+          key: currentIdeContextKey(currentIdeContext),
+          kind: 'context',
+          name: referenceName(currentIdeContext.active_file),
+          detail: (includeIdeContext ? '当前 IDE 文件 · 已引用 · ' : '当前 IDE 文件 · ') + currentIdeContext.active_file,
+          path: currentIdeContext.active_file,
+          attached: includeIdeContext,
+        });
+      }
       return items.filter(function(item) {
         return !normalized || (item.name + ' ' + item.detail).toLowerCase().includes(normalized);
       });
@@ -8944,9 +9341,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         return !attachedPaths.has(item.path);
       }).map(function(item) {
         return Object.assign({
-          key: 'file-path:' + item.path,
-          kind: 'file',
-          detail: '工作区 · ' + item.relativePath,
+          key: 'ide-reference:' + (item.kind || 'file') + ':' + item.path,
+          kind: item.kind || 'file',
+          detail: (item.kind === 'folder' ? '工作区文件夹 · ' : '工作区文件 · ') + item.relativePath,
           attached: false,
         }, item);
       });
@@ -8957,7 +9354,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       mentionItems = Array.isArray(items) ? items : [];
       mentionActiveIndex = mentionItems.length ? 0 : -1;
       if (!mentionItems.length) { closeMentionPopup(); return; }
-      mentionPopup.innerHTML = '<div class="mention-popup-heading">@ 引用图片或文件 · Tab / Enter 添加</div>' + mentionItems.map(function(item, index) {
+      mentionPopup.innerHTML = '<div class="mention-popup-heading">@ 引用 IDE 上下文、图片、文件或文件夹 · Tab / Enter 添加</div>' + mentionItems.map(function(item, index) {
         return '<div class="mention-item' + (index === 0 ? ' active' : '') + '" data-index="' + index + '" role="option" aria-selected="' + (index === 0 ? 'true' : 'false') + '">' +
           '<strong>' + escapeHtml(item.name) + '</strong><small>' + escapeHtml(item.detail) + '</small></div>';
       }).join('');
@@ -9015,7 +9412,13 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       const spacer = document.createTextNode(String.fromCharCode(8203));
       pill.after(spacer);
       setComposerCaret(spacer, 1);
-      if (!item.attached) vscode.postMessage({ type: 'attachWorkspaceFile', path: item.path });
+      if (item.kind === 'context') {
+        includeIdeContext = true;
+        renderAttachmentBar();
+        renderIdeContextMenu();
+      } else if (!item.attached) {
+        vscode.postMessage({ type: 'addIdeReference', path: item.path, kind: item.kind === 'folder' ? 'folder' : 'file' });
+      }
       closeMentionPopup();
     }
 
@@ -9911,7 +10314,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         extra += '\\n\\n<file name="' + escapedName + '">\\n' + f.text + '\\n</file>\\n';
       });
       text = (text + extra).trim();
-      if (!text && pendingImages.length === 0 && pendingTextFiles.length === 0) return;
+      const carriesIdeContext = Boolean(includeIdeContext && currentIdeContext && currentIdeContext.active_file);
+      if (!text && pendingImages.length === 0 && pendingTextFiles.length === 0 && pendingIdeReferences.length === 0 && !carriesIdeContext) return;
 
       if ((text === '!' || text.startsWith('! ')) && pendingImages.length === 0 && pendingTextFiles.length === 0) {
         const command = text.slice(1).trim();
@@ -9957,10 +10361,19 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       const images = pendingImages.map(function(img) {
         return { media_type: img.media_type, data: img.data };
       });
-      vscode.postMessage({ type: 'sendMessage', text: text, images: images.length > 0 ? images : undefined });
+      vscode.postMessage({
+        type: 'sendMessage',
+        text: text,
+        images: images.length > 0 ? images : undefined,
+        includeIdeContext: carriesIdeContext,
+        references: pendingIdeReferences.map(function(reference) {
+          return { kind: reference.kind, path: reference.path, name: reference.name };
+        }),
+      });
       clearInput();
       pendingImages.length = 0;
       pendingTextFiles.length = 0;
+      pendingIdeReferences.length = 0;
       renderAttachmentBar();
       closeSlashPopup();
       closeMentionPopup();
@@ -10254,6 +10667,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       plusMenu.style.left = left + 'px';
       plusMenu.style.top = top + 'px';
       plusMenu.style.visibility = '';
+      if (!ideContextMenu.classList.contains('hidden')) positionIdeContextMenu();
     }
 
     function openPlusMenu() {
@@ -10263,6 +10677,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     function closePlusMenu() {
+      closeIdeContextMenu();
       plusMenu.classList.add('hidden');
       plusMenu.style.visibility = '';
       plusBtn.setAttribute('aria-expanded', 'false');
@@ -10275,6 +10690,98 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     });
     document.addEventListener('click', function() { closePlusMenu(); });
     plusMenu.addEventListener('click', function(e) { e.stopPropagation(); });
+
+    function renderIdeContextMenu() {
+      const hasCurrentFile = Boolean(currentIdeContext && currentIdeContext.active_file);
+      ideCurrentFile.disabled = !hasCurrentFile;
+      ideCurrentFile.setAttribute('aria-checked', String(hasCurrentFile && includeIdeContext));
+      ideCurrentFileName.textContent = hasCurrentFile
+        ? referenceName(currentIdeContext.active_file)
+        : '没有打开的文件';
+      ideCurrentFileName.title = hasCurrentFile ? currentIdeContext.active_file : '';
+    }
+
+    function positionIdeContextMenu() {
+      if (!ideContextTrigger || !ideContextMenu) return;
+      ideContextMenu.classList.remove('hidden');
+      ideContextMenu.style.visibility = 'hidden';
+      ideContextMenu.style.left = '0px';
+      ideContextMenu.style.top = '0px';
+      const triggerRect = ideContextTrigger.getBoundingClientRect();
+      const menuRect = ideContextMenu.getBoundingClientRect();
+      const margin = 8;
+      const gap = 5;
+      const roomOnRight = window.innerWidth - triggerRect.right - gap;
+      const roomOnLeft = triggerRect.left - margin - gap;
+      let preferredLeft;
+      let preferredTop = triggerRect.top;
+      if (roomOnRight >= menuRect.width) {
+        preferredLeft = triggerRect.right + gap;
+      } else if (roomOnLeft >= menuRect.width) {
+        preferredLeft = triggerRect.left - menuRect.width - gap;
+      } else {
+        // Match Desktop's right-extending cascade when the child cannot fit
+        // fully beside the parent: offset it right and stack it above/below.
+        preferredLeft = triggerRect.left + 8;
+        const roomAbove = triggerRect.top - margin - gap;
+        preferredTop = roomAbove >= menuRect.height
+          ? triggerRect.top - menuRect.height - gap
+          : triggerRect.bottom + gap;
+      }
+      const left = Math.max(margin, Math.min(preferredLeft, window.innerWidth - menuRect.width - margin));
+      const top = Math.max(margin, Math.min(preferredTop, window.innerHeight - menuRect.height - margin));
+      ideContextMenu.style.left = left + 'px';
+      ideContextMenu.style.top = top + 'px';
+      ideContextMenu.style.visibility = '';
+    }
+
+    function openIdeContextMenu(focusFirst) {
+      renderIdeContextMenu();
+      positionIdeContextMenu();
+      ideContextTrigger.setAttribute('aria-expanded', 'true');
+      if (focusFirst) {
+        const first = ideContextMenu.querySelector('button:not(:disabled)');
+        if (first) first.focus();
+      }
+    }
+
+    function closeIdeContextMenu() {
+      ideContextMenu.classList.add('hidden');
+      ideContextMenu.style.visibility = '';
+      ideContextTrigger.setAttribute('aria-expanded', 'false');
+    }
+
+    ideContextTrigger.addEventListener('mouseenter', function() { openIdeContextMenu(false); });
+    ideContextTrigger.addEventListener('click', function(event) {
+      event.stopPropagation();
+      if (ideContextMenu.classList.contains('hidden')) openIdeContextMenu(true);
+      else closeIdeContextMenu();
+    });
+    ideContextTrigger.addEventListener('keydown', function(event) {
+      if (event.key === 'ArrowRight' || event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openIdeContextMenu(true);
+      }
+    });
+    ideContextMenu.addEventListener('click', function(event) { event.stopPropagation(); });
+    ideContextMenu.addEventListener('keydown', function(event) {
+      if (event.key === 'Escape' || event.key === 'ArrowLeft') {
+        event.preventDefault();
+        closeIdeContextMenu();
+        ideContextTrigger.focus();
+      }
+    });
+    ideCurrentFile.addEventListener('click', function() {
+      if (!currentIdeContext || !currentIdeContext.active_file) return;
+      includeIdeContext = !includeIdeContext;
+      renderAttachmentBar();
+      renderIdeContextMenu();
+    });
+    idePickReference.addEventListener('click', function() {
+      closePlusMenu();
+      vscode.postMessage({ type: 'pickIdeReferences' });
+    });
+
     plusMenu.querySelectorAll('button[data-action]').forEach(function(btn) {
       btn.addEventListener('click', function() {
         const act = btn.getAttribute('data-action');
@@ -10292,7 +10799,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     });
 
     ctxToggle.addEventListener('click', function() {
-      const n = pendingImages.length + pendingTextFiles.length;
+      const n = pendingImages.length
+        + pendingTextFiles.length
+        + pendingIdeReferences.length
+        + (includeIdeContext && currentIdeContext?.active_file ? 1 : 0);
       if (n === 0) {
         return;
       }
@@ -10589,6 +11099,21 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         case 'options':
           applyOptions(msg);
           break;
+        case 'ideContext': {
+          const previousKey = currentIdeContext ? currentIdeContextKey(currentIdeContext) : null;
+          currentIdeContext = msg.context && typeof msg.context.active_file === 'string'
+            ? msg.context
+            : null;
+          if (previousKey && (!currentIdeContext || previousKey !== currentIdeContextKey(currentIdeContext))) {
+            removeMentionCapsules(previousKey);
+          }
+          renderAttachmentBar();
+          renderIdeContextMenu();
+          break;
+        }
+        case 'addIdeReferences':
+          mergeIdeReferences(msg.references);
+          break;
         case 'runtimeControls':
           if (msg.sessionId === currentSessionId) renderRuntimeControls(msg);
           break;
@@ -10624,6 +11149,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       }
     });
 
+    renderIdeContextMenu();
     syncComposerChrome();
     updatePanelWidthMode();
 

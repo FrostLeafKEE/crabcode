@@ -13,6 +13,9 @@ in this file.
 - Keep model and reasoning capsules on one adaptive row in narrow sidebars, and
   remove the redundant footer Agent/Plan selector now that Plan lives in the
   composer menu and active-mode capsule.
+- Show active IDE context as a removable composer capsule, add a responsive
+  **+ → IDE context** submenu for current-file and workspace file/folder
+  references, and expose those references through composer `@` completion.
 
 ## 0.1.5
 

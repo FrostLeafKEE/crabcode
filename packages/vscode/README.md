@@ -50,8 +50,10 @@ be installed and running; the extension does not install them remotely.
   Ultra uses the Desktop spectrum animation and respects reduced motion.
 - Review and keep or undo pending file edits.
 - Start, reconnect to, or restart a local Gateway from the editor.
-- Send the active editor context, selection, cursor position, and visible files
-  to the Gateway.
+- See the active editor as a removable context capsule above the composer. Use
+  **+ → IDE context** to toggle it or reference workspace files and folders with
+  the native VS Code picker; current and added references are also available
+  from `@` in the composer and are injected into that message by path.
 
 ## Configuration
 
