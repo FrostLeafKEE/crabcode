@@ -3,15 +3,16 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::net::{IpAddr, ToSocketAddrs};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use url::Url;
 
@@ -77,10 +78,12 @@ fn stop_child_tree(child: &mut Child) -> io::Result<()> {
 pub struct GatewayProcesses {
     children: Mutex<HashMap<String, Child>>,
     startup: Mutex<()>,
+    stopping: AtomicBool,
 }
 
 impl GatewayProcesses {
     pub fn stop_all(&self) {
+        self.stopping.store(true, Ordering::Release);
         if let Ok(mut processes) = self.children.lock() {
             for (_, mut child) in processes.drain() {
                 let _ = stop_child_tree(&mut child);
@@ -274,15 +277,8 @@ fn probe_health(base: &Url, credential_ref: Option<&str>) -> Result<Option<Value
 fn python_version(candidate: &str) -> Option<(u32, u32)> {
     let mut command = Command::new(candidate);
     configure_python_utf8(&mut command);
-    let output = command.arg("--version").output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let raw = if output.stdout.is_empty() {
-        String::from_utf8_lossy(&output.stderr)
-    } else {
-        String::from_utf8_lossy(&output.stdout)
-    };
+    command.arg("--version");
+    let raw = run_probe_command(&mut command, Duration::from_secs(10)).ok()?;
     let version = raw.split_whitespace().find(|part| {
         part.chars()
             .next()
@@ -408,16 +404,6 @@ fn python_candidates(configured: Option<&str>, include_managed: bool) -> Vec<Str
     #[cfg(target_os = "macos")]
     extend_macos_python_candidates(&mut candidates, dirs::home_dir().as_deref());
     candidates
-}
-
-#[cfg(not(debug_assertions))]
-fn detect_python(configured: Option<&str>) -> Result<String, String> {
-    for candidate in python_candidates(configured, true) {
-        if supported_gateway_python(&candidate) {
-            return Ok(candidate);
-        }
-    }
-    Err("Python 3.10 or newer was not found. Install Python or set a Python path in Desktop settings.".to_string())
 }
 
 #[cfg(debug_assertions)]
@@ -627,16 +613,299 @@ pub async fn remove_document_engine(python_path: Option<String>) -> Result<Value
     .map_err(|error| format!("Document engine removal task failed: {error}"))?
 }
 
+#[cfg(debug_assertions)]
 fn installed_gateway_version(python: &str) -> Option<String> {
     let script = "import crabcode_gateway; print(getattr(crabcode_gateway, '__version__', ''))";
     let mut command = Command::new(python);
     configure_python_utf8(&mut command);
-    let output = command.args(["-c", script]).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    command.args(["-c", script]);
+    let version = run_probe_command(&mut command, Duration::from_secs(15)).ok()?;
     (!version.is_empty()).then_some(version)
+}
+
+// Probe imports in a separate, time-limited process: a broken interpreter or
+// dependency must not prevent trying the next environment. A file avoids pipe
+// backpressure while we wait; only its bounded tail is read into memory.
+fn run_probe_command(command: &mut Command, timeout: Duration) -> Result<String, String> {
+    let mut output = tempfile::tempfile().map_err(|error| error.to_string())?;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(output.try_clone().map_err(|error| error.to_string())?)
+        .stderr(output.try_clone().map_err(|error| error.to_string())?)
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    let deadline = Instant::now() + timeout;
+    let result = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Err(error) => break Err(error.to_string()),
+            Ok(None) if Instant::now() >= deadline => {
+                break Err(format!(
+                    "Python check timed out after {} seconds",
+                    timeout.as_secs()
+                ));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(25)),
+        }
+    };
+    if result.is_err() {
+        stop_child_tree(&mut child).map_err(|error| error.to_string())?;
+    }
+    let status = result?;
+    let length = output.metadata().map_err(|error| error.to_string())?.len();
+    output
+        .seek(SeekFrom::Start(length.saturating_sub(16384)))
+        .map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    output
+        .take(16384)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    let detail = String::from_utf8_lossy(&bytes).trim().to_string();
+    if status.success() {
+        Ok(detail)
+    } else {
+        Err(format!("Python check failed ({status}): {detail}"))
+    }
+}
+
+#[cfg(any(not(debug_assertions), test))]
+fn check_gateway_installation(python: &str) -> Result<(), String> {
+    let script = r#"
+import sys
+import crabcode_gateway
+from crabcode_gateway.protocol import GATEWAY_MIN_PROTOCOL_VERSION, GATEWAY_MAX_PROTOCOL_VERSION
+expected, protocol = sys.argv[1], int(sys.argv[2])
+if crabcode_gateway.__version__ != expected:
+    raise RuntimeError(f"Gateway version {crabcode_gateway.__version__}; Desktop requires {expected}")
+if not GATEWAY_MIN_PROTOCOL_VERSION <= protocol <= GATEWAY_MAX_PROTOCOL_VERSION:
+    raise RuntimeError(f"Gateway does not support protocol {protocol}")
+# Import the actual CLI entry point and HTTP server/routes, not just the small
+# package __init__: an installation without the gateway extra can import that.
+from crabcode_cli.__main__ import entry
+from crabcode_gateway.server import run_server
+"#;
+    let mut command = Command::new(python);
+    configure_python_utf8(&mut command);
+    if let Some(home) = dirs::home_dir() {
+        command.current_dir(home);
+    }
+    command.args([
+        "-c",
+        script,
+        env!("CARGO_PKG_VERSION"),
+        &GATEWAY_PROTOCOL.to_string(),
+    ]);
+    run_probe_command(&mut command, Duration::from_secs(15)).map(|_| ())
+}
+
+struct StartedGateway {
+    python: String,
+    health: Value,
+}
+
+fn start_gateway(
+    python: &str,
+    base: &Url,
+    credential_ref: Option<&str>,
+    timeout: Duration,
+    processes: &GatewayProcesses,
+    connection_id: &str,
+    progress: &(impl Fn(&str, &str) + Sync),
+) -> Result<StartedGateway, String> {
+    progress(
+        "starting_gateway",
+        &format!("正在验证 Gateway 启动能力 · {python}"),
+    );
+    let host = base.host_str().unwrap_or("127.0.0.1");
+    let port = base.port_or_known_default().unwrap_or(4096).to_string();
+    let mut command = Command::new(python);
+    configure_gateway_command(&mut command, host, &port);
+    if let Some(home) = dirs::home_dir() {
+        command.current_dir(home);
+    }
+    // Register even candidate processes immediately so closing Desktop during
+    // startup stops them as well as already-ready Gateways.
+    let mut children = processes
+        .children
+        .lock()
+        .map_err(|_| "Gateway process registry is unavailable".to_string())?;
+    if processes.stopping.load(Ordering::Acquire) {
+        return Err("Desktop is shutting down".to_string());
+    }
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Unable to start the local Gateway: {error}"))?;
+    // Continue draining stderr after startup, retaining at most 16 KiB. This
+    // preserves useful failure details without blocking a verbose server.
+    let errors = Arc::new(Mutex::new(VecDeque::new()));
+    if let Some(mut stderr) = child.stderr.take() {
+        let errors = Arc::clone(&errors);
+        thread::spawn(move || {
+            let mut bytes = [0; 4096];
+            while let Ok(count) = stderr.read(&mut bytes) {
+                if count == 0 {
+                    break;
+                }
+                let Ok(mut tail) = errors.lock() else { break };
+                tail.extend(&bytes[..count]);
+                let excess = tail.len().saturating_sub(16384);
+                tail.drain(..excess);
+            }
+        });
+    }
+    if let Some(mut previous) = children.insert(connection_id.to_string(), child) {
+        let _ = stop_child_tree(&mut previous);
+    }
+    drop(children);
+    progress("waiting_gateway", "正在等待本地 Gateway 就绪");
+    let deadline = Instant::now() + timeout;
+    let result = (|| {
+        loop {
+            let process_exited = || -> Result<Option<ExitStatus>, String> {
+                processes
+                    .children
+                    .lock()
+                    .map_err(|_| "Gateway process registry is unavailable".to_string())?
+                    .get_mut(connection_id)
+                    .ok_or_else(|| "Gateway startup was cancelled".to_string())?
+                    .try_wait()
+                    .map_err(|error| error.to_string())
+            };
+            if let Some(status) = process_exited()? {
+                return Err(format!(
+                    "The local Gateway process exited before becoming ready ({status})"
+                ));
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "The local Gateway did not become ready within {} seconds",
+                    timeout.as_secs()
+                ));
+            }
+            if let Some(health) = probe_health(base, credential_ref)? {
+                // Newly launched installations must match the Desktop release;
+                // pre-existing servers keep the protocol-only connection policy.
+                if health.get("version").and_then(Value::as_str) != Some(env!("CARGO_PKG_VERSION"))
+                {
+                    return Err(
+                        "The started Gateway did not report the required version".to_string()
+                    );
+                }
+                if process_exited()?.is_some() {
+                    return Err("The local Gateway exited during its health check".to_string());
+                }
+                return Ok(health);
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    })();
+    match result {
+        Ok(health) => Ok(StartedGateway {
+            python: python.to_string(),
+            health,
+        }),
+        Err(error) => {
+            stop_registered_gateway(processes, connection_id)
+                .map_err(|cleanup| format!("{error}; unable to stop Gateway: {cleanup}"))?;
+            let detail = errors
+                .lock()
+                .map(|tail| {
+                    String::from_utf8_lossy(&tail.iter().copied().collect::<Vec<_>>())
+                        .trim()
+                        .to_string()
+                })
+                .unwrap_or_default();
+            Err(format!("{error}\n{detail}").trim().to_string())
+        }
+    }
+}
+
+// Kept available in debug tests so the packaged-app selection/fallback path is
+// exercised without installing packages into a developer's real environment.
+#[cfg(any(not(debug_assertions), test))]
+fn start_release_gateway_at(
+    mut candidates: Vec<String>,
+    environment: &Path,
+    base: &Url,
+    credential_ref: Option<&str>,
+    processes: &GatewayProcesses,
+    connection_id: &str,
+    progress: &(impl Fn(&str, &str) + Sync),
+) -> Result<StartedGateway, String> {
+    // User-selected and external environments take priority over our managed one.
+    push_unique(
+        &mut candidates,
+        managed_gateway_python_path(environment)
+            .to_string_lossy()
+            .into_owned(),
+    );
+    let mut base_python = None;
+    for python in candidates {
+        if processes.stopping.load(Ordering::Acquire) {
+            return Err("Desktop is shutting down".to_string());
+        }
+        if !supported_gateway_python(&python) {
+            continue;
+        }
+        base_python.get_or_insert_with(|| python.clone());
+        progress(
+            "checking_package",
+            &format!("正在检查已有 CrabCode 的版本和 Gateway 依赖 · {python}"),
+        );
+        let result = check_gateway_installation(&python).and_then(|()| {
+            start_gateway(
+                &python,
+                base,
+                credential_ref,
+                Duration::from_secs(10),
+                processes,
+                connection_id,
+                progress,
+            )
+        });
+        match result {
+            Ok(started) => {
+                progress(
+                    "environment",
+                    &format!("已复用现有 CrabCode 安装，版本、依赖和启动检查通过 · {python}"),
+                );
+                return Ok(started);
+            }
+            Err(error) => progress(
+                "environment",
+                &format!("现有安装不可用，继续检测 · {python}\n{error}"),
+            ),
+        }
+    }
+    if processes.stopping.load(Ordering::Acquire) {
+        return Err("Desktop is shutting down".to_string());
+    }
+    let base_python = base_python.ok_or_else(|| "Python 3.10 or newer was not found. Install Python or set a Python path in Desktop settings.".to_string())?;
+    progress(
+        "creating_environment",
+        "未找到可复用的安装，正在准备 CrabCode 独立 Python 环境",
+    );
+    let python = ensure_managed_gateway_python_at(&base_python, environment, &|line| {
+        progress("creating_environment", line)
+    })?;
+    if check_gateway_installation(&python).is_err() {
+        progress("installing", "正在独立环境中安装 CrabCode 和 Gateway 依赖");
+        install_gateway(&python, &|line| progress("installing", line))?;
+        check_gateway_installation(&python)?;
+    }
+    start_gateway(
+        &python,
+        base,
+        credential_ref,
+        Duration::from_secs(10),
+        processes,
+        connection_id,
+        progress,
+    )
 }
 
 fn managed_gateway_environment_dir() -> Result<PathBuf, String> {
@@ -688,15 +957,6 @@ fn ensure_managed_gateway_python_at(
     Ok(managed_python_string)
 }
 
-#[cfg(not(debug_assertions))]
-fn ensure_managed_gateway_python(
-    base_python: &str,
-    on_output: &(impl Fn(&str) + Sync),
-) -> Result<String, String> {
-    let environment = managed_gateway_environment_dir()?;
-    ensure_managed_gateway_python_at(base_python, &environment, on_output)
-}
-
 #[derive(Deserialize)]
 struct PythonEnvironment {
     version: String,
@@ -714,11 +974,9 @@ print(json.dumps({"version": platform.python_version(), "executable": sys.execut
 "#;
     let mut command = Command::new(python);
     configure_python_utf8(&mut command);
-    let output = command.args(["-c", script]).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    serde_json::from_slice(&output.stdout).ok()
+    command.args(["-c", script]);
+    let output = run_probe_command(&mut command, Duration::from_secs(3)).ok()?;
+    serde_json::from_str(output.lines().last()?).ok()
 }
 
 #[derive(Clone, Serialize)]
@@ -902,25 +1160,42 @@ fn ensure_local_gateway_blocking(
 
     progress("checking_python", "正在检测 Python 环境");
     #[cfg(debug_assertions)]
-    let python = {
+    let started = {
         let python = detect_development_python(python_path.as_deref())?;
         progress(
             "environment",
             &format!("开发模式直接使用 Python 环境：{python}"),
         );
-        python
+        let installed_version = installed_gateway_version(&python);
+        if installed_version.as_deref() != Some(env!("CARGO_PKG_VERSION")) {
+            progress(
+                "installing",
+                "正在安装 CrabCode 和依赖，首次启动可能需要几分钟",
+            );
+            install_gateway(&python, &|line| progress("installing", line))?;
+        }
+        start_gateway(
+            &python,
+            &base,
+            credential_ref.as_deref(),
+            Duration::from_secs(10),
+            &processes,
+            &connection_id,
+            progress,
+        )?
     };
     #[cfg(not(debug_assertions))]
-    let python = {
-        let base_python = detect_python(python_path.as_deref())?;
-        progress(
-            "environment",
-            &format!("用于创建独立环境的 Python：{base_python}"),
-        );
-        progress("creating_environment", "正在准备 CrabCode 独立 Python 环境");
-        ensure_managed_gateway_python(&base_python, &|line| progress("creating_environment", line))?
-    };
-    if let Some(environment) = python_environment(&python) {
+    let started = start_release_gateway_at(
+        python_candidates(python_path.as_deref(), false),
+        &managed_gateway_environment_dir()?,
+        &base,
+        credential_ref.as_deref(),
+        &processes,
+        &connection_id,
+        progress,
+    )?;
+    let python = &started.python;
+    if let Some(environment) = python_environment(python) {
         progress(
             "environment",
             &format!(
@@ -937,84 +1212,19 @@ fn ensure_local_gateway_blocking(
             &format!("Python 环境目录：{}", environment.prefix),
         );
     } else {
-        progress(
-            "environment",
-            "无法读取 Python 环境详情，将继续检查 Gateway 安装",
-        );
+        progress("environment", "无法读取 Python 环境详情，Gateway 已启动");
     }
-    progress(
-        "checking_package",
-        &format!("正在检查 CrabCode 安装版本 · {python}"),
-    );
-    let installed_version = installed_gateway_version(&python);
-    progress(
-        "environment",
-        &format!(
-            "本地 Gateway 已安装版本：{}；桌面端需要版本：{}",
-            installed_version.as_deref().unwrap_or("未安装或无法导入"),
-            env!("CARGO_PKG_VERSION")
-        ),
-    );
-    if installed_version.as_deref() != Some(env!("CARGO_PKG_VERSION")) {
-        progress(
-            "installing",
-            "正在安装 CrabCode 和依赖，首次启动可能需要几分钟",
-        );
-        install_gateway(&python, &|line| progress("installing", line))?;
-    }
-    progress("starting_gateway", "正在启动本地 Gateway");
-    let host = base.host_str().unwrap_or("127.0.0.1");
-    let port = base.port_or_known_default().unwrap_or(4096).to_string();
-    let mut command = Command::new(&python);
-    configure_gateway_command(&mut command, host, &port);
-    if let Some(home) = dirs::home_dir() {
-        command.current_dir(home);
-    }
-    let child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("Unable to start the local Gateway: {error}"))?;
-    processes
-        .children
-        .lock()
-        .map_err(|_| "Gateway process registry is unavailable".to_string())?
-        .insert(connection_id.clone(), child);
-
-    progress("waiting_gateway", "正在等待本地 Gateway 就绪");
-    for _ in 0..30 {
-        thread::sleep(Duration::from_millis(350));
-        if let Some(health) = probe_health(&base, credential_ref.as_deref())? {
-            return Ok(EnsureGatewayResult {
-                ready: true,
-                started_by_desktop: true,
-                python: Some(python),
-                version: health
-                    .get("version")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                message: "Desktop started the local Gateway".to_string(),
-            });
-        }
-        let exited = processes
-            .children
-            .lock()
-            .map_err(|_| "Gateway process registry is unavailable".to_string())?
-            .get_mut(&connection_id)
-            .and_then(|process| process.try_wait().ok().flatten())
-            .is_some();
-        if exited {
-            processes
-                .children
-                .lock()
-                .map_err(|_| "Gateway process registry is unavailable".to_string())?
-                .remove(&connection_id);
-            return Err("The local Gateway process exited before becoming ready".to_string());
-        }
-    }
-    shutdown_gateway(processes.clone(), connection_id)?;
-    Err("The local Gateway did not become ready within 10 seconds".to_string())
+    let StartedGateway { python, health } = started;
+    Ok(EnsureGatewayResult {
+        ready: true,
+        started_by_desktop: true,
+        python: Some(python),
+        version: health
+            .get("version")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        message: "Desktop started the local Gateway".to_string(),
+    })
 }
 
 #[tauri::command]
@@ -1022,11 +1232,18 @@ pub fn shutdown_gateway(
     processes: tauri::State<'_, GatewayProcesses>,
     connection_id: String,
 ) -> Result<bool, String> {
+    stop_registered_gateway(&processes, &connection_id)
+}
+
+fn stop_registered_gateway(
+    processes: &GatewayProcesses,
+    connection_id: &str,
+) -> Result<bool, String> {
     let child = processes
         .children
         .lock()
         .map_err(|_| "Gateway process registry is unavailable".to_string())?
-        .remove(&connection_id);
+        .remove(connection_id);
     let Some(mut child) = child else {
         return Ok(false);
     };
@@ -1211,3 +1428,7 @@ exit 2
         assert!(progress.windows(2).all(|pair| pair[0] < pair[1]));
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "gateway_runtime_tests.rs"]
+mod runtime_tests;

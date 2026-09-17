@@ -32,10 +32,15 @@ Gateway's version, package path, Python version and executable, environment
 directory/type, platform, and startup directory. Runtime details are returned
 by the authenticated workspace endpoint, so remote connections describe the
 server's environment. Older Gateways can still connect without this metadata.
-For local connections, Desktop uses the detected Python only to create a
-managed virtual environment at `~/.crabcode/desktop/gateway-venv`; CrabCode is
-installed and launched there instead of modifying the system, Homebrew, or
-Conda environment. `npm run tauri dev` instead uses the configured Python or
+For local connections, packaged Desktop first checks the configured Python and
+other detected Python environments for an existing CrabCode installation. It
+reuses an installation only when its version matches Desktop, its Gateway
+protocol and CLI/server dependencies pass checks, and the actual Gateway process
+starts and passes its health check. Unusable candidates are skipped with a
+diagnostic in the startup log. If none is usable, Desktop creates or reuses
+`~/.crabcode/desktop/gateway-venv` and installs CrabCode there as needed; it does
+not install into or upgrade external system, Homebrew, or Conda environments.
+`npm run tauri dev` instead uses the configured Python or
 the terminal's active Python environment directly so Gateway source and local
 editable installs can be debugged.
 
