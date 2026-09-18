@@ -151,6 +151,7 @@ describe("SettingsView", () => {
     onBack: vi.fn(),
     onSavePythonPath: vi.fn(),
     onInstallGatewaySuite: vi.fn().mockResolvedValue(undefined),
+    onInstallSystemTool: vi.fn().mockResolvedValue(undefined),
     onConversationChange: vi.fn(),
     onDocumentChange: vi.fn(),
     onThemeModeChange: vi.fn(),
@@ -238,14 +239,11 @@ describe("SettingsView", () => {
 
     const search = container.querySelector<HTMLInputElement>('input[aria-label="Search"]')!;
     const debuggerOption = container.querySelector<HTMLInputElement>('input[aria-label="Debugger"]')!;
-    const ripgrep = container.querySelector<HTMLInputElement>('input[aria-label="Ripgrep"]')!;
     expect(search.checked).toBe(true);
     expect(debuggerOption.checked).toBe(false);
-    expect(ripgrep.checked).toBe(false);
-    expect(container.textContent).toContain("Ripgrep 由内置 Grep 自动使用");
+    expect(container.querySelector('[aria-label="CrabCode 安装组件"]')?.textContent).not.toContain("Ripgrep");
     act(() => {
       debuggerOption.click();
-      ripgrep.click();
     });
     await act(async () => {
       Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
@@ -254,7 +252,33 @@ describe("SettingsView", () => {
       await Promise.resolve();
     });
 
-    expect(handlers.onInstallGatewaySuite).toHaveBeenCalledWith(["search", "debugger", "ripgrep"], null);
+    expect(handlers.onInstallGatewaySuite).toHaveBeenCalledWith(["search", "debugger"], null);
+  });
+
+  it("installs Ripgrep from the separate system tools section", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+    const handlers = callbacks();
+    act(() => root.render(
+      <SettingsView
+        {...handlers}
+        settings={settings}
+        gateways={{ local: onlineGateway }}
+        activeConnection={settings.connections[0]}
+        activeProject={settings.connections[0].projects[0]}
+        activeSection="general"
+        onSectionChange={vi.fn()}
+      />,
+    ));
+
+    expect(container.textContent).toContain("系统工具");
+    expect(container.textContent).toContain("Ripgrep (rg)");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="安装 Ripgrep"]')!.click();
+      await Promise.resolve();
+    });
+
+    expect(handlers.onInstallSystemTool).toHaveBeenCalledWith("ripgrep", null);
+    expect(handlers.onInstallGatewaySuite).not.toHaveBeenCalled();
   });
 
   it("controls turn duration visibility and format", () => {

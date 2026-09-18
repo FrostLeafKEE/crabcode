@@ -46,9 +46,10 @@ interface EnsureGatewayResult {
   message: string;
 }
 
-export type GatewayInstallFeature = "search" | "debugger" | "ripgrep";
+export type GatewayInstallFeature = "search" | "debugger";
 export type GatewayInstallSuite = "gateway" | "search" | "debugger" | "search-debugger";
 export type GatewayInstallSelection = GatewayInstallSuite | readonly GatewayInstallFeature[];
+export type SystemTool = "ripgrep";
 
 export interface GatewaySuiteInstallProgress {
   operationId: string;
@@ -64,6 +65,18 @@ export interface GatewaySuiteInstallResult {
   python: string;
 }
 
+export interface SystemToolInstallProgress {
+  operationId: string;
+  stage: string;
+  detail: string;
+}
+
+export interface SystemToolInstallResult {
+  tool: SystemTool;
+  version: string;
+  python: string;
+}
+
 function normalizeGatewayInstallFeatures(selection: GatewayInstallSelection): GatewayInstallFeature[] {
   const legacyFeatures: Record<GatewayInstallSuite, readonly GatewayInstallFeature[]> = {
     gateway: [],
@@ -72,7 +85,7 @@ function normalizeGatewayInstallFeatures(selection: GatewayInstallSelection): Ga
     "search-debugger": ["search", "debugger"],
   };
   const requested = typeof selection === "string" ? legacyFeatures[selection] : selection;
-  const supported: readonly GatewayInstallFeature[] = ["search", "debugger", "ripgrep"];
+  const supported: readonly GatewayInstallFeature[] = ["search", "debugger"];
   if (!requested) throw new Error("未知的 CrabCode 套件");
   for (const feature of requested) {
     if (!supported.includes(feature)) throw new Error(`未知的 CrabCode 可选能力：${feature}`);
@@ -503,6 +516,29 @@ export async function installGatewaySuite(
       pythonPath,
       features,
       suite: typeof selection === "string" ? selection : null,
+      operationId,
+    });
+  } finally {
+    unlisten?.();
+  }
+}
+
+export async function installSystemTool(
+  pythonPath: string | null,
+  tool: SystemTool,
+  onProgress?: (progress: SystemToolInstallProgress) => void,
+): Promise<SystemToolInstallResult> {
+  if (!isDesktopShell()) throw new Error("系统工具只能由桌面应用安装");
+  const operationId = randomUuid();
+  const unlisten = onProgress
+    ? await listen<SystemToolInstallProgress>("system-tool-install-progress", (event) => {
+        if (event.payload.operationId === operationId) onProgress(event.payload);
+      })
+    : null;
+  try {
+    return await invoke<SystemToolInstallResult>("install_system_tool", {
+      pythonPath,
+      tool,
       operationId,
     });
   } finally {

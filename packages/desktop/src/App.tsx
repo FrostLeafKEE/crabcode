@@ -131,6 +131,7 @@ import {
   getDocumentEngineStatus,
   installDocumentEngine,
   installGatewaySuite,
+  installSystemTool,
   isDesktopShell,
   isInsecureRemoteUrl,
   isLoopbackUrl,
@@ -143,6 +144,8 @@ import {
   type DocumentEngineInstallProgress,
   type GatewayInstallFeature,
   type GatewaySuiteInstallProgress,
+  type SystemTool,
+  type SystemToolInstallProgress,
 } from "./native";
 import type {
   BackgroundTaskInfo,
@@ -734,6 +737,10 @@ function App() {
   const [gatewaySuiteProgress, setGatewaySuiteProgress] = useState<GatewaySuiteInstallProgress | null>(null);
   const [gatewaySuiteError, setGatewaySuiteError] = useState<string | null>(null);
   const [gatewaySuiteSuccess, setGatewaySuiteSuccess] = useState<string | null>(null);
+  const [systemToolBusy, setSystemToolBusy] = useState<SystemTool | null>(null);
+  const [systemToolProgress, setSystemToolProgress] = useState<SystemToolInstallProgress | null>(null);
+  const [systemToolError, setSystemToolError] = useState<string | null>(null);
+  const [systemToolSuccess, setSystemToolSuccess] = useState<string | null>(null);
   const [referencePathModal, setReferencePathModal] = useState<"all" | "file" | null>(null);
   const [goalModal, setGoalModal] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2995,6 +3002,30 @@ function App() {
               setGatewaySuiteProgress(null);
             }
           }}
+          systemToolBusy={systemToolBusy}
+          systemToolProgress={systemToolProgress}
+          systemToolError={systemToolError}
+          systemToolSuccess={systemToolSuccess}
+          onInstallSystemTool={async (tool, pythonPath) => {
+            setSystemToolBusy(tool);
+            setSystemToolError(null);
+            setSystemToolSuccess(null);
+            setSystemToolProgress({
+              operationId: "pending",
+              stage: "preparing",
+              detail: `正在准备检测系统工具 ${tool}`,
+            });
+            try {
+              const result = await installSystemTool(pythonPath, tool, setSystemToolProgress);
+              setSystemToolSuccess(`${result.version} 已可用 · ${result.python}`);
+            } catch (reason) {
+              setSystemToolError(reason instanceof Error ? reason.message : String(reason));
+              throw reason;
+            } finally {
+              setSystemToolBusy(null);
+              setSystemToolProgress(null);
+            }
+          }}
           onConversationChange={(changes) => {
             commitSettings((current) => ({ ...current, ...changes }));
           }}
@@ -3940,6 +3971,8 @@ function App() {
         project={activeProject}
         activity={gatewaySuiteBusy
           ? gatewaySuiteProgress?.detail ?? "正在安装 CrabCode 套件…"
+          : systemToolBusy
+            ? systemToolProgress?.detail ?? `正在安装系统工具 ${systemToolBusy}…`
           : documentEngineBusy
             ? documentEngineProgress?.detail ?? (documentEngineBusy === "install" ? "正在安装高精度 PDF 引擎…" : "正在移除高精度 PDF 引擎…")
             : null}

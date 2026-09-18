@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ensureLocalGateway, installGatewaySuite } from "./native";
+import { ensureLocalGateway, installGatewaySuite, installSystemTool } from "./native";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
@@ -51,7 +51,7 @@ describe("Gateway startup progress bridge", () => {
       expect(command).toBe("install_gateway_suite");
       expect(args).toMatchObject({
         pythonPath: "/opt/python3",
-        features: ["search", "debugger", "ripgrep"],
+        features: ["search", "debugger"],
         suite: null,
       });
       const { operationId } = args as { operationId: string };
@@ -67,20 +67,46 @@ describe("Gateway startup progress bridge", () => {
         payload: { operationId, stage: "installing", detail: "Downloading Search" },
       });
       return {
-        suite: "search-debugger-ripgrep",
-        features: ["search", "debugger", "ripgrep"],
-        packageSpec: "crabcode[gateway,search,debugger]==0.1.5 + ripgrep",
+        suite: "search-debugger",
+        features: ["search", "debugger"],
+        packageSpec: "crabcode[gateway,search,debugger]==0.1.5",
         python: "/opt/python3",
       };
     });
 
-    await expect(installGatewaySuite("/opt/python3", ["ripgrep", "debugger", "search", "debugger"], progress)).resolves.toMatchObject({
-      suite: "search-debugger-ripgrep",
-      features: ["search", "debugger", "ripgrep"],
+    await expect(installGatewaySuite("/opt/python3", ["debugger", "search", "debugger"], progress)).resolves.toMatchObject({
+      suite: "search-debugger",
+      features: ["search", "debugger"],
       python: "/opt/python3",
     });
     expect(progress).toHaveBeenCalledOnce();
     expect(progress).toHaveBeenCalledWith(expect.objectContaining({ detail: "Downloading Search" }));
+    expect(unlisten).toHaveBeenCalledOnce();
+  });
+
+  it("bridges the independent system tool installer", async () => {
+    const unlisten = vi.fn();
+    const progress = vi.fn();
+    vi.mocked(listen).mockResolvedValue(unlisten);
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      expect(command).toBe("install_system_tool");
+      expect(args).toMatchObject({ pythonPath: "/opt/python3", tool: "ripgrep" });
+      const { operationId } = args as { operationId: string };
+      const callback = vi.mocked(listen).mock.calls[0][1];
+      callback({
+        event: "system-tool-install-progress",
+        id: 1,
+        payload: { operationId, stage: "detecting", detail: "正在检测 ripgrep (rg)" },
+      });
+      return { tool: "ripgrep", version: "ripgrep 15.2.0", python: "/opt/python3" };
+    });
+
+    await expect(installSystemTool("/opt/python3", "ripgrep", progress)).resolves.toEqual({
+      tool: "ripgrep",
+      version: "ripgrep 15.2.0",
+      python: "/opt/python3",
+    });
+    expect(progress).toHaveBeenCalledWith(expect.objectContaining({ stage: "detecting" }));
     expect(unlisten).toHaveBeenCalledOnce();
   });
 

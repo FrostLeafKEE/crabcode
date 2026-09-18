@@ -19,6 +19,7 @@ pub fn run() {
             gateway::authenticate_connection,
             gateway::ensure_local_gateway,
             gateway::install_gateway_suite,
+            gateway::install_system_tool,
             gateway::shutdown_gateway,
             gateway::document_engine_status,
             gateway::install_document_engine,

@@ -45,6 +45,8 @@ import {
   type DocumentEngineInstallProgress,
   type GatewayInstallFeature,
   type GatewaySuiteInstallProgress,
+  type SystemTool,
+  type SystemToolInstallProgress,
 } from "./native";
 import type {
   CodeFontFamily,
@@ -250,6 +252,11 @@ interface SettingsViewProps {
   gatewaySuiteError?: string | null;
   gatewaySuiteSuccess?: string | null;
   onInstallGatewaySuite?: (features: readonly GatewayInstallFeature[], pythonPath: string | null) => Promise<void>;
+  systemToolBusy?: SystemTool | null;
+  systemToolProgress?: SystemToolInstallProgress | null;
+  systemToolError?: string | null;
+  systemToolSuccess?: string | null;
+  onInstallSystemTool?: (tool: SystemTool, pythonPath: string | null) => Promise<void>;
   onConversationChange: (changes: ConversationSettingsUpdate) => void;
   onDocumentChange: (changes: DocumentSettingsUpdate) => void;
   onThemeModeChange: (mode: ThemeMode) => void;
@@ -519,6 +526,11 @@ export function SettingsView({
   gatewaySuiteError = null,
   gatewaySuiteSuccess = null,
   onInstallGatewaySuite,
+  systemToolBusy = null,
+  systemToolProgress = null,
+  systemToolError = null,
+  systemToolSuccess = null,
+  onInstallSystemTool,
   onConversationChange,
   onDocumentChange,
   onThemeModeChange,
@@ -621,8 +633,22 @@ export function SettingsView({
     }
   };
 
+  const installSelectedSystemTool = async (tool: SystemTool) => {
+    if (!onInstallSystemTool) return;
+    const normalizedPythonPath = pythonPath.trim();
+    setPythonPath(normalizedPythonPath);
+    if (normalizedPythonPath !== (settings.python_path ?? "")) {
+      onSavePythonPath(normalizedPythonPath);
+    }
+    try {
+      await onInstallSystemTool(tool, normalizedPythonPath || null);
+    } catch {
+      // The application-level task owner preserves and displays the error.
+    }
+  };
+
   const setGatewayFeatureSelected = (feature: GatewayInstallFeature, selected: boolean) => {
-    setGatewayFeatures((current) => (["search", "debugger", "ripgrep"] as const).filter((candidate) => (
+    setGatewayFeatures((current) => (["search", "debugger"] as const).filter((candidate) => (
       candidate === feature ? selected : current.includes(candidate)
     )));
   };
@@ -849,7 +875,7 @@ export function SettingsView({
                       <div className="settings-row gateway-suite-row">
                         <div className="settings-row-copy">
                           <strong>CrabCode 套件</strong>
-                          <span>基础 Gateway 始终安装；按需勾选其他能力。Search 和 Debugger 安装后仍需在“运行与工具”中启用；Ripgrep 由内置 Grep 自动使用。</span>
+                          <span>基础 Gateway 始终安装；按需勾选 Search 和 Debugger。安装后仍需在“运行与工具”中启用。</span>
                         </div>
                         <div className="gateway-suite-install">
                           <div className="gateway-feature-list" role="group" aria-label="CrabCode 安装组件">
@@ -862,7 +888,7 @@ export function SettingsView({
                                 type="checkbox"
                                 aria-label="Search"
                                 checked={gatewayFeatures.includes("search")}
-                                disabled={gatewaySuiteBusy}
+                                disabled={gatewaySuiteBusy || systemToolBusy !== null}
                                 onChange={(event) => setGatewayFeatureSelected("search", event.target.checked)}
                               />
                               <span><strong>Search</strong><small>语义代码搜索 · 依赖体积较大</small></span>
@@ -872,27 +898,17 @@ export function SettingsView({
                                 type="checkbox"
                                 aria-label="Debugger"
                                 checked={gatewayFeatures.includes("debugger")}
-                                disabled={gatewaySuiteBusy}
+                                disabled={gatewaySuiteBusy || systemToolBusy !== null}
                                 onChange={(event) => setGatewayFeatureSelected("debugger", event.target.checked)}
                               />
                               <span><strong>Debugger</strong><small>DAP 与进程级调试</small></span>
-                            </label>
-                            <label className="gateway-feature-option">
-                              <input
-                                type="checkbox"
-                                aria-label="Ripgrep"
-                                checked={gatewayFeatures.includes("ripgrep")}
-                                disabled={gatewaySuiteBusy}
-                                onChange={(event) => setGatewayFeatureSelected("ripgrep", event.target.checked)}
-                              />
-                              <span><strong>Ripgrep</strong><small>快速文本搜索 · 安装时检测，已有 rg 直接复用</small></span>
                             </label>
                           </div>
                           <div className="gateway-suite-actions">
                             <button
                               className="settings-command primary"
                               type="button"
-                              disabled={gatewaySuiteBusy || !onInstallGatewaySuite}
+                              disabled={gatewaySuiteBusy || systemToolBusy !== null || !onInstallGatewaySuite}
                               onClick={() => void installSelectedGatewaySuite()}
                             >
                               {gatewaySuiteBusy ? <LoaderCircle className="spin" /> : <Download />}
@@ -919,6 +935,41 @@ export function SettingsView({
                     </div>
                   )}
                 </div>
+
+                {isDesktopShell() && (
+                  <>
+                    <div className="settings-section-heading general-spaced-heading">
+                      <div><h2>系统工具</h2><p>检测并安装本地 Gateway 使用的命令行工具。</p></div>
+                    </div>
+                    <div className="settings-group">
+                      <div className="settings-row">
+                        <div className="settings-row-copy">
+                          <strong>Ripgrep (rg)</strong>
+                          <span>内置 Grep 会优先使用 ripgrep 进行快速文本搜索；已安装的 rg 会直接复用。</span>
+                        </div>
+                        <div className="system-tool-install">
+                          <button
+                            className="settings-command primary"
+                            type="button"
+                            aria-label="安装 Ripgrep"
+                            disabled={systemToolBusy !== null || gatewaySuiteBusy || !onInstallSystemTool}
+                            onClick={() => void installSelectedSystemTool("ripgrep")}
+                          >
+                            {systemToolBusy === "ripgrep" ? <LoaderCircle className="spin" /> : <Download />}
+                            <span>{systemToolBusy === "ripgrep" ? "正在检测与安装" : "检测并安装"}</span>
+                          </button>
+                          {systemToolBusy === "ripgrep" && systemToolProgress && (
+                            <small className="system-tool-progress" role="status" title={systemToolProgress.detail}>
+                              {systemToolProgress.detail}
+                            </small>
+                          )}
+                          {systemToolError && <small className="system-tool-error" role="alert">{systemToolError}</small>}
+                          {systemToolSuccess && <small className="system-tool-success" role="status">{systemToolSuccess}</small>}
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
 
                 <div className="settings-section-heading general-spaced-heading">
                   <div><h2>文件上传</h2><p>控制添加文件时发送完整内容还是仅发送本地路径。</p></div>

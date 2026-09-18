@@ -1117,8 +1117,7 @@ fn install_gateway_package(
     ))
 }
 
-const GATEWAY_INSTALL_FEATURES: &[&str] = &["search", "debugger", "ripgrep"];
-const GATEWAY_PYTHON_FEATURES: &[&str] = &["search", "debugger"];
+const GATEWAY_INSTALL_FEATURES: &[&str] = &["search", "debugger"];
 const RIPGREP_VERSION: &str = "15.2.0";
 
 #[derive(Clone, Copy)]
@@ -1210,11 +1209,7 @@ fn gateway_install_features(
 fn gateway_features_package(features: &[String]) -> Result<String, String> {
     let features = normalize_gateway_install_features(features.to_vec())?;
     let mut extras = vec!["gateway".to_string()];
-    extras.extend(
-        features
-            .into_iter()
-            .filter(|feature| GATEWAY_PYTHON_FEATURES.contains(&feature.as_str())),
-    );
+    extras.extend(features);
     Ok(format!(
         "crabcode[{}]=={}",
         extras.join(","),
@@ -1224,16 +1219,6 @@ fn gateway_features_package(features: &[String]) -> Result<String, String> {
 
 fn gateway_suite_package(suite: &str) -> Result<String, String> {
     gateway_features_package(&legacy_gateway_suite_features(suite)?)
-}
-
-fn gateway_install_package_spec(features: &[String]) -> Result<String, String> {
-    let features = normalize_gateway_install_features(features.to_vec())?;
-    let package = gateway_features_package(&features)?;
-    if features.iter().any(|feature| feature == "ripgrep") {
-        Ok(format!("{package} + ripgrep"))
-    } else {
-        Ok(package)
-    }
 }
 
 fn gateway_feature_modules(features: &[String]) -> Result<Vec<&'static str>, String> {
@@ -1294,10 +1279,10 @@ fn ripgrep_version(python: &str) -> Result<String, String> {
     Err("ripgrep (rg) was not found in the Gateway environment".to_string())
 }
 
-fn install_ripgrep(python: &str, on_output: &(impl Fn(&str) + Sync)) -> Result<(), String> {
+fn install_ripgrep(python: &str, on_output: &(impl Fn(&str) + Sync)) -> Result<String, String> {
     if let Ok(version) = ripgrep_version(python) {
         on_output(&format!("已检测到 {version}，直接复用"));
-        return Ok(());
+        return Ok(version);
     }
     on_output("未检测到 ripgrep，正在安装 rg");
     let release = ripgrep_release_for(std::env::consts::OS, std::env::consts::ARCH)?;
@@ -1369,7 +1354,7 @@ print(f"installed {binary_name} to {output}")
     }
     let version = ripgrep_version(python)?;
     on_output(&format!("已安装 {version}"));
-    Ok(())
+    Ok(version)
 }
 
 fn check_gateway_feature_installation(python: &str, features: &[String]) -> Result<(), String> {
@@ -1391,9 +1376,6 @@ if missing:
         }
         command.args(["-c", script, &encoded]);
         run_probe_command(&mut command, Duration::from_secs(15))?;
-    }
-    if features.iter().any(|feature| feature == "ripgrep") {
-        ripgrep_version(python)?;
     }
     Ok(())
 }
@@ -1443,10 +1425,37 @@ pub struct GatewaySuiteInstallResult {
     python: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemToolInstallProgress {
+    operation_id: String,
+    stage: String,
+    detail: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemToolInstallResult {
+    tool: String,
+    version: String,
+    python: String,
+}
+
 fn emit_gateway_suite_progress(app: &AppHandle, operation_id: &str, stage: &str, detail: &str) {
     let _ = app.emit(
         "gateway-suite-install-progress",
         GatewaySuiteInstallProgress {
+            operation_id: operation_id.to_string(),
+            stage: stage.to_string(),
+            detail: detail.to_string(),
+        },
+    );
+}
+
+fn emit_system_tool_progress(app: &AppHandle, operation_id: &str, stage: &str, detail: &str) {
+    let _ = app.emit(
+        "system-tool-install-progress",
+        SystemToolInstallProgress {
             operation_id: operation_id.to_string(),
             stage: stage.to_string(),
             detail: detail.to_string(),
@@ -1464,8 +1473,7 @@ pub async fn install_gateway_suite(
 ) -> Result<GatewaySuiteInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let features = gateway_install_features(features, suite.as_deref())?;
-        let gateway_package = gateway_features_package(&features)?;
-        let package_spec = gateway_install_package_spec(&features)?;
+        let package_spec = gateway_features_package(&features)?;
         let processes = app.state::<GatewayProcesses>();
         let _startup = processes
             .startup
@@ -1482,27 +1490,16 @@ pub async fn install_gateway_suite(
             &app,
             &operation_id,
             "installing",
-            &format!("正在安装 {gateway_package} · {python}"),
+            &format!("正在安装 {package_spec} · {python}"),
         );
-        install_gateway_package(&python, &gateway_package, &|line| {
+        install_gateway_package(&python, &package_spec, &|line| {
             emit_gateway_suite_progress(&app, &operation_id, "installing", line)
         })?;
-        if features.iter().any(|feature| feature == "ripgrep") {
-            emit_gateway_suite_progress(
-                &app,
-                &operation_id,
-                "detecting_ripgrep",
-                "正在检测 ripgrep (rg)",
-            );
-            install_ripgrep(&python, &|line| {
-                emit_gateway_suite_progress(&app, &operation_id, "installing_ripgrep", line)
-            })?;
-        }
         emit_gateway_suite_progress(
             &app,
             &operation_id,
             "verifying",
-            "正在验证套件模块、ripgrep 与 Gateway 版本",
+            "正在验证套件模块与 Gateway 版本",
         );
         check_gateway_feature_installation(&python, &features)?;
         emit_gateway_suite_progress(
@@ -1520,6 +1517,49 @@ pub async fn install_gateway_suite(
     })
     .await
     .map_err(|error| format!("Gateway suite installer task failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn install_system_tool(
+    app: AppHandle,
+    python_path: Option<String>,
+    tool: String,
+    operation_id: String,
+) -> Result<SystemToolInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if tool != "ripgrep" {
+            return Err(format!("Unknown system tool: {tool}"));
+        }
+        let processes = app.state::<GatewayProcesses>();
+        let _startup = processes
+            .startup
+            .lock()
+            .map_err(|_| "Gateway setup registry is unavailable".to_string())?;
+        emit_system_tool_progress(
+            &app,
+            &operation_id,
+            "selecting_environment",
+            "正在定位 Desktop 使用的本地 Python 环境",
+        );
+        let python = resolve_gateway_install_python(python_path.as_deref())?;
+        emit_system_tool_progress(&app, &operation_id, "detecting", "正在检测 ripgrep (rg)");
+        let version = install_ripgrep(&python, &|line| {
+            emit_system_tool_progress(&app, &operation_id, "installing", line)
+        })?;
+        emit_system_tool_progress(
+            &app,
+            &operation_id,
+            "complete",
+            &format!("{version} 已可用"),
+        );
+        Ok(SystemToolInstallResult {
+            tool,
+            version,
+            python,
+        })
+    })
+    .await
+    .map_err(|error| format!("System tool installer task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1734,7 +1774,6 @@ mod tests {
     fn gateway_features_are_independent_canonical_and_backward_compatible() {
         let selected = gateway_install_features(
             Some(vec![
-                "ripgrep".to_string(),
                 "debugger".to_string(),
                 "search".to_string(),
                 "debugger".to_string(),
@@ -1742,14 +1781,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(
-            selected,
-            vec![
-                "search".to_string(),
-                "debugger".to_string(),
-                "ripgrep".to_string()
-            ]
-        );
+        assert_eq!(selected, vec!["search".to_string(), "debugger".to_string()]);
         assert_eq!(
             gateway_features_package(&selected).unwrap(),
             format!(
@@ -1758,16 +1790,10 @@ mod tests {
             )
         );
         assert_eq!(
-            gateway_install_package_spec(&selected).unwrap(),
-            format!(
-                "crabcode[gateway,search,debugger]=={} + ripgrep",
-                env!("CARGO_PKG_VERSION")
-            )
-        );
-        assert_eq!(
             gateway_install_features(None, Some("search-debugger")).unwrap(),
-            vec!["search".to_string(), "debugger".to_string()]
+            selected
         );
+        assert!(gateway_install_features(Some(vec!["ripgrep".to_string()]), None).is_err());
         assert!(gateway_install_features(Some(vec!["unknown".to_string()]), None).is_err());
     }
 

@@ -10591,6 +10591,20 @@ html[data-theme="light"] .model-detail-field > small.default {
   gap: 6px;
 }
 
+.system-tool-install {
+  width: min(500px, 56%);
+  min-width: 0;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.system-tool-install .settings-command {
+  min-width: 132px;
+}
+
 .gateway-suite-actions {
   display: flex;
   align-items: center;
@@ -10665,7 +10679,10 @@ html[data-theme="light"] .model-detail-field > small.default {
 
 .gateway-suite-progress,
 .gateway-suite-error,
-.gateway-suite-success {
+.gateway-suite-success,
+.system-tool-progress,
+.system-tool-error,
+.system-tool-success {
   overflow: hidden;
   font-size: 10px;
   line-height: 1.4;
@@ -10677,11 +10694,26 @@ html[data-theme="light"] .model-detail-field > small.default {
   color: var(--muted);
 }
 
+.system-tool-progress {
+  max-width: 100%;
+  color: var(--muted);
+}
+
 .gateway-suite-error {
   color: var(--red);
 }
 
+.system-tool-error {
+  max-width: 100%;
+  color: var(--red);
+}
+
 .gateway-suite-success {
+  color: var(--green);
+}
+
+.system-tool-success {
+  max-width: 100%;
   color: var(--green);
 }
 
@@ -10984,6 +11016,11 @@ html[data-theme="light"] .model-detail-field > small.default {
 
   .gateway-suite-install {
     width: 100%;
+  }
+
+  .system-tool-install {
+    width: 100%;
+    align-items: flex-end;
   }
 
   .settings-entity-row {
