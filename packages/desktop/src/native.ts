@@ -46,7 +46,7 @@ interface EnsureGatewayResult {
   message: string;
 }
 
-export type GatewayInstallFeature = "search" | "debugger";
+export type GatewayInstallFeature = "search" | "debugger" | "ripgrep";
 export type GatewayInstallSuite = "gateway" | "search" | "debugger" | "search-debugger";
 export type GatewayInstallSelection = GatewayInstallSuite | readonly GatewayInstallFeature[];
 
@@ -72,7 +72,7 @@ function normalizeGatewayInstallFeatures(selection: GatewayInstallSelection): Ga
     "search-debugger": ["search", "debugger"],
   };
   const requested = typeof selection === "string" ? legacyFeatures[selection] : selection;
-  const supported: readonly GatewayInstallFeature[] = ["search", "debugger"];
+  const supported: readonly GatewayInstallFeature[] = ["search", "debugger", "ripgrep"];
   if (!requested) throw new Error("未知的 CrabCode 套件");
   for (const feature of requested) {
     if (!supported.includes(feature)) throw new Error(`未知的 CrabCode 可选能力：${feature}`);

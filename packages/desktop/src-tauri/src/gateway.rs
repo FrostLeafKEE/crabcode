@@ -31,8 +31,48 @@ fn configure_python_utf8(command: &mut Command) {
     command.creation_flags(CREATE_NO_WINDOW);
 }
 
-fn configure_gateway_command(command: &mut Command, host: &str, port: &str) {
+fn python_scripts_directory(python: &str) -> Option<PathBuf> {
+    let mut command = Command::new(python);
+    configure_python_utf8(&mut command);
+    command.args([
+        "-c",
+        "import sysconfig; print(sysconfig.get_path('scripts') or '')",
+    ]);
+    let output = run_probe_command(&mut command, Duration::from_secs(5)).ok()?;
+    let path = PathBuf::from(output.lines().last()?.trim());
+    (!path.as_os_str().is_empty()).then_some(path)
+}
+
+fn gateway_search_path(python: &str) -> Option<std::ffi::OsString> {
+    let mut paths = Vec::new();
+    if let Some(path) = python_scripts_directory(python) {
+        paths.push(path);
+    }
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home.join(".cargo").join("bin"));
+        paths.push(home.join(".local").join("bin"));
+    }
+    #[cfg(target_os = "macos")]
+    for path in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] {
+        paths.push(PathBuf::from(path));
+    }
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    let mut unique = Vec::new();
+    for path in paths {
+        if !unique.contains(&path) {
+            unique.push(path);
+        }
+    }
+    std::env::join_paths(unique).ok()
+}
+
+fn configure_gateway_command(command: &mut Command, python: &str, host: &str, port: &str) {
     configure_python_utf8(command);
+    if let Some(path) = gateway_search_path(python) {
+        command.env("PATH", path);
+    }
     command.args([
         "-m",
         "crabcode_cli",
@@ -719,7 +759,7 @@ fn start_gateway(
     let host = base.host_str().unwrap_or("127.0.0.1");
     let port = base.port_or_known_default().unwrap_or(4096).to_string();
     let mut command = Command::new(python);
-    configure_gateway_command(&mut command, host, &port);
+    configure_gateway_command(&mut command, python, host, &port);
     if let Some(home) = dirs::home_dir() {
         command.current_dir(home);
     }
@@ -1077,7 +1117,58 @@ fn install_gateway_package(
     ))
 }
 
-const GATEWAY_INSTALL_FEATURES: &[&str] = &["search", "debugger"];
+const GATEWAY_INSTALL_FEATURES: &[&str] = &["search", "debugger", "ripgrep"];
+const GATEWAY_PYTHON_FEATURES: &[&str] = &["search", "debugger"];
+const RIPGREP_VERSION: &str = "15.2.0";
+
+#[derive(Clone, Copy)]
+struct RipgrepRelease {
+    asset: &'static str,
+    sha256: &'static str,
+}
+
+fn ripgrep_release_for(os: &str, arch: &str) -> Result<RipgrepRelease, String> {
+    let release = match (os, arch) {
+        ("macos", "aarch64") => RipgrepRelease {
+            asset: "ripgrep-15.2.0-aarch64-apple-darwin.tar.gz",
+            sha256: "3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4",
+        },
+        ("macos", "x86_64") => RipgrepRelease {
+            asset: "ripgrep-15.2.0-x86_64-apple-darwin.tar.gz",
+            sha256: "af7825fcc69a2afc7a7aea55fc9af90e26421d8f20fe59df32e233c0b8a231c1",
+        },
+        ("windows", "aarch64") => RipgrepRelease {
+            asset: "ripgrep-15.2.0-aarch64-pc-windows-msvc.zip",
+            sha256: "e4abca10c3a64ebea742667dd7009449d49403db5460dd6873e389fa2945360f",
+        },
+        ("windows", "x86_64") => RipgrepRelease {
+            asset: "ripgrep-15.2.0-x86_64-pc-windows-msvc.zip",
+            sha256: "71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5",
+        },
+        ("windows", "x86") => RipgrepRelease {
+            asset: "ripgrep-15.2.0-i686-pc-windows-msvc.zip",
+            sha256: "9bf73bdb3fda9ad4b0235e1295b02c717031c986afa4d7c05dd0af8b74010a95",
+        },
+        ("linux", "aarch64") => RipgrepRelease {
+            asset: "ripgrep-15.2.0-aarch64-unknown-linux-musl.tar.gz",
+            sha256: "800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915",
+        },
+        ("linux", "x86_64") => RipgrepRelease {
+            asset: "ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz",
+            sha256: "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c",
+        },
+        ("linux", "arm") => RipgrepRelease {
+            asset: "ripgrep-15.2.0-armv7-unknown-linux-gnueabihf.tar.gz",
+            sha256: "d859589734d9d802107ad9eff6a78cfd9b0080d2fecb0ad8772605b35e373199",
+        },
+        _ => {
+            return Err(format!(
+                "ripgrep {RIPGREP_VERSION} does not provide a Desktop installer for {os}/{arch}"
+            ))
+        }
+    };
+    Ok(release)
+}
 
 fn legacy_gateway_suite_features(suite: &str) -> Result<Vec<String>, String> {
     match suite {
@@ -1119,7 +1210,11 @@ fn gateway_install_features(
 fn gateway_features_package(features: &[String]) -> Result<String, String> {
     let features = normalize_gateway_install_features(features.to_vec())?;
     let mut extras = vec!["gateway".to_string()];
-    extras.extend(features);
+    extras.extend(
+        features
+            .into_iter()
+            .filter(|feature| GATEWAY_PYTHON_FEATURES.contains(&feature.as_str())),
+    );
     Ok(format!(
         "crabcode[{}]=={}",
         extras.join(","),
@@ -1129,6 +1224,16 @@ fn gateway_features_package(features: &[String]) -> Result<String, String> {
 
 fn gateway_suite_package(suite: &str) -> Result<String, String> {
     gateway_features_package(&legacy_gateway_suite_features(suite)?)
+}
+
+fn gateway_install_package_spec(features: &[String]) -> Result<String, String> {
+    let features = normalize_gateway_install_features(features.to_vec())?;
+    let package = gateway_features_package(&features)?;
+    if features.iter().any(|feature| feature == "ripgrep") {
+        Ok(format!("{package} + ripgrep"))
+    } else {
+        Ok(package)
+    }
 }
 
 fn gateway_feature_modules(features: &[String]) -> Result<Vec<&'static str>, String> {
@@ -1157,27 +1262,140 @@ fn gateway_suite_name(features: &[String]) -> String {
     }
 }
 
+fn ripgrep_version(python: &str) -> Result<String, String> {
+    let binary_name = if cfg!(target_os = "windows") {
+        "rg.exe"
+    } else {
+        "rg"
+    };
+    let mut candidates = Vec::new();
+    if let Some(directory) = python_scripts_directory(python) {
+        candidates.push(directory.join(binary_name));
+    }
+    candidates.push(PathBuf::from(binary_name));
+    let search_path = gateway_search_path(python);
+    for candidate in candidates {
+        let mut command = Command::new(&candidate);
+        configure_python_utf8(&mut command);
+        if let Some(path) = &search_path {
+            command.env("PATH", path);
+        }
+        command.arg("--version");
+        if let Ok(output) = run_probe_command(&mut command, Duration::from_secs(10)) {
+            if let Some(version) = output
+                .lines()
+                .next()
+                .filter(|line| line.starts_with("ripgrep "))
+            {
+                return Ok(version.to_string());
+            }
+        }
+    }
+    Err("ripgrep (rg) was not found in the Gateway environment".to_string())
+}
+
+fn install_ripgrep(python: &str, on_output: &(impl Fn(&str) + Sync)) -> Result<(), String> {
+    if let Ok(version) = ripgrep_version(python) {
+        on_output(&format!("已检测到 {version}，直接复用"));
+        return Ok(());
+    }
+    on_output("未检测到 ripgrep，正在安装 rg");
+    let release = ripgrep_release_for(std::env::consts::OS, std::env::consts::ARCH)?;
+    let scripts = python_scripts_directory(python)
+        .ok_or_else(|| "Unable to locate the selected Python scripts directory".to_string())?;
+    std::fs::create_dir_all(&scripts)
+        .map_err(|error| format!("Unable to create {}: {error}", scripts.display()))?;
+    let binary = scripts.join(if cfg!(target_os = "windows") {
+        "rg.exe"
+    } else {
+        "rg"
+    });
+    let url = format!(
+        "https://github.com/BurntSushi/ripgrep/releases/download/{RIPGREP_VERSION}/{}",
+        release.asset
+    );
+    let binary = binary.to_string_lossy().into_owned();
+    let script = r#"
+import hashlib, io, os, pathlib, stat, sys, tarfile, urllib.request, zipfile
+
+url, expected, output_raw = sys.argv[1:]
+output = pathlib.Path(output_raw)
+request = urllib.request.Request(url, headers={"User-Agent": "CrabCode-Desktop/ripgrep-installer"})
+with urllib.request.urlopen(request, timeout=120) as response:
+    chunks, size = [], 0
+    while True:
+        chunk = response.read(1024 * 1024)
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > 32 * 1024 * 1024:
+            raise RuntimeError("ripgrep archive exceeds the 32 MiB safety limit")
+        chunks.append(chunk)
+payload = b"".join(chunks)
+actual = hashlib.sha256(payload).hexdigest()
+if actual != expected:
+    raise RuntimeError(f"ripgrep archive checksum mismatch: expected {expected}, got {actual}")
+binary_name = "rg.exe" if os.name == "nt" else "rg"
+if url.endswith(".zip"):
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        members = [name for name in archive.namelist() if pathlib.PurePosixPath(name).name == binary_name]
+        if len(members) != 1:
+            raise RuntimeError(f"expected one {binary_name} in the ripgrep archive, found {len(members)}")
+        binary = archive.read(members[0])
+else:
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+        members = [member for member in archive.getmembers() if pathlib.PurePosixPath(member.name).name == binary_name and member.isfile()]
+        if len(members) != 1:
+            raise RuntimeError(f"expected one {binary_name} in the ripgrep archive, found {len(members)}")
+        source = archive.extractfile(members[0])
+        if source is None:
+            raise RuntimeError(f"unable to read {binary_name} from the ripgrep archive")
+        binary = source.read()
+temporary = output.with_name(output.name + ".tmp")
+temporary.write_bytes(binary)
+if os.name != "nt":
+    temporary.chmod(temporary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+temporary.replace(output)
+print(f"installed {binary_name} to {output}")
+"#;
+    let mut command = Command::new(python);
+    configure_python_utf8(&mut command);
+    command.args(["-u", "-c", script, &url, release.sha256, &binary]);
+    let (status, detail) = run_streaming_command(&mut command, on_output)?;
+    if !status.success() {
+        return Err(format!(
+            "Failed to install ripgrep {RIPGREP_VERSION} from the official release archive. {detail}"
+        ));
+    }
+    let version = ripgrep_version(python)?;
+    on_output(&format!("已安装 {version}"));
+    Ok(())
+}
+
 fn check_gateway_feature_installation(python: &str, features: &[String]) -> Result<(), String> {
     check_gateway_installation(python)?;
     let modules = gateway_feature_modules(features)?;
-    if modules.is_empty() {
-        return Ok(());
-    }
-    let encoded = serde_json::to_string(&modules).map_err(|error| error.to_string())?;
-    let script = r#"
+    if !modules.is_empty() {
+        let encoded = serde_json::to_string(&modules).map_err(|error| error.to_string())?;
+        let script = r#"
 import importlib.util, json, sys
 modules = json.loads(sys.argv[1])
 missing = [name for name in modules if importlib.util.find_spec(name) is None]
 if missing:
     raise RuntimeError("Missing suite modules: " + ", ".join(missing))
 "#;
-    let mut command = Command::new(python);
-    configure_python_utf8(&mut command);
-    if let Some(home) = dirs::home_dir() {
-        command.current_dir(home);
+        let mut command = Command::new(python);
+        configure_python_utf8(&mut command);
+        if let Some(home) = dirs::home_dir() {
+            command.current_dir(home);
+        }
+        command.args(["-c", script, &encoded]);
+        run_probe_command(&mut command, Duration::from_secs(15))?;
     }
-    command.args(["-c", script, &encoded]);
-    run_probe_command(&mut command, Duration::from_secs(15)).map(|_| ())
+    if features.iter().any(|feature| feature == "ripgrep") {
+        ripgrep_version(python)?;
+    }
+    Ok(())
 }
 
 fn resolve_gateway_install_python(configured: Option<&str>) -> Result<String, String> {
@@ -1246,7 +1464,8 @@ pub async fn install_gateway_suite(
 ) -> Result<GatewaySuiteInstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let features = gateway_install_features(features, suite.as_deref())?;
-        let package_spec = gateway_features_package(&features)?;
+        let gateway_package = gateway_features_package(&features)?;
+        let package_spec = gateway_install_package_spec(&features)?;
         let processes = app.state::<GatewayProcesses>();
         let _startup = processes
             .startup
@@ -1263,16 +1482,27 @@ pub async fn install_gateway_suite(
             &app,
             &operation_id,
             "installing",
-            &format!("正在安装 {package_spec} · {python}"),
+            &format!("正在安装 {gateway_package} · {python}"),
         );
-        install_gateway_package(&python, &package_spec, &|line| {
+        install_gateway_package(&python, &gateway_package, &|line| {
             emit_gateway_suite_progress(&app, &operation_id, "installing", line)
         })?;
+        if features.iter().any(|feature| feature == "ripgrep") {
+            emit_gateway_suite_progress(
+                &app,
+                &operation_id,
+                "detecting_ripgrep",
+                "正在检测 ripgrep (rg)",
+            );
+            install_ripgrep(&python, &|line| {
+                emit_gateway_suite_progress(&app, &operation_id, "installing_ripgrep", line)
+            })?;
+        }
         emit_gateway_suite_progress(
             &app,
             &operation_id,
             "verifying",
-            "正在验证套件模块与 Gateway 版本",
+            "正在验证套件模块、ripgrep 与 Gateway 版本",
         );
         check_gateway_feature_installation(&python, &features)?;
         emit_gateway_suite_progress(
@@ -1504,6 +1734,7 @@ mod tests {
     fn gateway_features_are_independent_canonical_and_backward_compatible() {
         let selected = gateway_install_features(
             Some(vec![
+                "ripgrep".to_string(),
                 "debugger".to_string(),
                 "search".to_string(),
                 "debugger".to_string(),
@@ -1511,7 +1742,14 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(selected, vec!["search".to_string(), "debugger".to_string()]);
+        assert_eq!(
+            selected,
+            vec![
+                "search".to_string(),
+                "debugger".to_string(),
+                "ripgrep".to_string()
+            ]
+        );
         assert_eq!(
             gateway_features_package(&selected).unwrap(),
             format!(
@@ -1520,10 +1758,83 @@ mod tests {
             )
         );
         assert_eq!(
+            gateway_install_package_spec(&selected).unwrap(),
+            format!(
+                "crabcode[gateway,search,debugger]=={} + ripgrep",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        assert_eq!(
             gateway_install_features(None, Some("search-debugger")).unwrap(),
-            selected
+            vec!["search".to_string(), "debugger".to_string()]
         );
         assert!(gateway_install_features(Some(vec!["unknown".to_string()]), None).is_err());
+    }
+
+    #[test]
+    fn ripgrep_release_assets_are_pinned_for_desktop_targets() {
+        for (os, arch, suffix) in [
+            ("macos", "aarch64", "aarch64-apple-darwin.tar.gz"),
+            ("macos", "x86_64", "x86_64-apple-darwin.tar.gz"),
+            ("windows", "aarch64", "aarch64-pc-windows-msvc.zip"),
+            ("windows", "x86_64", "x86_64-pc-windows-msvc.zip"),
+            ("windows", "x86", "i686-pc-windows-msvc.zip"),
+            ("linux", "aarch64", "aarch64-unknown-linux-musl.tar.gz"),
+            ("linux", "x86_64", "x86_64-unknown-linux-musl.tar.gz"),
+            ("linux", "arm", "armv7-unknown-linux-gnueabihf.tar.gz"),
+        ] {
+            let release = ripgrep_release_for(os, arch).unwrap();
+            assert!(release.asset.ends_with(suffix));
+            assert_eq!(release.sha256.len(), 64);
+            assert!(release.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        }
+        assert!(ripgrep_release_for("linux", "riscv64").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ripgrep_detection_reuses_the_python_scripts_binary() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let scripts = directory.path().join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        let rg = scripts.join("rg");
+        std::fs::write(&rg, "#!/bin/sh\nprintf 'ripgrep 14.1.0 (test)\\n'\n").unwrap();
+        std::fs::set_permissions(&rg, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let python = directory.path().join("python");
+        std::fs::write(
+            &python,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then printf '%s\\n' '{}'; exit 0; fi\nexit 99\n",
+                scripts.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut gateway = Command::new(&python);
+        configure_gateway_command(&mut gateway, &python.to_string_lossy(), "127.0.0.1", "4096");
+        let path = gateway
+            .get_envs()
+            .find_map(|(key, value)| (key == "PATH").then(|| value.unwrap().to_owned()))
+            .unwrap();
+        assert!(std::env::split_paths(&path).any(|entry| entry == scripts));
+
+        let output = Mutex::new(Vec::new());
+        install_ripgrep(&python.to_string_lossy(), &|line| {
+            output.lock().unwrap().push(line.to_string())
+        })
+        .unwrap();
+        assert_eq!(
+            ripgrep_version(&python.to_string_lossy()).unwrap(),
+            "ripgrep 14.1.0 (test)"
+        );
+        assert_eq!(
+            *output.lock().unwrap(),
+            ["已检测到 ripgrep 14.1.0 (test)，直接复用"]
+        );
     }
 
     #[cfg(unix)]
@@ -1609,7 +1920,7 @@ mod tests {
     #[test]
     fn gateway_launch_allows_the_macos_tauri_origin() {
         let mut command = Command::new("python");
-        configure_gateway_command(&mut command, "127.0.0.1", "4096");
+        configure_gateway_command(&mut command, "python", "127.0.0.1", "4096");
         let arguments = command
             .get_args()
             .map(|value| value.to_string_lossy().into_owned())

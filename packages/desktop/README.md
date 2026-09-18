@@ -44,9 +44,12 @@ This rule applies to automatic provisioning. **Settings → General → CrabCode
 Suite** provides a component checklist and install button. Gateway is always
 selected, while Search, Debugger, and future optional capabilities can be
 checked independently for the Python environment Desktop resolves for the
-local Gateway. Search has substantially larger dependencies. Installation does
-not enable tools automatically; add their import paths under **Runtime & Tools**
-when they should be available to new sessions.
+local Gateway. Search has substantially larger dependencies. Ripgrep is checked
+before installation: an existing `rg` is reused, otherwise Desktop downloads a
+checksum-pinned official release binary into the selected Python environment
+and exposes its scripts directory to the local Gateway. Installing Search or
+Debugger does not enable those tools automatically; add their import paths
+under **Runtime & Tools** when they should be available to new sessions.
 `npm run tauri dev` instead uses the configured Python or
 the terminal's active Python environment directly so Gateway source and local
 editable installs can be debugged.

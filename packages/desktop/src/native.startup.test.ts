@@ -51,7 +51,7 @@ describe("Gateway startup progress bridge", () => {
       expect(command).toBe("install_gateway_suite");
       expect(args).toMatchObject({
         pythonPath: "/opt/python3",
-        features: ["search", "debugger"],
+        features: ["search", "debugger", "ripgrep"],
         suite: null,
       });
       const { operationId } = args as { operationId: string };
@@ -67,16 +67,16 @@ describe("Gateway startup progress bridge", () => {
         payload: { operationId, stage: "installing", detail: "Downloading Search" },
       });
       return {
-        suite: "search-debugger",
-        features: ["search", "debugger"],
-        packageSpec: "crabcode[gateway,search,debugger]==0.1.5",
+        suite: "search-debugger-ripgrep",
+        features: ["search", "debugger", "ripgrep"],
+        packageSpec: "crabcode[gateway,search,debugger]==0.1.5 + ripgrep",
         python: "/opt/python3",
       };
     });
 
-    await expect(installGatewaySuite("/opt/python3", ["debugger", "search", "debugger"], progress)).resolves.toMatchObject({
-      suite: "search-debugger",
-      features: ["search", "debugger"],
+    await expect(installGatewaySuite("/opt/python3", ["ripgrep", "debugger", "search", "debugger"], progress)).resolves.toMatchObject({
+      suite: "search-debugger-ripgrep",
+      features: ["search", "debugger", "ripgrep"],
       python: "/opt/python3",
     });
     expect(progress).toHaveBeenCalledOnce();

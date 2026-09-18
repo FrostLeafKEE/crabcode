@@ -83,7 +83,7 @@ export const SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     id: "general",
     title: "常规",
     description: "运行环境、文件上传、文件查看与会话设置",
-    searchText: "常规 运行环境 Python 路径 自动检测 本地启动 CrabCode 套件 安装 Gateway Search Debugger 语义搜索 调试 浏览器模式 文件 上传 内容 路径 引用 查看 浏览 标签 标签页 最大标签数 最大数量 上限 会话 显示 处理用时 耗时 仅秒数 时分秒 发送快捷键 Enter 回车 Ctrl Cmd Command",
+    searchText: "常规 运行环境 Python 路径 自动检测 本地启动 CrabCode 套件 安装 Gateway Search Debugger Ripgrep rg 语义搜索 文本搜索 调试 浏览器模式 文件 上传 内容 路径 引用 查看 浏览 标签 标签页 最大标签数 最大数量 上限 会话 显示 处理用时 耗时 仅秒数 时分秒 发送快捷键 Enter 回车 Ctrl Cmd Command",
   },
   {
     id: "appearance",
@@ -622,7 +622,7 @@ export function SettingsView({
   };
 
   const setGatewayFeatureSelected = (feature: GatewayInstallFeature, selected: boolean) => {
-    setGatewayFeatures((current) => (["search", "debugger"] as const).filter((candidate) => (
+    setGatewayFeatures((current) => (["search", "debugger", "ripgrep"] as const).filter((candidate) => (
       candidate === feature ? selected : current.includes(candidate)
     )));
   };
@@ -849,7 +849,7 @@ export function SettingsView({
                       <div className="settings-row gateway-suite-row">
                         <div className="settings-row-copy">
                           <strong>CrabCode 套件</strong>
-                          <span>基础 Gateway 始终安装；按需勾选其他能力。新增能力会作为独立选项加入；安装后仍需在“运行与工具”中启用。</span>
+                          <span>基础 Gateway 始终安装；按需勾选其他能力。Search 和 Debugger 安装后仍需在“运行与工具”中启用；Ripgrep 由内置 Grep 自动使用。</span>
                         </div>
                         <div className="gateway-suite-install">
                           <div className="gateway-feature-list" role="group" aria-label="CrabCode 安装组件">
@@ -876,6 +876,16 @@ export function SettingsView({
                                 onChange={(event) => setGatewayFeatureSelected("debugger", event.target.checked)}
                               />
                               <span><strong>Debugger</strong><small>DAP 与进程级调试</small></span>
+                            </label>
+                            <label className="gateway-feature-option">
+                              <input
+                                type="checkbox"
+                                aria-label="Ripgrep"
+                                checked={gatewayFeatures.includes("ripgrep")}
+                                disabled={gatewaySuiteBusy}
+                                onChange={(event) => setGatewayFeatureSelected("ripgrep", event.target.checked)}
+                              />
+                              <span><strong>Ripgrep</strong><small>快速文本搜索 · 安装时检测，已有 rg 直接复用</small></span>
                             </label>
                           </div>
                           <div className="gateway-suite-actions">

@@ -111,6 +111,7 @@ describe("settings search", () => {
   it("matches section names, item labels, and descriptions", () => {
     expect(filterSettingsSections("Python").map((section) => section.id)).toEqual(["general"]);
     expect(filterSettingsSections("Debugger").map((section) => section.id)).toEqual(["general"]);
+    expect(filterSettingsSections("Ripgrep").map((section) => section.id)).toEqual(["general"]);
     expect(filterSettingsSections("凭据").map((section) => section.id)).toEqual(["connections"]);
     expect(filterSettingsSections("工作目录").map((section) => section.id)).toEqual(["projects"]);
     expect(filterSettingsSections("Dock 图标").map((section) => section.id)).toEqual(["appearance"]);
@@ -237,10 +238,14 @@ describe("SettingsView", () => {
 
     const search = container.querySelector<HTMLInputElement>('input[aria-label="Search"]')!;
     const debuggerOption = container.querySelector<HTMLInputElement>('input[aria-label="Debugger"]')!;
+    const ripgrep = container.querySelector<HTMLInputElement>('input[aria-label="Ripgrep"]')!;
     expect(search.checked).toBe(true);
     expect(debuggerOption.checked).toBe(false);
+    expect(ripgrep.checked).toBe(false);
+    expect(container.textContent).toContain("Ripgrep 由内置 Grep 自动使用");
     act(() => {
       debuggerOption.click();
+      ripgrep.click();
     });
     await act(async () => {
       Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
@@ -249,7 +254,7 @@ describe("SettingsView", () => {
       await Promise.resolve();
     });
 
-    expect(handlers.onInstallGatewaySuite).toHaveBeenCalledWith(["search", "debugger"], null);
+    expect(handlers.onInstallGatewaySuite).toHaveBeenCalledWith(["search", "debugger", "ripgrep"], null);
   });
 
   it("controls turn duration visibility and format", () => {
