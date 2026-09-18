@@ -10614,9 +10614,9 @@ html[data-theme="light"] .model-detail-field > small.default {
 
 .gateway-feature-list {
   overflow: hidden;
-  border: 1px solid #2b484b;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: #0c1719;
+  background: var(--surface);
 }
 
 .gateway-feature-option {
@@ -10625,7 +10625,7 @@ html[data-theme="light"] .model-detail-field > small.default {
   align-items: center;
   gap: 10px;
   padding: 7px 10px;
-  color: #e9f0ec;
+  color: var(--text);
   cursor: pointer;
 }
 
@@ -10634,11 +10634,11 @@ html[data-theme="light"] .model-detail-field > small.default {
 }
 
 .gateway-feature-option:hover:not(.is-required) {
-  background: rgba(91, 212, 177, .045);
+  background: var(--surface-hover);
 }
 
 .gateway-feature-option:focus-within {
-  box-shadow: inset 0 0 0 1px #53736e;
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .gateway-feature-option input {
