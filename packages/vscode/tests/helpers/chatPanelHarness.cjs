@@ -6,8 +6,14 @@ function loadPanel(fetch) {
   const source = buildSync({ entryPoints: [path.join(__dirname, '../../src/chatPanel.ts')], bundle: true, write: false, platform: 'node', format: 'cjs', external: ['vscode'] }).outputFiles[0].text;
   const module = { exports: {} };
   const config = { serverUrl: 'ws://localhost:4096/ws' };
-  const uriFor = fsPath => ({ fsPath, scheme: 'file' });
-  const workspaceFolder = { name: 'workspace', uri: uriFor('/workspace') };
+  const workspaceRoot = path.join(path.parse(process.cwd()).root, 'workspace');
+  const workspacePath = (...segments) => path.join(workspaceRoot, ...segments);
+  const uriFor = fsPath => ({ fsPath: path.normalize(fsPath), scheme: 'file' });
+  const workspaceFolder = { name: 'workspace', uri: uriFor(workspaceRoot) };
+  const belongsToWorkspace = fsPath => {
+    const relative = path.relative(workspaceRoot, path.normalize(fsPath));
+    return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+  };
   const quickPicks = [];
   const vscode = {
     EventEmitter: class { event() {} fire() {} dispose() {} },
@@ -29,7 +35,7 @@ function loadPanel(fetch) {
     workspace: {
       getConfiguration: () => ({ get: (key, fallback) => config[key] ?? fallback }),
       workspaceFolders: [workspaceFolder],
-      getWorkspaceFolder: uri => uri.fsPath === '/workspace' || uri.fsPath.startsWith('/workspace/') ? workspaceFolder : undefined,
+      getWorkspaceFolder: uri => belongsToWorkspace(uri.fsPath) ? workspaceFolder : undefined,
       findFiles: async () => (config.workspaceFiles || []).map(uriFor),
       fs: {
         stat: async uri => ({
@@ -49,6 +55,6 @@ function loadPanel(fetch) {
   const messages = [];
   panel.postMessage = msg => messages.push(msg);
   panel.displayedSessionId = 'a';
-  return { panel, connection, messages, saved, sent, listeners, config, quickPicks };
+  return { panel, connection, messages, saved, sent, listeners, config, quickPicks, workspaceRoot, workspacePath };
 }
 module.exports = { loadPanel };

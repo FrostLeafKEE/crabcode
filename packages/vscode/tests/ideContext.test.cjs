@@ -73,6 +73,9 @@ test('restored user history hides IDE transport details while preserving the ref
 
 test('webview sends the current IDE snapshot and only normalized workspace references', async () => {
   const h = loadPanel(async () => ({ ok: true, json: async () => ({}) }));
+  const currentFile = h.workspacePath('src', 'app.ts');
+  const sourceFolder = h.workspacePath('src');
+  const outsideFile = path.join(path.parse(h.workspaceRoot).root, 'outside', 'secret.ts');
   let receiveMessage;
   const view = {
     visible: true,
@@ -84,7 +87,7 @@ test('webview sends the current IDE snapshot and only normalized workspace refer
   };
   h.panel.resolveWebviewView(view);
   h.panel.updateIdeContext({
-    active_file: '/workspace/src/app.ts',
+    active_file: currentFile,
     selected_text: 'selected()',
     cursor_line: 1,
     cursor_column: 2,
@@ -95,16 +98,16 @@ test('webview sends the current IDE snapshot and only normalized workspace refer
     text: '检查这里',
     includeIdeContext: true,
     references: [
-      { kind: 'folder', path: '/workspace/src', name: 'src' },
-      { kind: 'folder', path: '/workspace/src', name: 'duplicate' },
-      { kind: 'file', path: '/outside/secret.ts', name: 'secret.ts' },
+      { kind: 'folder', path: sourceFolder, name: 'src' },
+      { kind: 'folder', path: sourceFolder, name: 'duplicate' },
+      { kind: 'file', path: outsideFile, name: 'secret.ts' },
     ],
   });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0].text, /"path": "\/workspace\/src\/app.ts"/);
-  assert.match(h.sent[0].text, /"path": "\/workspace\/src"/);
-  assert.ok(!h.sent[0].text.includes('/outside/secret.ts'));
+  assert.ok(h.sent[0].text.includes(`"path": ${JSON.stringify(currentFile)}`));
+  assert.ok(h.sent[0].text.includes(`"path": ${JSON.stringify(sourceFolder)}`));
+  assert.ok(!h.sent[0].text.includes(JSON.stringify(outsideFile)));
   assert.equal((h.sent[0].text.match(/"kind": "folder"/g) || []).length, 1);
   const shown = h.messages.filter(message => message.type === 'newMessage').at(-1).message.text;
   assert.equal(shown, '[IDE：app.ts] [文件夹：src]\n\n检查这里');
@@ -135,20 +138,20 @@ test('composer ignores Enter while an IME composition is being confirmed', () =>
 test('reference picker uses a searchable VS Code Quick Pick for workspace files and folders', async () => {
   const h = loadPanel(async () => ({ ok: true, json: async () => ({}) }));
   h.config.workspaceFiles = [
-    '/workspace/README.md',
-    '/workspace/src/app.ts',
-    '/workspace/src/components/Button.tsx',
+    h.workspacePath('README.md'),
+    h.workspacePath('src', 'app.ts'),
+    h.workspacePath('src', 'components', 'Button.tsx'),
   ];
-  h.config.directoryPaths = ['/workspace/src'];
-  h.config.visibleFiles = ['/workspace/src/app.ts'];
-  h.config.quickPickPath = '/workspace/src';
+  h.config.directoryPaths = [h.workspacePath('src')];
+  h.config.visibleFiles = [h.workspacePath('src', 'app.ts')];
+  h.config.quickPickPath = h.workspacePath('src');
   await h.panel.pickIdeReferencesForChat();
   assert.equal(h.quickPicks.length, 1);
   assert.equal(h.quickPicks[0].options.placeHolder, '搜索附件');
   assert.equal(h.quickPicks[0].options.matchOnDescription, true);
-  assert.ok(h.quickPicks[0].items.some(item => item.uri?.fsPath === '/workspace/README.md'));
-  assert.ok(h.quickPicks[0].items.some(item => item.uri?.fsPath === '/workspace/src'));
+  assert.ok(h.quickPicks[0].items.some(item => item.uri?.fsPath === h.workspacePath('README.md')));
+  assert.ok(h.quickPicks[0].items.some(item => item.uri?.fsPath === h.workspacePath('src')));
   const added = h.messages.filter(message => message.type === 'addIdeReferences').at(-1);
   assert.equal(added.references[0].kind, 'folder');
-  assert.equal(added.references[0].path, '/workspace/src');
+  assert.equal(added.references[0].path, h.workspacePath('src'));
 });
