@@ -20,6 +20,7 @@ import {
   DirectoryModal,
   documentReferencePreview,
   formatDocumentReferenceLocation,
+  rememberProjectSession,
   resolveDefaultProjectId,
   resolveRememberedModel,
   SessionActionsMenu,
@@ -999,6 +1000,43 @@ describe("project creation types", () => {
 });
 
 describe("project defaults", () => {
+  it("does not switch back when a session from another project finishes loading", () => {
+    const connection = {
+      id: "local",
+      name: "Local",
+      base_url: "http://127.0.0.1:4096",
+      credential_ref: null,
+      allow_insecure_remote: false,
+      document_workspace_root: null,
+      last_project_path: "/work/new-project",
+      last_project_id: "new-project",
+      projects: [
+        {
+          id: "old-project",
+          kind: "project" as const,
+          name: "Old",
+          path: "/work/old-project",
+          directories: ["/work/old-project"],
+          last_session_id: null,
+        },
+        {
+          id: "new-project",
+          kind: "project" as const,
+          name: "New",
+          path: "/work/new-project",
+          directories: ["/work/new-project"],
+          last_session_id: null,
+        },
+      ],
+    } as ConnectionPreset;
+
+    const updated = rememberProjectSession(connection, "old-project", "session-1");
+
+    expect(updated.last_project_id).toBe("new-project");
+    expect(updated.last_project_path).toBe("/work/new-project");
+    expect(updated.projects[0].last_session_id).toBe("session-1");
+  });
+
   it("protects only the first startup project when legacy projects share its path", () => {
     const projects = [
       {

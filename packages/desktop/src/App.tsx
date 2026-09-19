@@ -468,6 +468,19 @@ export function resolveRememberedModel(
     : undefined;
 }
 
+export function rememberProjectSession(
+  connection: ConnectionPreset,
+  projectId: string,
+  sessionId: string,
+): ConnectionPreset {
+  return {
+    ...connection,
+    projects: connection.projects.map((project) => project.id === projectId
+      ? { ...project, last_session_id: sessionId }
+      : project),
+  };
+}
+
 export function groupGatewayModels(
   models: GatewayModel[],
   query = "",
@@ -1516,14 +1529,9 @@ function App() {
           });
           key = nextKey;
         }
-        updateConnection(connection.id, (current) => ({
-          ...current,
-          last_project_path: project.path,
-          last_project_id: project.id,
-          projects: current.projects.map((item) => item.id === project.id
-            ? { ...item, last_session_id: id }
-            : item),
-        }));
+        // A channel can finish loading after the user has switched projects.
+        // Remember this project's session without stealing the current focus.
+        updateConnection(connection.id, (current) => rememberProjectSession(current, project.id, id));
         void refreshProjectSessions(connection.id, project.path);
         void restoreSessionPreferences(
           connection.id,
