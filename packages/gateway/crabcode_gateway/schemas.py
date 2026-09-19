@@ -1095,6 +1095,19 @@ class StreamModePayload(BaseModel):
     agent_id: str | None = None
 
 
+class StreamRetryPayload(BaseModel):
+    type: Literal["stream_retry"] = "stream_retry"
+    message: str
+    error: str
+    retry_count: int
+    max_retries: int
+    delay_seconds: float
+    unbounded: bool = False
+    transport_fallback: bool = False
+    discarded_text_chars: int = 0
+    agent_id: str | None = None
+
+
 class SteeringAppliedPayload(BaseModel):
     type: Literal["steering_applied"] = "steering_applied"
     count: int = 1
@@ -1287,6 +1300,7 @@ EventPayload = Union[
     ErrorPayload,
     TurnCompletePayload,
     StreamModePayload,
+    StreamRetryPayload,
     SteeringAppliedPayload,
     DocumentJobPayload,
     DocumentSelectionTranslationPayload,
@@ -1330,6 +1344,7 @@ def core_event_to_payload(event: Any) -> EventPayload:
         PlanReadyEvent,
         ScheduleRunEvent,
         StreamModeEvent,
+        StreamRetryEvent,
         SteeringAppliedEvent,
         StreamTextEvent,
         TaskUpdateEvent,
@@ -1425,6 +1440,18 @@ def core_event_to_payload(event: Any) -> EventPayload:
         )
     if isinstance(event, StreamModeEvent):
         return StreamModePayload(mode=event.mode, agent_id=event.agent_id)
+    if isinstance(event, StreamRetryEvent):
+        return StreamRetryPayload(
+            message=event.message,
+            error=event.error,
+            retry_count=event.retry_count,
+            max_retries=event.max_retries,
+            delay_seconds=event.delay_seconds,
+            unbounded=event.unbounded,
+            transport_fallback=event.transport_fallback,
+            discarded_text_chars=event.discarded_text_chars,
+            agent_id=event.agent_id,
+        )
     if isinstance(event, SteeringAppliedEvent):
         return SteeringAppliedPayload(count=event.count)
     if isinstance(event, DocumentJobEvent):

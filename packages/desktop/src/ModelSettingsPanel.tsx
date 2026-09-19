@@ -64,7 +64,9 @@ const DETAIL_FIELDS: Array<{ key: string; label: string }> = [
   { key: "max_tokens", label: "最大输出 Token" },
   { key: "context_window", label: "上下文窗口" },
   { key: "timeout", label: "超时" },
-  { key: "max_retries", label: "最大重试" },
+  { key: "request_max_retries", label: "请求建立重试" },
+  { key: "max_retries", label: "流中断重连" },
+  { key: "unbounded_connection_retries", label: "连接失败持续重连" },
 ];
 
 const EDIT_FIELDS: Array<{
@@ -85,7 +87,9 @@ const EDIT_FIELDS: Array<{
   { key: "max_tokens", label: "最大输出 Token", type: "number" },
   { key: "context_window", label: "上下文窗口", type: "number" },
   { key: "timeout", label: "超时（秒）", type: "number" },
-  { key: "max_retries", label: "最大重试", type: "number" },
+  { key: "request_max_retries", label: "请求建立重试", type: "number" },
+  { key: "max_retries", label: "流中断重连", type: "number" },
+  { key: "unbounded_connection_retries", label: "连接失败持续重连", type: "boolean" },
   { key: "pass_reasoning_content", label: "传递推理内容", type: "boolean" },
   { key: "anthropic_stream_transport", label: "Anthropic 流传输", type: "select", options: ["auto", "sdk", "httpx"] },
   { key: "prompt_cache_key", label: "Prompt Cache Key" },

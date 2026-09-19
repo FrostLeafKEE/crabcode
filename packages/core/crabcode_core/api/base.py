@@ -88,6 +88,15 @@ class StreamChunk:
     usage: dict[str, Any] = field(default_factory=dict)
     stop_reason: str = ""
     error: str = ""
+    # Responses-style adapters expose item completion so the query loop can
+    # checkpoint only durable output before replaying a dropped stream.
+    item_id: str = ""
+    item_type: str = ""
+    # Adapter-authoritative retry metadata. ``None`` leaves classification to
+    # the generic query loop.
+    retryable: bool | None = None
+    connection_failed: bool = False
+    retry_after: float | None = None
 
 
 class APIAdapter(ABC):
@@ -98,6 +107,7 @@ class APIAdapter(ABC):
     """
 
     config: Any  # ApiConfig — set by concrete subclasses
+    emits_response_item_events: bool = False
 
     @abstractmethod
     async def stream_message(
@@ -150,6 +160,15 @@ class APIAdapter(ABC):
         estimate. The query loop bounds its latency and handles failures.
         """
         return None
+
+    def try_switch_fallback_transport(self) -> bool:
+        """Switch a failed WebSocket session to HTTP when supported.
+
+        CrabCode adapters currently stream over HTTP, so the default is a
+        no-op. Keeping the hook in the shared contract preserves retry
+        state-machine ordering for adapters that add WebSocket transport.
+        """
+        return False
 
     async def _count_tokens_http(
         self, url: str, payload: dict[str, Any], headers: dict[str, str],

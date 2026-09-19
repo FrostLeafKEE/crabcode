@@ -140,6 +140,20 @@ class StreamModeEvent:
 
 
 @dataclass
+class StreamRetryEvent:
+    """A retryable model stream failure that has scheduled a reconnect."""
+    message: str
+    error: str
+    retry_count: int
+    max_retries: int
+    delay_seconds: float
+    unbounded: bool = False
+    transport_fallback: bool = False
+    discarded_text_chars: int = 0
+    agent_id: str | None = None
+
+
+@dataclass
 class SteeringAppliedEvent:
     """Queued user guidance entered the conversation at a safe boundary."""
     count: int = 1
@@ -283,6 +297,7 @@ CoreEvent = Union[
     ErrorEvent,
     TurnCompleteEvent,
     StreamModeEvent,
+    StreamRetryEvent,
     SteeringAppliedEvent,
     AgentStateEvent,
     AgentOutputEvent,

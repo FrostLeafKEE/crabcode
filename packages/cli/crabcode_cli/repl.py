@@ -67,6 +67,7 @@ from crabcode_core.types.event import (
     PlanReadyEvent,
     ScheduleRunEvent,
     StreamModeEvent,
+    StreamRetryEvent,
     StreamTextEvent,
     SteeringAppliedEvent,
     TaskUpdateEvent,
@@ -1778,6 +1779,12 @@ async def _consume_background_events(
                     f"[dim italic]Conversation compacted: {event.summary}[/]"
                 )
             )
+        elif isinstance(event, StreamRetryEvent):
+            await render(
+                lambda: console.print(
+                    f"  [dim yellow]↻ {event.message}[/]"
+                )
+            )
         elif isinstance(event, ErrorEvent):
             await render(lambda: _render_repl_error(event.message))
         elif isinstance(event, ModeChangeEvent):
@@ -1969,6 +1976,8 @@ async def _run_plan_executor_with_runtime_events(
             elif isinstance(event, StreamModeEvent):
                 if event.mode == "tool-input":
                     batch_state["denied"] = False
+            elif isinstance(event, StreamRetryEvent):
+                console.print(f"  [dim yellow]↻ {event.message}[/]")
             elif isinstance(event, TurnCompleteEvent):
                 batch_state["denied"] = False
             elif isinstance(event, ToolUseEvent):
@@ -2383,6 +2392,21 @@ async def run_repl(
                         console.print(
                             f"\n[dim italic]Conversation compacted: {event.summary}[/]"
                         )
+
+                    elif isinstance(event, StreamRetryEvent):
+                        await _stop_spinner_with_thinking()
+                        _finish_stream_line()
+                        discarded = min(
+                            event.discarded_text_chars,
+                            len(streamed_text_for_context),
+                        )
+                        if discarded:
+                            streamed_text_for_context = (
+                                streamed_text_for_context[:-discarded]
+                            )
+                        console.print(f"  [dim yellow]↻ {event.message}[/]")
+                        spinner.start("Reconnecting")
+                        composer.start_activity("Reconnecting")
 
                     elif isinstance(event, ErrorEvent):
                         await _stop_spinner_with_thinking()

@@ -101,7 +101,14 @@ class ApiConfig(BaseModel):
     anthropic_stream_transport: Literal["auto", "sdk", "httpx"] = "auto"
     reasoning_effort: ReasoningEffort | None = None
     timeout: int = 300  # seconds, for API calls
-    max_retries: int = Field(default=5, ge=0)  # transient API reconnects per request
+    # HTTP request-establishment retries for transport failures and 5xx,
+    # excluding 429. This budget is separate from stream reconnects.
+    request_max_retries: int = Field(default=4, ge=0, le=100)
+    # Stream reconnect budget (default 5, hard cap 100).
+    max_retries: int = Field(default=5, ge=0, le=100)
+    # Connection-establishment failures use a separate unbounded 5s..60s
+    # exponential retry path. Disable explicitly for fail-fast jobs.
+    unbounded_connection_retries: bool = True
     context_window: int | None = None  # override auto-detected context window
     prompt_cache_key: str | None = None  # OpenAI Responses API prompt cache routing key
     prompt_cache_retention: Literal["in_memory", "24h"] | None = None

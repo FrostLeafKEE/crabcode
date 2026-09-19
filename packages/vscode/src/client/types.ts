@@ -759,6 +759,22 @@ export interface StreamTextPayload {
   type: "stream_text";
 }
 
+export interface StreamRetryPayload {
+  session_id?: string;
+  operation_id?: string;
+  operation_scope?: "foreground" | "plan" | "background";
+  message: string;
+  error: string;
+  retry_count: number;
+  max_retries: number;
+  delay_seconds: number;
+  unbounded: boolean;
+  transport_fallback: boolean;
+  discarded_text_chars: number;
+  agent_id?: string | null;
+  type: "stream_retry";
+}
+
 export interface ThinkingPayload {
   session_id?: string;
   operation_id?: string;
@@ -1113,6 +1129,7 @@ export interface SessionHistoryPayload {
 export type EventPayload =
   EventEnvelope & (
     StreamTextPayload |
+    StreamRetryPayload |
     ThinkingPayload |
     ToolUsePayload |
     ToolResultPayload |

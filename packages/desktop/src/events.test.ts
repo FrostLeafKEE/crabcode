@@ -35,6 +35,25 @@ describe("Gateway event reducer", () => {
     expect(current.runStartedAt).not.toBeNull();
   });
 
+  it("keeps the turn live and starts a fresh response item while reconnecting", () => {
+    let current = applyGatewayEvent(state(), { type: "stream_text", text: "partial" });
+    current = applyGatewayEvent(current, {
+      type: "stream_retry",
+      message: "Reconnecting... 1/5",
+      retry_count: 1,
+      max_retries: 5,
+      delay_seconds: 0.2,
+      discarded_text_chars: 7,
+    });
+    expect(current.busy).toBe(true);
+    expect(current.currentStep?.label).toBe("Reconnecting... 1/5");
+    expect(current.items[0]).toMatchObject({ text: "partial", status: "complete" });
+
+    current = applyGatewayEvent(current, { type: "stream_text", text: "recovered" });
+    expect(current.items).toHaveLength(2);
+    expect(current.items[1]).toMatchObject({ text: "recovered", status: "running" });
+  });
+
   it("resolves tool and permission cards by tool id", () => {
     let current = applyGatewayEvent(state(), {
       type: "tool_use", tool_name: "Bash", tool_use_id: "tool-1", tool_input: { command: "sleep 30" },

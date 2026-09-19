@@ -23,6 +23,7 @@ from crabcode_core.types.event import (
     PermissionRequestEvent,
     PermissionResponseEvent,
     StreamModeEvent,
+    StreamRetryEvent,
     StreamTextEvent,
     ToolResultEvent,
     ToolUseEvent,
@@ -1571,6 +1572,32 @@ class AgentManager:
                     AgentOutputEvent(agent_id=agent_id, stream="thinking", text="thinking"),
                     run=run,
                 )
+            return
+        if isinstance(event, StreamRetryEvent):
+            remaining = min(event.discarded_text_chars, len(run.final_text))
+            if remaining:
+                run.final_text = run.final_text[:-remaining]
+                while remaining and run.output_chunks:
+                    chunk = run.output_chunks.pop()
+                    if len(chunk) <= remaining:
+                        remaining -= len(chunk)
+                    else:
+                        run.output_chunks.append(chunk[:-remaining])
+                        remaining = 0
+            await self._safe_event_sink(
+                StreamRetryEvent(
+                    message=event.message,
+                    error=event.error,
+                    retry_count=event.retry_count,
+                    max_retries=event.max_retries,
+                    delay_seconds=event.delay_seconds,
+                    unbounded=event.unbounded,
+                    transport_fallback=event.transport_fallback,
+                    discarded_text_chars=event.discarded_text_chars,
+                    agent_id=agent_id,
+                ),
+                run=run,
+            )
             return
         if isinstance(event, StreamTextEvent):
             run.output_chunks.append(event.text)

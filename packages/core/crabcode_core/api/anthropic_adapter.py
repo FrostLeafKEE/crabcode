@@ -122,6 +122,8 @@ def _tools_to_api(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 class AnthropicAdapter(APIAdapter):
     """Adapter for Anthropic's Messages API (direct, first-party)."""
 
+    emits_response_item_events = True
+
     def __init__(self, config: ApiConfig):
         self.config = config
         self._cached_context_window: int | None = None
@@ -224,6 +226,8 @@ class AnthropicAdapter(APIAdapter):
                 current_tool_id = ""
                 current_tool_name = ""
                 tool_input_buffer = ""
+                current_block_type = ""
+                current_block_id = ""
 
                 async for raw_line in response.aiter_lines():
                     if not raw_line.startswith("data:"):
@@ -240,6 +244,10 @@ class AnthropicAdapter(APIAdapter):
                     if event_type == "content_block_start":
                         block = event.get("content_block") or {}
                         block_type = block.get("type")
+                        current_block_type = str(block_type or "")
+                        current_block_id = str(
+                            block.get("id") or event.get("index") or ""
+                        )
                         if block_type == "tool_use":
                             current_tool_id = str(block.get("id") or "")
                             current_tool_name = str(block.get("name") or "")
@@ -283,6 +291,13 @@ class AnthropicAdapter(APIAdapter):
                             current_tool_id = ""
                             current_tool_name = ""
                             tool_input_buffer = ""
+                        yield StreamChunk(
+                            type="response_item_done",
+                            item_id=current_block_id,
+                            item_type=current_block_type,
+                        )
+                        current_block_type = ""
+                        current_block_id = ""
 
                     elif event_type == "message_delta":
                         usage = {}
@@ -429,6 +444,8 @@ class AnthropicAdapter(APIAdapter):
         current_tool_id = ""
         current_tool_name = ""
         tool_input_buffer = ""
+        current_block_type = ""
+        current_block_id = ""
 
         async with self.client.messages.stream(**params) as stream:
             async for event in stream:
@@ -437,6 +454,12 @@ class AnthropicAdapter(APIAdapter):
                 if event_type == "content_block_start":
                     block = event.content_block
                     if hasattr(block, "type"):
+                        current_block_type = str(block.type)
+                        current_block_id = str(
+                            getattr(block, "id", "")
+                            or getattr(event, "index", "")
+                            or ""
+                        )
                         if block.type == "tool_use":
                             current_tool_id = block.id
                             current_tool_name = block.name
@@ -479,6 +502,13 @@ class AnthropicAdapter(APIAdapter):
                         current_tool_id = ""
                         current_tool_name = ""
                         tool_input_buffer = ""
+                    yield StreamChunk(
+                        type="response_item_done",
+                        item_id=current_block_id,
+                        item_type=current_block_type,
+                    )
+                    current_block_type = ""
+                    current_block_id = ""
 
                 elif event_type == "message_delta":
                     usage = {}

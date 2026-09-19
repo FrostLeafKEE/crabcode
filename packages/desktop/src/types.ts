@@ -706,6 +706,12 @@ export interface GatewayEvent {
   allowed?: boolean;
   always_allow?: boolean;
   feedback?: string | null;
+  retry_count?: number;
+  max_retries?: number;
+  delay_seconds?: number;
+  unbounded?: boolean;
+  transport_fallback?: boolean;
+  discarded_text_chars?: number;
   plan?: Record<string, unknown>;
   path?: string;
   action?: string;

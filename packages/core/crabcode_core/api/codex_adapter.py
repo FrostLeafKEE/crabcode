@@ -6,8 +6,11 @@ Falls back to Chat Completions API for models that don't support the Responses A
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
@@ -19,6 +22,7 @@ from crabcode_core.api.base import (
     StreamChunk,
     normalize_openai_usage,
 )
+from crabcode_core.query.retry import MAX_REQUEST_RETRIES, request_retry_backoff
 from crabcode_core.types.config import ApiConfig
 from crabcode_core.utf8_sanitize import safe_utf8_json_tree, safe_utf8_str
 from crabcode_core.types.message import (
@@ -35,6 +39,7 @@ from crabcode_core.types.message import (
 OPENAI_RESPONSES_BASE_URL = "https://api.openai.com/v1"
 CODEX_OAUTH_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_AUTH_FILENAME = "auth.json"
+CODEX_MODELS_CACHE_FILENAME = "models_cache.json"
 
 
 def _default_codex_auth_path() -> Path:
@@ -70,6 +75,47 @@ def _load_codex_oauth(config: ApiConfig) -> tuple[str | None, str | None]:
         account_id = None
 
     return access_token, account_id
+
+
+def _load_codex_context_window(config: ApiConfig, model: str | None) -> int | None:
+    """Read Codex CLI's effective context window for an OAuth model."""
+    if not model:
+        return None
+
+    cache_path = _resolve_codex_auth_path(config).with_name(
+        CODEX_MODELS_CACHE_FILENAME
+    )
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return None
+
+    for item in models:
+        if not isinstance(item, dict) or item.get("slug") != model:
+            continue
+
+        context_window = item.get("context_window")
+        if (
+            not isinstance(context_window, int)
+            or isinstance(context_window, bool)
+            or context_window <= 0
+        ):
+            return None
+
+        effective_percent = item.get("effective_context_window_percent")
+        if (
+            isinstance(effective_percent, int)
+            and not isinstance(effective_percent, bool)
+            and 0 < effective_percent <= 100
+        ):
+            return context_window * effective_percent // 100
+        return context_window
+
+    return None
 
 
 def _has_header(headers: dict[str, str], name: str) -> bool:
@@ -210,6 +256,69 @@ def _response_error_message(payload: Any) -> str | None:
     return None
 
 
+def _response_error_code(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    error = payload.get("error")
+    if isinstance(error, dict) and error.get("code"):
+        return str(error["code"])
+    response = payload.get("response")
+    if isinstance(response, dict):
+        return _response_error_code(response)
+    return ""
+
+
+def _retry_after_from_error(message: str, code: str) -> float | None:
+    if code != "rate_limit_exceeded":
+        return None
+    match = re.search(
+        r"(?:please\s+)?try\s+again\s+in\s+"
+        r"(\d+(?:\.\d+)?)\s*(ms|s|seconds?)\b",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    value = float(match.group(1))
+    return value / 1000.0 if match.group(2).lower() == "ms" else value
+
+
+def _responses_error_chunk(payload: Any, fallback: str) -> StreamChunk:
+    message = safe_utf8_str(_response_error_message(payload) or fallback)
+    code = _response_error_code(payload)
+    terminal_codes = {
+        "context_length_exceeded",
+        "insufficient_quota",
+        "usage_not_included",
+        "server_is_overloaded",
+        "slow_down",
+        "cyber_policy",
+        "invalid_prompt",
+        "bio_policy",
+        "misalignment_policy_violation",
+    }
+    return StreamChunk(
+        type="error",
+        error=message,
+        retryable=False if code in terminal_codes else True,
+        retry_after=_retry_after_from_error(message, code),
+    )
+
+
+def _incomplete_response_message(response: Any) -> str:
+    reason = "unknown"
+    if isinstance(response, dict):
+        details = response.get("incomplete_details")
+        if isinstance(details, dict) and details.get("reason"):
+            reason = str(details["reason"])
+    else:
+        details = getattr(response, "incomplete_details", None)
+        value = getattr(details, "reason", None)
+        if value:
+            reason = str(value)
+    return f"Incomplete response returned, reason: {reason}"
+
+
 def _response_to_stream_chunks(response: Any) -> list[StreamChunk]:
     """Convert a non-stream Responses API object into stream chunks.
 
@@ -252,6 +361,14 @@ def _response_to_stream_chunks(response: Any) -> list[StreamChunk]:
                 )
             )
 
+        chunks.append(
+            StreamChunk(
+                type="response_item_done",
+                item_id=str(getattr(item, "id", "") or ""),
+                item_type=str(item_type),
+            )
+        )
+
     usage = {}
     if hasattr(response, "usage") and response.usage:
         usage = normalize_openai_usage(response.usage)
@@ -292,19 +409,13 @@ async def _iter_sse_payloads(
     current_event: str | None = None
     data_lines: list[str] = []
 
-    def parse_payload(data: str) -> dict[str, Any]:
+    def parse_payload(data: str) -> dict[str, Any] | None:
         try:
             payload = json.loads(data)
-        except json.JSONDecodeError as exc:
-            return {
-                "type": "response.error",
-                "error": {"message": f"Invalid Responses SSE payload: {exc}"},
-            }
+        except json.JSONDecodeError:
+            return None
         if not isinstance(payload, dict):
-            return {
-                "type": "response.error",
-                "error": {"message": "Invalid Responses SSE payload: expected an object"},
-            }
+            return None
         return payload
 
     async for raw_line in response.aiter_lines():
@@ -314,7 +425,9 @@ async def _iter_sse_payloads(
             if data_lines:
                 data = "\n".join(data_lines)
                 if data and data != "[DONE]":
-                    yield current_event or "", parse_payload(data)
+                    payload = parse_payload(data)
+                    if payload is not None:
+                        yield current_event or "", payload
                 data_lines = []
             current_event = line.split(":", 1)[1].strip()
             continue
@@ -329,7 +442,9 @@ async def _iter_sse_payloads(
         if line == "[DONE]":
             continue
         if line.startswith(("{", "[")):
-            yield current_event or "", parse_payload(line)
+            payload = parse_payload(line)
+            if payload is not None:
+                yield current_event or "", payload
             current_event = None
             continue
 
@@ -339,13 +454,17 @@ async def _iter_sse_payloads(
             data = "\n".join(data_lines)
             data_lines = []
             if data and data != "[DONE]":
-                yield current_event or "", parse_payload(data)
+                payload = parse_payload(data)
+                if payload is not None:
+                    yield current_event or "", payload
             current_event = None
 
     if data_lines:
         data = "\n".join(data_lines)
         if data and data != "[DONE]":
-            yield current_event or "", parse_payload(data)
+            payload = parse_payload(data)
+            if payload is not None:
+                yield current_event or "", payload
 
 
 class CodexAdapter(APIAdapter):
@@ -353,6 +472,8 @@ class CodexAdapter(APIAdapter):
 
     Uses client.responses.create() with stream=True.
     """
+
+    emits_response_item_events = True
 
     def __init__(self, config: ApiConfig):
         import openai
@@ -391,7 +512,119 @@ class CodexAdapter(APIAdapter):
         if config.http_headers:
             kwargs["default_headers"] = config.http_headers
 
+        # Keep retry policy above the HTTP transport. Disable the SDK's
+        # differing built-in policy (which also retries 429) and apply the
+        # configured policy explicitly in _create_sdk_response_stream().
+        kwargs["max_retries"] = 0
         self.client = openai.AsyncOpenAI(**kwargs)
+
+    async def resolve_context_window(self) -> int:
+        """Use Codex runtime metadata when authenticated through Codex OAuth."""
+        if self.config.context_window:
+            return self.config.context_window
+
+        if self._using_codex_oauth:
+            from crabcode_core.api.model_info import DEFAULT_CONTEXT_WINDOW
+
+            cached_window = _load_codex_context_window(
+                self.config,
+                self.config.model,
+            )
+            return cached_window or DEFAULT_CONTEXT_WINDOW
+
+        return await super().resolve_context_window()
+
+    def _request_retry_limit(self) -> int:
+        return min(
+            max(0, int(getattr(self.config, "request_max_retries", 4))),
+            MAX_REQUEST_RETRIES,
+        )
+
+    @staticmethod
+    def _request_error_is_retryable(exc: BaseException) -> bool:
+        """Retry transport failures and 5xx at this layer, but not 429."""
+        pending: list[BaseException] = [exc]
+        seen: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            if isinstance(current, httpx.TransportError):
+                return True
+            status = getattr(current, "status_code", None)
+            if isinstance(status, int) and status >= 500:
+                return True
+            for nested in (current.__cause__, current.__context__):
+                if nested is not None:
+                    pending.append(nested)
+        return False
+
+    async def _create_sdk_response_stream(self, params: dict[str, Any]) -> Any:
+        """Create a Responses stream with the request-layer retry policy."""
+        max_retries = self._request_retry_limit()
+        for attempt in range(max_retries + 1):
+            try:
+                return await self.client.responses.create(**params)
+            except Exception as exc:
+                if (
+                    attempt >= max_retries
+                    or not self._request_error_is_retryable(exc)
+                ):
+                    raise
+                await asyncio.sleep(request_retry_backoff(attempt + 1))
+        raise RuntimeError("unreachable request retry state")
+
+    async def _send_httpx_stream_request(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        url: str,
+        headers: dict[str, str],
+        params: dict[str, Any],
+    ) -> httpx.Response:
+        """Open a stream with the silent request-layer retry policy."""
+        max_retries = self._request_retry_limit()
+        for attempt in range(max_retries + 1):
+            request = client.build_request(
+                "POST",
+                url,
+                headers=headers,
+                json=safe_utf8_json_tree(params),
+            )
+            try:
+                response = await client.send(request, stream=True)
+            except httpx.TransportError:
+                if attempt >= max_retries:
+                    raise
+                await asyncio.sleep(request_retry_backoff(attempt + 1))
+                continue
+            if response.status_code >= 500 and attempt < max_retries:
+                await response.aclose()
+                await asyncio.sleep(request_retry_backoff(attempt + 1))
+                continue
+            return response
+        raise RuntimeError("unreachable request retry state")
+
+    @asynccontextmanager
+    async def _httpx_stream_with_retry(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        url: str,
+        headers: dict[str, str],
+        params: dict[str, Any],
+    ) -> AsyncGenerator[httpx.Response, None]:
+        response = await self._send_httpx_stream_request(
+            client,
+            url=url,
+            headers=headers,
+            params=params,
+        )
+        try:
+            yield response
+        finally:
+            await response.aclose()
 
     def _raw_responses_headers(self) -> dict[str, str]:
         headers = dict(self.config.http_headers or {})
@@ -502,9 +735,11 @@ class CodexAdapter(APIAdapter):
             images[str(item.get("id") or result)] = {"media_type": media_type, "data": result}
 
         async with httpx.AsyncClient(timeout=self.config.timeout) as client:
-            async with client.stream(
-                "POST", f"{self._base_url.rstrip('/')}/responses",
-                headers=headers, json=safe_utf8_json_tree(params),
+            async with self._httpx_stream_with_retry(
+                client,
+                url=f"{self._base_url.rstrip('/')}/responses",
+                headers=headers,
+                params=params,
             ) as response:
                 if response.is_error:
                     # Do not include raw upstream bodies, which can echo credentials.
@@ -548,14 +783,15 @@ class CodexAdapter(APIAdapter):
     ) -> AsyncGenerator[StreamChunk, None]:
         url = f"{self._base_url.rstrip('/')}/responses"
         active_calls: dict[str, dict[str, str]] = {}
+        finalized_call_items: set[str] = set()
         saw_terminal_event = False
 
         async with httpx.AsyncClient(timeout=self.config.timeout) as client:
-            async with client.stream(
-                "POST",
-                url,
+            async with self._httpx_stream_with_retry(
+                client,
+                url=url,
                 headers=self._raw_responses_headers(),
-                json=safe_utf8_json_tree(params),
+                params=params,
             ) as response:
                 try:
                     response.raise_for_status()
@@ -573,6 +809,15 @@ class CodexAdapter(APIAdapter):
                     yield StreamChunk(
                         type="error",
                         error=safe_utf8_str(error_message),
+                        retryable=(
+                            response.status_code in {408, 409, 429}
+                            or response.status_code >= 500
+                        ),
+                        retry_after=(
+                            float(response.headers["retry-after"])
+                            if response.headers.get("retry-after", "").replace(".", "", 1).isdigit()
+                            else None
+                        ),
                     )
                     return
 
@@ -585,7 +830,7 @@ class CodexAdapter(APIAdapter):
                         payload = {}
                     error_message = _response_error_message(payload)
                     if error_message:
-                        yield StreamChunk(type="error", error=error_message)
+                        yield _responses_error_chunk(payload, error_message)
                     else:
                         yield StreamChunk(
                             type="error",
@@ -593,6 +838,7 @@ class CodexAdapter(APIAdapter):
                                 "Responses endpoint returned JSON without a usable "
                                 "response or error payload"
                             ),
+                            retryable=False,
                         )
                     return
 
@@ -653,6 +899,7 @@ class CodexAdapter(APIAdapter):
                             ),
                         )
                         active_calls.pop(item_id, None)
+                        finalized_call_items.add(item_id)
 
                     elif event_type == "response.output_item.done":
                         item = payload.get("item", {}) or {}
@@ -666,6 +913,26 @@ class CodexAdapter(APIAdapter):
                                     tool_name=buf.get("name", ""),
                                     tool_input_json=buf.get("arguments", ""),
                                 )
+                            elif item_id not in finalized_call_items:
+                                call_id = str(item.get("call_id", "") or item_id)
+                                name = str(item.get("name", ""))
+                                yield StreamChunk(
+                                    type="tool_use_start",
+                                    tool_use_id=call_id,
+                                    tool_name=name,
+                                )
+                                yield StreamChunk(
+                                    type="tool_use_end",
+                                    tool_use_id=call_id,
+                                    tool_name=name,
+                                    tool_input_json=str(item.get("arguments", "") or "{}"),
+                                )
+                            finalized_call_items.add(item_id)
+                        yield StreamChunk(
+                            type="response_item_done",
+                            item_id=str(item.get("id", "")),
+                            item_type=str(item.get("type", "")),
+                        )
 
                     elif event_type == "response.reasoning_summary_text.delta":
                         yield StreamChunk(
@@ -700,35 +967,28 @@ class CodexAdapter(APIAdapter):
                             _response_error_message({"error": error_payload})
                             or "Response failed"
                         )
-                        yield StreamChunk(
-                            type="error",
-                            error=safe_utf8_str(error_message),
-                        )
+                        yield _responses_error_chunk(payload, error_message)
 
                     elif event_type == "response.incomplete":
                         saw_terminal_event = True
                         yield StreamChunk(
                             type="error",
-                            error="Response incomplete (max output tokens or content filter)",
+                            error=_incomplete_response_message(
+                                payload.get("response") or {}
+                            ),
+                            retryable=True,
                         )
 
                     elif event_type in {"response.error", "error"}:
                         saw_terminal_event = True
-                        error_msg = _response_error_message(payload) or "Unknown error"
-                        yield StreamChunk(
-                            type="error",
-                            error=safe_utf8_str(error_msg),
-                        )
+                        yield _responses_error_chunk(payload, "Unknown error")
 
                     elif _response_error_message(payload):
                         # Some proxies wrap an error in a non-standard SSE
                         # event name. Preserve the payload instead of
                         # reducing it to a generic empty-stream failure.
                         saw_terminal_event = True
-                        yield StreamChunk(
-                            type="error",
-                            error=_response_error_message(payload) or "Unknown error",
-                        )
+                        yield _responses_error_chunk(payload, "Unknown error")
 
                 if not saw_terminal_event:
                     yield StreamChunk(
@@ -850,10 +1110,11 @@ class CodexAdapter(APIAdapter):
 
         # Track active function calls by item_id
         active_calls: dict[str, dict[str, str]] = {}
+        finalized_call_items: set[str] = set()
         emitted_stream_event = False
         saw_sdk_terminal_event = False
         try:
-            stream = await self.client.responses.create(**sdk_params)
+            stream = await self._create_sdk_response_stream(sdk_params)
             async for event in stream:
                 emitted_stream_event = True
                 event_type = getattr(event, "type", "")
@@ -914,6 +1175,7 @@ class CodexAdapter(APIAdapter):
                         tool_input_json=arguments,
                     )
                     active_calls.pop(item_id, None)
+                    finalized_call_items.add(item_id)
 
                 # Output item done — also finalize function calls if not already done
                 elif event_type == "response.output_item.done":
@@ -931,6 +1193,27 @@ class CodexAdapter(APIAdapter):
                                 tool_name=buf.get("name", ""),
                                 tool_input_json=buf.get("arguments", ""),
                             )
+                        elif item_id not in finalized_call_items:
+                            call_id = getattr(item, "call_id", "") or item_id
+                            name = getattr(item, "name", "") or ""
+                            arguments = getattr(item, "arguments", "") or "{}"
+                            yield StreamChunk(
+                                type="tool_use_start",
+                                tool_use_id=call_id,
+                                tool_name=name,
+                            )
+                            yield StreamChunk(
+                                type="tool_use_end",
+                                tool_use_id=call_id,
+                                tool_name=name,
+                                tool_input_json=arguments,
+                            )
+                        finalized_call_items.add(item_id)
+                    yield StreamChunk(
+                        type="response_item_done",
+                        item_id=str(getattr(item, "id", "") or ""),
+                        item_type=str(item_type),
+                    )
 
                 # Reasoning summary text delta — treat as thinking
                 elif event_type == "response.reasoning_summary_text.delta":
@@ -953,27 +1236,39 @@ class CodexAdapter(APIAdapter):
                 elif event_type == "response.failed":
                     saw_sdk_terminal_event = True
                     error_msg = ""
+                    error_code = ""
                     if hasattr(event, "response") and hasattr(event.response, "error"):
                         err = event.response.error
                         if err:
                             error_msg = getattr(err, "message", str(err))
-                    yield StreamChunk(
-                        type="error", error=safe_utf8_str(error_msg or "Response failed")
+                            error_code = str(getattr(err, "code", "") or "")
+                    yield _responses_error_chunk(
+                        {"error": {"message": error_msg, "code": error_code}},
+                        "Response failed",
                     )
 
                 elif event_type == "response.incomplete":
                     saw_sdk_terminal_event = True
-                    yield StreamChunk(type="error", error="Response incomplete (max output tokens or content filter)")
+                    yield StreamChunk(
+                        type="error",
+                        error=_incomplete_response_message(
+                            getattr(event, "response", None)
+                        ),
+                        retryable=True,
+                    )
 
                 # Error event
                 elif event_type == "response.error":
                     saw_sdk_terminal_event = True
                     error_msg = ""
+                    error_code = ""
                     if hasattr(event, "error"):
                         err = event.error
                         error_msg = getattr(err, "message", str(err)) if err else ""
-                    yield StreamChunk(
-                        type="error", error=safe_utf8_str(error_msg or "Unknown error")
+                        error_code = str(getattr(err, "code", "") or "") if err else ""
+                    yield _responses_error_chunk(
+                        {"error": {"message": error_msg, "code": error_code}},
+                        "Unknown error",
                     )
             if not saw_sdk_terminal_event:
                 yield StreamChunk(

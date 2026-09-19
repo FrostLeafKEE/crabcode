@@ -54,6 +54,7 @@ import type {
   SessionInfo,
   SessionRuntimeStatus,
   SnapshotPayload,
+  StreamRetryPayload,
   StreamModePayload,
   SteeringAppliedPayload,
   TaskUpdatePayload,
@@ -340,6 +341,7 @@ interface SessionState {
   batchDenied: boolean;
   mode: "agent" | "plan";
   pendingSteeringMessages: ChatMessage[];
+  startNewAssistantMessage: boolean;
 }
 
 function createEmptySessionState(): SessionState {
@@ -358,6 +360,7 @@ function createEmptySessionState(): SessionState {
     batchDenied: false,
     mode: "agent",
     pendingSteeringMessages: [],
+    startNewAssistantMessage: false,
   };
 }
 
@@ -3429,7 +3432,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         this.busySessions.delete(eventSessionId!);
       } else if (
         this.isForegroundOperationEvent(payload)
-        && (payload.type === "stream_text" || payload.type === "thinking" || payload.type === "tool_use")
+        && (payload.type === "stream_text" || payload.type === "stream_retry" || payload.type === "thinking" || payload.type === "tool_use")
       ) {
         this.busySessions.add(eventSessionId!);
       }
@@ -3499,9 +3502,23 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     switch (payload.type) {
       case "stream_text":
         this.finalizeThinkingOnState(state, updateWebview);
+        if (updateWebview) this.postMessage({ type: "activityStatus", label: "CrabCode 正在处理" });
         this.appendAssistantTextOnState(state, payload.text, updateWebview);
         break;
+      case "stream_retry": {
+        const retry = payload as StreamRetryPayload;
+        if (retry.agent_id) break;
+        this.finalizeThinkingOnState(state, updateWebview);
+        state.isBusy = true;
+        state.startNewAssistantMessage = true;
+        if (updateWebview) {
+          this.postMessage({ type: "busyState", busy: true });
+          this.postMessage({ type: "activityStatus", label: retry.message || "Reconnecting..." });
+        }
+        break;
+      }
       case "thinking":
+        if (updateWebview) this.postMessage({ type: "activityStatus", label: "CrabCode 正在处理" });
         this.handleThinkingOnState(state, payload.text, updateWebview);
         break;
       case "stream_mode":
@@ -3522,6 +3539,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         break;
       case "tool_use":
         this.finalizeThinkingOnState(state, updateWebview);
+        if (updateWebview) this.postMessage({ type: "activityStatus", label: "CrabCode 正在处理" });
         this.handleToolUseOnState(state, payload as ToolUsePayload, updateWebview);
         break;
       case "tool_result":
@@ -4373,12 +4391,13 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     // a new tool result just finished — start a fresh assistant message so it
     // appears after the tool cards in the DOM instead of updating the pre-tool message.
     const lastHistoryIsCard = lastHistory && lastHistory.kind !== "message";
-    if (!lastHistoryIsCard && lastMessage && lastMessage.role === "assistant") {
+    if (!state.startNewAssistantMessage && !lastHistoryIsCard && lastMessage && lastMessage.role === "assistant") {
       lastMessage.text += chunk;
       if (updateWebview) this.postMessage({ type: "appendText", id: lastMessage.id, chunk });
     } else {
       this.addMessageOnState(state, "assistant", chunk, updateWebview);
     }
+    state.startNewAssistantMessage = false;
   }
 
   private postMessage(msg: any): void {
@@ -11127,6 +11146,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         }
         case 'busyState':
           setBusyState(msg.busy);
+          break;
+        case 'activityStatus':
+          if (busyLabel && typeof msg.label === 'string' && msg.label) {
+            busyLabel.textContent = msg.label;
+          }
           break;
         case 'steeringQueue':
           renderSteeringQueue(msg.messages);

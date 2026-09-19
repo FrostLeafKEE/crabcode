@@ -474,7 +474,9 @@ Or configure in `~/.crabcode/settings.json`:
 | `reasoning_effort` | Model reasoning effort. OpenAI Responses/Codex sends it as `reasoning.effort`; Anthropic sends supported values as `output_config.effort`. When set, it takes precedence over the Codex `thinking_budget` mapping. Options: `none` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `max` (availability depends on the model/provider). | — |
 | `max_tokens` | Maximum output tokens | `16384` |
 | `timeout` | API call timeout in seconds (prevents hanging on slow/unresponsive APIs) | `300` |
-| `max_retries` | Automatic reconnect attempts for transient API, rate-limit, timeout, and server failures. Requests are replayed only when no response content or tool call has arrived. | `5` |
+| `request_max_retries` | Silent HTTP request retry budget for transport failures and 5xx responses (429 is handled by the stream layer). Uses 200 ms exponential backoff with jitter. | `4` |
+| `max_retries` | Stream reconnect budget. Retryable drops are replayed from the last completed response item with 200 ms exponential backoff and jitter; completed tool calls are never executed twice. | `5` |
+| `unbounded_connection_retries` | Keep retrying connection-establishment failures with a separate 5–60 second exponential backoff. Stream failures still use `max_retries`. | `true` |
 | `context_window` | Override the model's context window size (tokens). Used when auto-detection fails or is inaccurate — see [Context Window](#context-window) below. | auto-detected |
 | `prompt_cache_key` | Prompt cache routing key for OpenAI Responses/Codex requests; defaults to `http_headers.session_id` when omitted | — |
 | `prompt_cache_retention` | OpenAI Responses/Codex prompt cache retention policy: `in_memory` \| `24h` | — |

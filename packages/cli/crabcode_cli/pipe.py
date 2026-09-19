@@ -15,6 +15,7 @@ from crabcode_core.types.event import (
     ErrorEvent,
     PermissionRequestEvent,
     PermissionResponseEvent,
+    StreamRetryEvent,
     StreamTextEvent,
     ThinkingEvent,
     ToolResultEvent,
@@ -119,6 +120,9 @@ async def run_pipe(
                 if event.is_error:
                     sys.stderr.write(f"\n[Error: {event.result}]\n")
                     sys.stderr.flush()
+            elif isinstance(event, StreamRetryEvent):
+                sys.stderr.write(f"\n[↻ {safe_utf8_str(event.message)}]\n")
+                sys.stderr.flush()
             elif isinstance(event, ErrorEvent):
                 sys.stderr.write(f"\nError: {safe_utf8_str(event.message)}\n")
                 sys.stderr.flush()

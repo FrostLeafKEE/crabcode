@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass, replace
 from typing import Any, AsyncGenerator, Callable, Coroutine
 
@@ -24,6 +25,7 @@ from crabcode_core.compact.compact import (
 )
 from crabcode_core.compact.context_tokens import ContextTokenTracker, RequestSnapshot, TokenMeasurement
 from crabcode_core.logging_utils import get_logger
+from crabcode_core.query.retry import ResponsesStreamRetryState, StreamRetry
 from crabcode_core.types.config import ApiConfig
 from crabcode_core.types.event import (
     CompactEvent,
@@ -32,6 +34,7 @@ from crabcode_core.types.event import (
     PermissionRequestEvent,
     PermissionResponseEvent,
     StreamModeEvent,
+    StreamRetryEvent,
     StreamTextEvent,
     SteeringAppliedEvent,
     ThinkingEvent,
@@ -175,6 +178,25 @@ def _append_missing_tool_results(
     return repaired
 
 
+def _completed_tool_result(
+    messages: list[Message],
+    tool_use_id: str,
+) -> ToolResultBlock | None:
+    """Find a durable result so replayed call IDs never execute twice."""
+    if not tool_use_id:
+        return None
+    for message in reversed(messages):
+        if not isinstance(message.content, list):
+            continue
+        for block in message.content:
+            if (
+                isinstance(block, ToolResultBlock)
+                and block.tool_use_id == tool_use_id
+            ):
+                return block
+    return None
+
+
 def _format_exception_message(exc: Exception) -> str:
     """Return an actionable message even when an exception has an empty str()."""
     exception_name = type(exc).__name__
@@ -194,7 +216,15 @@ def _is_recoverable_api_exception(exc: Exception) -> bool:
             continue
         seen.add(id(current))
 
-        if isinstance(current, (httpx.TransportError, asyncio.TimeoutError)):
+        if isinstance(
+            current,
+            (
+                httpx.TransportError,
+                asyncio.TimeoutError,
+                json.JSONDecodeError,
+                OSError,
+            ),
+        ):
             return True
 
         status_code = getattr(current, "status_code", None)
@@ -208,6 +238,64 @@ def _is_recoverable_api_exception(exc: Exception) -> bool:
                 pending.append(nested)
 
     return False
+
+
+def _is_connection_api_exception(exc: Exception) -> bool:
+    """Return whether the unbounded connection retry path applies."""
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, (httpx.ConnectError, httpx.ConnectTimeout)):
+            return True
+        for nested in (current.__cause__, current.__context__):
+            if nested is not None:
+                pending.append(nested)
+    return False
+
+
+def _retry_after_seconds_from_message(message: str) -> float | None:
+    """Parse the server-advised delay used by Responses rate-limit errors."""
+    match = re.search(
+        r"(?:please\s+)?try\s+again\s+in\s+"
+        r"(\d+(?:\.\d+)?)\s*(ms|s|seconds?)\b",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    value = float(match.group(1))
+    unit = match.group(2).lower()
+    return value / 1000.0 if unit == "ms" else value
+
+
+def _retry_after_seconds_from_exception(exc: Exception) -> float | None:
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        response = getattr(current, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers is not None:
+            raw = headers.get("retry-after")
+            if raw is not None:
+                try:
+                    return max(0.0, float(raw))
+                except (TypeError, ValueError):
+                    pass
+        parsed = _retry_after_seconds_from_message(str(current))
+        if parsed is not None:
+            return parsed
+        for nested in (current.__cause__, current.__context__):
+            if nested is not None:
+                pending.append(nested)
+    return None
 
 
 def _is_recoverable_api_error_message(message: str) -> bool:
@@ -245,11 +333,6 @@ def _is_recoverable_api_error_message(message: str) -> bool:
         return False
     status_code = int(match.group(1))
     return status_code in {408, 409, 429} or status_code >= 500
-
-
-def _api_retry_delay_seconds(attempt: int) -> float:
-    """Return capped exponential backoff for a one-based retry attempt."""
-    return float(min(2 ** max(attempt - 1, 0), 8))
 
 
 def _merge_permission_results(
@@ -905,7 +988,8 @@ async def query_loop(
     _MAX_CONTEXT_RETRIES = 1
     _compact_resume_retries = 0
     _MAX_COMPACT_RESUME_RETRIES = 1
-    _api_retry_attempts = 0
+    stream_retry_state = ResponsesStreamRetryState()
+    pending_stream_retry: StreamRetry | None = None
     _awaiting_compact_resume = False
     usage_keys = (
         "input_tokens",
@@ -994,6 +1078,11 @@ async def query_loop(
         cfg.max_retries if cfg
         else getattr(adapter_config, "max_retries", 5),
     )
+    effective_unbounded_connection_retries = bool(
+        cfg.unbounded_connection_retries
+        if cfg
+        else getattr(adapter_config, "unbounded_connection_retries", True)
+    )
     context_window = params.context_window
     token_tracker = params.context_token_tracker or ContextTokenTracker()
     count_available = True
@@ -1033,22 +1122,23 @@ async def query_loop(
             reasoning_effort=request_reasoning_effort,
         )
 
-    async def _schedule_api_retry(error_message: str) -> bool:
-        nonlocal _api_retry_attempts
-        if _api_retry_attempts >= effective_max_retries:
-            return False
-
-        _api_retry_attempts += 1
-        delay = _api_retry_delay_seconds(_api_retry_attempts)
-        logger.warning(
-            "Transient API failure; reconnecting in %.1fs (retry %d/%d): %s",
-            delay,
-            _api_retry_attempts,
-            effective_max_retries,
-            error_message,
+    def _schedule_stream_retry(
+        error_message: str,
+        *,
+        connection_failed: bool = False,
+        retry_after: float | None = None,
+    ) -> StreamRetry | None:
+        fallback = getattr(params.api_adapter, "try_switch_fallback_transport", None)
+        allow_unbounded = type(params.api_adapter).__name__ != "BedrockAdapter"
+        return stream_retry_state.schedule(
+            error=error_message,
+            max_retries=effective_max_retries,
+            connection_failed=connection_failed,
+            retry_after=retry_after,
+            unbounded_connection_retries=effective_unbounded_connection_retries,
+            allow_unbounded_connection_retries=allow_unbounded,
+            try_transport_fallback=fallback if callable(fallback) else None,
         )
-        await asyncio.sleep(delay)
-        return True
 
     async def _perform_compaction(
         *,
@@ -1119,6 +1209,28 @@ async def query_loop(
         )
 
     while True:
+        if pending_stream_retry is not None:
+            retry = pending_stream_retry
+            pending_stream_retry = None
+            logger.warning(
+                "Transient API failure; %s in %.3fs: %s",
+                retry.message,
+                retry.delay_seconds,
+                retry.error,
+            )
+            yield StreamRetryEvent(
+                message=retry.message,
+                error=retry.error,
+                retry_count=retry.retry_count,
+                max_retries=retry.max_retries,
+                delay_seconds=retry.delay_seconds,
+                unbounded=retry.unbounded,
+                transport_fallback=retry.transport_fallback,
+                discarded_text_chars=retry.discarded_text_chars,
+            )
+            if retry.delay_seconds > 0:
+                await asyncio.sleep(retry.delay_seconds)
+
         turn_count += 1
         # Tools and permission reviewers must always observe the active
         # projection, including this turn's results.
@@ -1356,9 +1468,15 @@ async def query_loop(
         current_text = ""
         current_thinking = ""
         current_tool: dict[str, str] = {}
+        completed_content_count = 0
+        announced_tool_use_ids: set[str] = set()
+        item_aware_stream = bool(
+            getattr(params.api_adapter, "emits_response_item_events", False)
+        )
         emitted_mode: str = ""
         _retry_after_compact = False
         _retry_after_api_error = False
+        _retry_after_completed_items = False
 
         def _flush_thinking_block() -> None:
             nonlocal current_thinking
@@ -1375,6 +1493,27 @@ async def query_loop(
                 or tool_use_blocks
                 or current_tool
             )
+
+        def _restore_completed_response_items() -> None:
+            """Discard only the unfinished item before replaying the request."""
+            nonlocal current_text, current_thinking, current_tool
+            del assistant_content[completed_content_count:]
+            tool_use_blocks[:] = [
+                block
+                for block in assistant_content
+                if isinstance(block, ToolUseBlock)
+            ]
+            current_text = ""
+            current_thinking = ""
+            current_tool = {}
+
+        def _discarded_response_text_chars() -> int:
+            suffix = sum(
+                len(block.text)
+                for block in assistant_content[completed_content_count:]
+                if isinstance(block, TextBlock)
+            )
+            return suffix + len(current_text)
 
         yield StreamModeEvent(mode="requesting")
 
@@ -1403,12 +1542,19 @@ async def query_loop(
                     error_message = (
                         f"API request timed out after {model_config.timeout}s"
                     )
-                    if (
-                        not _has_response_evidence()
-                        and await _schedule_api_retry(error_message)
-                    ):
+                    retry = _schedule_stream_retry(error_message)
+                    if retry is not None:
+                        retry = replace(
+                            retry,
+                            discarded_text_chars=_discarded_response_text_chars(),
+                        )
+                        pending_stream_retry = retry
                         turn_count -= 1
-                        _retry_after_api_error = True
+                        if completed_content_count > 0:
+                            _restore_completed_response_items()
+                            _retry_after_completed_items = True
+                        else:
+                            _retry_after_api_error = True
                         break
                     yield ErrorEvent(
                         message=error_message,
@@ -1463,12 +1609,40 @@ async def query_loop(
                     assistant_content.append(block)
                     tool_use_blocks.append(block)
 
-                    yield ToolUseEvent(
-                        tool_name=block.name,
-                        tool_input=block.input,
-                        tool_use_id=block.id,
-                    )
+                    # Function arguments can finish just before their enclosing
+                    # output item. Do not persist or execute the call until the
+                    # item is complete, so a dropped stream cannot run it early.
+                    if (
+                        not item_aware_stream
+                        and _completed_tool_result(messages, block.id) is None
+                    ):
+                        completed_content_count = len(assistant_content)
+                        announced_tool_use_ids.add(block.id)
+                        yield ToolUseEvent(
+                            tool_name=block.name,
+                            tool_input=block.input,
+                            tool_use_id=block.id,
+                        )
                     current_tool = {}
+
+                elif chunk.type == "response_item_done":
+                    _flush_thinking_block()
+                    if current_text:
+                        assistant_content.append(TextBlock(text=current_text))
+                        current_text = ""
+                    completed_content_count = len(assistant_content)
+                    for block in tool_use_blocks:
+                        if (
+                            block.id in announced_tool_use_ids
+                            or _completed_tool_result(messages, block.id) is not None
+                        ):
+                            continue
+                        announced_tool_use_ids.add(block.id)
+                        yield ToolUseEvent(
+                            tool_name=block.name,
+                            tool_input=block.input,
+                            tool_use_id=block.id,
+                        )
 
                 elif chunk.type == "message_start":
                     if chunk.usage:
@@ -1481,6 +1655,23 @@ async def query_loop(
                 elif chunk.type == "message_stop":
                     if chunk.usage:
                         _set_request_usage(chunk.usage)
+                    _flush_thinking_block()
+                    if current_text:
+                        assistant_content.append(TextBlock(text=current_text))
+                        current_text = ""
+                    completed_content_count = len(assistant_content)
+                    for block in tool_use_blocks:
+                        if (
+                            block.id in announced_tool_use_ids
+                            or _completed_tool_result(messages, block.id) is not None
+                        ):
+                            continue
+                        announced_tool_use_ids.add(block.id)
+                        yield ToolUseEvent(
+                            tool_name=block.name,
+                            tool_input=block.input,
+                            tool_use_id=block.id,
+                        )
 
                 elif chunk.type == "error":
                     if _is_request_size_error(chunk.error):
@@ -1516,14 +1707,36 @@ async def query_loop(
                         turn_count -= 1
                         _retry_after_compact = True
                         break
-                    is_recoverable = _is_recoverable_api_error_message(chunk.error)
-                    if (
-                        is_recoverable
-                        and not has_response_evidence
-                        and await _schedule_api_retry(chunk.error)
-                    ):
+                    is_recoverable = (
+                        chunk.retryable
+                        if chunk.retryable is not None
+                        else _is_recoverable_api_error_message(chunk.error)
+                    )
+                    retry = (
+                        _schedule_stream_retry(
+                            chunk.error,
+                            connection_failed=chunk.connection_failed,
+                            retry_after=(
+                                chunk.retry_after
+                                if chunk.retry_after is not None
+                                else _retry_after_seconds_from_message(chunk.error)
+                            ),
+                        )
+                        if is_recoverable
+                        else None
+                    )
+                    if retry is not None:
+                        retry = replace(
+                            retry,
+                            discarded_text_chars=_discarded_response_text_chars(),
+                        )
+                        pending_stream_retry = retry
                         turn_count -= 1
-                        _retry_after_api_error = True
+                        if completed_content_count > 0:
+                            _restore_completed_response_items()
+                            _retry_after_completed_items = True
+                        else:
+                            _retry_after_api_error = True
                         break
                     yield ErrorEvent(
                         message=chunk.error,
@@ -1567,26 +1780,42 @@ async def query_loop(
                 turn_count -= 1
                 continue
             is_network_error = _is_recoverable_api_exception(e)
-            if (
-                is_network_error
-                and not has_response_evidence
-                and await _schedule_api_retry(error_str)
-            ):
-                turn_count -= 1
-                continue
-            logger.exception("Query loop failed")
-            yield ErrorEvent(
-                message=error_str,
-                recoverable=is_network_error,
-                error_type="network" if is_network_error else "",
+            retry = (
+                _schedule_stream_retry(
+                    error_str,
+                    connection_failed=_is_connection_api_exception(e),
+                    retry_after=_retry_after_seconds_from_exception(e),
+                )
+                if is_network_error
+                else None
             )
-            return
+            if retry is not None:
+                retry = replace(
+                    retry,
+                    discarded_text_chars=_discarded_response_text_chars(),
+                )
+                pending_stream_retry = retry
+                turn_count -= 1
+                if completed_content_count > 0:
+                    _restore_completed_response_items()
+                    _retry_after_completed_items = True
+                else:
+                    continue
+            else:
+                logger.exception("Query loop failed")
+                yield ErrorEvent(
+                    message=error_str,
+                    recoverable=is_network_error,
+                    error_type="network" if is_network_error else "",
+                )
+                return
 
         if _retry_after_api_error:
             continue
 
         # A completed stream gives the next agent turn a fresh reconnect budget.
-        _api_retry_attempts = 0
+        if not _retry_after_completed_items:
+            stream_retry_state = ResponsesStreamRetryState()
 
         if _retry_after_compact:
             continue
@@ -1618,6 +1847,8 @@ async def query_loop(
             params.messages[:] = messages
             _awaiting_compact_resume = False
         else:
+            if _retry_after_completed_items:
+                continue
             if _awaiting_compact_resume and _compact_resume_retries < _MAX_COMPACT_RESUME_RETRIES:
                 _compact_resume_retries += 1
                 logger.warning(
@@ -1652,13 +1883,45 @@ async def query_loop(
             if steering_messages:
                 yield SteeringAppliedEvent(count=len(steering_messages))
                 continue
+            if _retry_after_completed_items:
+                continue
             yield _turn_complete_event("end_turn", messages)
             params.messages[:] = messages
             return
 
         approved_blocks: list[ToolUseBlock] = []
+        seen_tool_use_ids: set[str] = set()
 
         for block in tool_use_blocks:
+            if block.id in seen_tool_use_ids:
+                logger.warning(
+                    "Suppressing duplicate tool call in one response: %s",
+                    block.id,
+                )
+                continue
+            seen_tool_use_ids.add(block.id)
+
+            completed_result = _completed_tool_result(messages[:-1], block.id)
+            if completed_result is not None:
+                # A retried prompt includes already executed calls. Providers
+                # can still replay the same call ID; copy its result into the
+                # new protocol position without repeating
+                # the side effect or surfacing a second tool lifecycle in UI.
+                messages.append(
+                    create_tool_result_message(
+                        tool_use_id=block.id,
+                        result=completed_result.content,
+                        is_error=completed_result.is_error,
+                        source_tool_assistant_uuid=assistant_msg.uuid,
+                    )
+                )
+                params.messages[:] = messages
+                logger.warning(
+                    "Reused completed result for replayed tool call: %s",
+                    block.id,
+                )
+                continue
+
             tool = _find_tool(params.tools, block.name)
 
             if tool is not None:

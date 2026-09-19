@@ -461,7 +461,9 @@ export AZURE_OPENAI_ENDPOINT=https://my-resource.openai.azure.com/
 | `reasoning_effort` | 模型推理强度。OpenAI Responses/Codex 通过 `reasoning.effort` 发送；Anthropic 将其支持的值通过 `output_config.effort` 发送。显式配置时优先于 Codex 的 `thinking_budget` 映射。可选：`none` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `max`（具体可用值取决于模型和 provider）。 | — |
 | `max_tokens` | 最大输出 token 数 | `16384` |
 | `timeout` | API 调用超时时间（秒），防止网络卡住时无限等待 | `300` |
-| `max_retries` | 瞬时 API、限流、超时及服务端故障时的自动重连次数。仅在尚未收到正文或工具调用时重放请求。 | `5` |
+| `request_max_retries` | HTTP 请求阶段静默重试次数：只重试传输错误与 5xx（429 交给流重连层），采用 200ms 指数退避和 jitter。 | `4` |
+| `max_retries` | 流重连次数。可重试的断流会从最后一个已完成 response item 继续，采用 200ms 指数退避和 jitter；已完成的工具调用不会重复执行。 | `5` |
+| `unbounded_connection_retries` | 连接建立失败时使用独立的 5–60 秒指数退避持续重连；流中断仍受 `max_retries` 限制。 | `true` |
 | `context_window` | 覆盖模型的上下文窗口大小（token 数）。当自动检测失败或不准确时使用——详见下方[上下文窗口管理](#上下文窗口管理)。 | 自动检测 |
 | `prompt_cache_key` | OpenAI Responses/Codex 请求的 Prompt Cache 路由 key；未配置时默认使用 `http_headers.session_id` | — |
 | `prompt_cache_retention` | OpenAI Responses/Codex Prompt Cache 保留策略：`in_memory` \| `24h` | — |

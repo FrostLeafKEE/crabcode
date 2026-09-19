@@ -565,7 +565,12 @@ class ScheduleManager:
         from crabcode_core.events import CoreSession
         from crabcode_core.types.config import CrabCodeSettings
         from crabcode_core.permissions.manager import PermissionMode
-        from crabcode_core.types.event import ErrorEvent, StreamTextEvent, TurnCompleteEvent
+        from crabcode_core.types.event import (
+            ErrorEvent,
+            StreamRetryEvent,
+            StreamTextEvent,
+            TurnCompleteEvent,
+        )
 
         explicit = CrabCodeSettings()
         explicit.schedule.enabled = False
@@ -591,6 +596,15 @@ class ScheduleManager:
             async for event in child.send_message(job.prompt):
                 if isinstance(event, StreamTextEvent):
                     output.append(event.text)
+                elif isinstance(event, StreamRetryEvent):
+                    remaining = max(0, int(event.discarded_text_chars))
+                    while remaining and output:
+                        chunk = output.pop()
+                        if len(chunk) > remaining:
+                            output.append(chunk[:-remaining])
+                            remaining = 0
+                        else:
+                            remaining -= len(chunk)
                 elif isinstance(event, ErrorEvent):
                     errors.append(event.message)
                 elif isinstance(event, TurnCompleteEvent):

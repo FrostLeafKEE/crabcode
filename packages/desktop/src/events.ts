@@ -370,6 +370,20 @@ export function applyGatewayEvent(
           now,
         ),
       };
+    case "stream_retry":
+      if (event.agent_id) return state;
+      return {
+        ...state,
+        error: null,
+        busy: true,
+        runStartedAt: state.runStartedAt ?? now,
+        currentStep: {
+          kind: "response",
+          label: event.message ?? "Reconnecting...",
+          startedAt: now,
+        },
+        items: completeRunning(state.items, now),
+      };
     case "tool_use":
       return {
         ...state,
