@@ -4820,7 +4820,7 @@ function PluginsView({
             {filtered.map((item) => (
               <article className="plugin-item" key={item.name}>
                 <div className={`plugin-icon ${tab === "skills" ? "skill" : "tool"}`}>{tab === "skills" ? <Puzzle /> : <Wrench />}</div>
-                <div className="plugin-copy"><div className="plugin-title-row"><strong>{item.name}</strong><span className="plugin-availability"><span />AVAILABLE</span></div><p>{item.description || "暂无描述"}</p><small>{tab === "skills" ? "WORKFLOW SKILL" : ("is_read_only" in item && item.is_read_only ? "READ ONLY TOOL" : "EXECUTION TOOL")}</small></div>
+                <div className="plugin-copy"><div className="plugin-title-row"><strong>{item.name}</strong><span className="plugin-availability"><span />AVAILABLE</span></div><p>{item.description || "暂无描述"}</p><small>{tab === "skills" ? "WORKFLOW SKILL" : ("is_read_only" in item && item.is_read_only ? "READ ONLY TOOL" : "EXECUTION TOOL")}{"is_loaded" in item && item.is_loaded != null ? (item.is_loaded ? " · LOADED" : " · ON DEMAND") : ""}</small></div>
                 <Check className="plugin-check" aria-label="可用" />
               </article>
             ))}
@@ -5672,6 +5672,11 @@ export function ContextMeter({
           <div className="context-stat-row"><span>自动压缩</span><strong>{status.auto_compact_enabled === false ? "关闭" : "开启"}</strong></div>
           <div className="context-stat-row"><span>输出配置</span><strong>思考 {status.thinking_enabled ? "开启" : "关闭"} · {formatTokenCount(status.max_tokens ?? 0)} tokens</strong></div>
           {status.tool_count != null && <div className="context-stat-row"><span>可用工具</span><strong>{status.tool_count}</strong></div>}
+          {status.prompt_budget && <>
+            <div className="context-stat-row"><span>上次请求加载</span><strong>{status.prompt_budget.loaded_tools} / {status.prompt_budget.available_tools} · {status.prompt_budget.mode}</strong></div>
+            <div className="context-stat-row"><span>System / 工具（估算）</span><strong>{formatTokenCount(status.prompt_budget.system_tokens)} / {formatTokenCount(status.prompt_budget.tool_tokens)} tokens</strong></div>
+            <div className="context-stat-row"><span>其中工具目录（估算）</span><strong>{formatTokenCount(status.prompt_budget.directory_tokens)} tokens</strong></div>
+          </>}
           {(status.agent_total ?? 0) > 0 && <div className="context-stat-row"><span>Agents</span><strong>{status.agent_active ?? 0} 运行中 / {status.agent_total} 个 · {status.agent_failed ?? 0} 失败</strong></div>}
           {(status.monitor_total ?? 0) > 0 && <div className="context-stat-row"><span>后台任务</span><strong>{status.monitor_active ?? 0} 运行中 / {status.monitor_total} 个 · {status.monitor_failed ?? 0} 失败</strong></div>}
           {searchDetail && <div className="context-stat-row"><span>语义索引</span><strong>{searchDetail}</strong></div>}

@@ -40,6 +40,7 @@ from crabcode_core.types.event import (
 )
 from crabcode_core.types.message import Message, find_assistant_reply, message_from_entry
 from crabcode_core.types.tool import Tool, ToolEventCallback
+from crabcode_core.tools.loading import ToolLoadingState
 
 logger = get_logger(__name__)
 
@@ -119,6 +120,8 @@ class CoreSession:
 
         self._context_token_tracker = ContextTokenTracker()
         self.last_context_token_source: str = "estimated"
+        self._tool_loading_state = ToolLoadingState()
+        self.last_prompt_budget: dict[str, Any] = {}
         self.last_context_used_tokens: int = 0
         self.last_context_window_tokens: int = 0
         # Set by checkpoint() so API/tool callers can distinguish a
@@ -2909,25 +2912,8 @@ class CoreSession:
             )
 
             if auto_skills:
-                skill_parts = []
-                for skill in auto_skills:
-                    header = f"[Auto-triggered skill: {skill.name}]"
-                    if skill.description:
-                        header += f" {skill.description}"
-                    skill_parts.append(f"{header}\n{skill.content}")
-                skill_context = "\n\n---\n\n".join(skill_parts)
-
-                context_msg = create_user_message(
-                    content=(
-                        "<system-reminder>\n"
-                        "The following skills were automatically triggered based on "
-                        "your current context. Follow their instructions when relevant "
-                        "to the user's request.\n\n"
-                        f"{skill_context}\n"
-                        "</system-reminder>"
-                    ),
-                )
-                self.messages.append(context_msg)
+                from crabcode_core.skills.context import auto_skill_messages
+                self.messages.extend(auto_skill_messages(auto_skills, self.messages))
 
         if self._session_storage:
             self._session_storage.append_message(user_msg)
@@ -2961,17 +2947,18 @@ class CoreSession:
         if self.settings.prompt_profile:
             profile = PromptProfile(**self.settings.prompt_profile)
 
+        system_context = get_system_context(self.cwd)
         system_prompt = get_system_prompt(
             enabled_tools=tool_names,
             model_id=model,
             cwd=self.cwd,
+            is_git=bool(system_context.get("gitStatus")),
             additional_dirs=self.settings.permissions.additional_directories,
             language=self.settings.language,
             profile=profile,
             agent_mode=self._agent_mode,
             ultra_mode=self.settings.ultra_mode,
         )
-        system_context = get_system_context(self.cwd)
         if self._goal is not None and self._goal.status == "active":
             system_context["activeGoal"] = self._goal.prompt_context()
         user_context = get_user_context(self.cwd)
@@ -3003,6 +2990,16 @@ class CoreSession:
                 tool.current_mode = self._agent_mode
                 break
 
+        pinned_tools = []
+        if self.settings.ultra_mode:
+            pinned_tools.extend(("Agent", "AgentStatus", "AgentWait", "AgentCancel", "AgentSendInput"))
+        if self._goal is not None and self._goal.status == "active":
+            pinned_tools.extend(("get_goal", "update_goal"))
+        if self.list_agents():
+            pinned_tools.extend(("AgentStatus", "AgentWait", "AgentCancel", "AgentSendInput"))
+        if self.list_monitor_tasks():
+            pinned_tools.extend(("TaskList", "TaskStop"))
+
         params = QueryParams(
             messages=list(self.messages),
             system_prompt=system_prompt,
@@ -3011,6 +3008,10 @@ class CoreSession:
             tools=self.tools,
             tool_context=tool_context,
             api_adapter=self._api_adapter,
+            tool_loading=self.settings.tool_loading,
+            tool_loading_state=self._tool_loading_state,
+            on_tools_loaded=self._session_storage.update_loaded_tools if self._session_storage else None,
+            pinned_tools=tuple(pinned_tools),
             max_turns=max_turns or 0,
             permission_manager=self._permission_manager,
             permission_queue=self._permission_queue,
@@ -3111,6 +3112,8 @@ class CoreSession:
                     event.source_messages = None
                     event.checkpoint_messages = None
                 if isinstance(event, TurnCompleteEvent):
+                    if event.prompt_budget:
+                        self.last_prompt_budget = dict(event.prompt_budget)
                     projection_committed = self._commit_query_projection(
                         params.messages,
                         storage=query_storage,
@@ -3393,6 +3396,8 @@ class CoreSession:
         self._cancel_title_generation_nowait()
         self.messages.clear()
         self.compact_count = 0
+        self._tool_loading_state = ToolLoadingState()
+        self.last_prompt_budget = {}
         self.last_context_used_tokens = 0
         self.last_context_token_source = "estimated"
         self._context_token_tracker.reset()
@@ -4300,6 +4305,8 @@ class CoreSession:
         self.last_context_used_tokens = storage.last_context_used_tokens
         self.last_context_window_tokens = storage.last_context_window_tokens
         self.last_context_token_source = storage.last_context_token_source
+        self._tool_loading_state = ToolLoadingState.restore(storage.meta.get("loaded_tools"))
+        self.last_prompt_budget = {}
         self._context_token_tracker.restore(storage.last_context_token_baseline)
         self._persisted_compact_summaries.clear()
         self._partial_committed_prefixes.clear()

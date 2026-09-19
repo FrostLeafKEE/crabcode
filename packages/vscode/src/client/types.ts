@@ -46,6 +46,17 @@ export interface SearchIndexStatus {
   total?: number | null;
 }
 
+export interface PromptBudget {
+  mode: "eager" | "discovery";
+  system_tokens: number;
+  tool_tokens: number;
+  directory_tokens: number;
+  loaded_tools: number;
+  available_tools: number;
+  source?: "estimated";
+  loaded_names?: string[];
+}
+
 /** Complete, non-secret runtime status shared by CLI-style clients. */
 export interface SessionRuntimeStatus {
   session_id: string;
@@ -63,13 +74,14 @@ export interface SessionRuntimeStatus {
   context_used_tokens?: number;
   context_window_tokens?: number;
   context_remaining_tokens?: number;
-  context_token_source?: "server" | "calibrated" | "estimated";
   context_used_percent?: number;
+  context_token_source?: "server" | "calibrated" | "estimated";
   compact_count?: number;
   auto_compact_enabled?: boolean;
   thinking_enabled?: boolean;
   max_tokens?: number;
   tool_count?: number | null;
+  prompt_budget?: PromptBudget | null;
   agent_total?: number;
   agent_active?: number;
   agent_failed?: number;
@@ -479,9 +491,20 @@ export interface SessionInfo {
   forked_from_title?: string | null;
 }
 
+export interface GatewayRuntimeInfo {
+  gateway_version: string;
+  gateway_path: string;
+  python_version: string;
+  python_executable: string;
+  python_prefix: string;
+  environment_kind: "venv" | "conda" | "system";
+  platform: string;
+}
+
 export interface WorkspaceInfo {
   startup_cwd: string;
   home: string;
+  runtime?: GatewayRuntimeInfo | null;
   browse_roots?: string[];
   documents_dir?: string;
 }
@@ -526,6 +549,7 @@ export interface ToolInfo {
   description?: string;
   is_read_only?: boolean;
   is_enabled?: boolean;
+  is_loaded?: boolean | null;
 }
 
 export interface SkillInfo {
@@ -759,22 +783,6 @@ export interface StreamTextPayload {
   type: "stream_text";
 }
 
-export interface StreamRetryPayload {
-  session_id?: string;
-  operation_id?: string;
-  operation_scope?: "foreground" | "plan" | "background";
-  message: string;
-  error: string;
-  retry_count: number;
-  max_retries: number;
-  delay_seconds: number;
-  unbounded: boolean;
-  transport_fallback: boolean;
-  discarded_text_chars: number;
-  agent_id?: string | null;
-  type: "stream_retry";
-}
-
 export interface ThinkingPayload {
   session_id?: string;
   operation_id?: string;
@@ -894,9 +902,10 @@ export interface TurnCompletePayload {
   context_used_tokens?: number;
   context_window_tokens?: number;
   context_remaining_tokens?: number;
-  context_token_source?: "server" | "calibrated" | "estimated";
   context_used_percent?: number;
+  context_token_source?: "server" | "calibrated" | "estimated";
   assistant_message_uuid?: string | null;
+  prompt_budget?: PromptBudget | null;
 }
 
 export interface StreamModePayload {
@@ -905,6 +914,22 @@ export interface StreamModePayload {
   operation_scope?: "foreground" | "plan" | "background";
   mode: string;
   type: "stream_mode";
+  agent_id?: string | null;
+}
+
+export interface StreamRetryPayload {
+  session_id?: string;
+  operation_id?: string;
+  operation_scope?: "foreground" | "plan" | "background";
+  message: string;
+  error: string;
+  retry_count: number;
+  max_retries: number;
+  delay_seconds: number;
+  type: "stream_retry";
+  unbounded?: boolean;
+  transport_fallback?: boolean;
+  discarded_text_chars?: number;
   agent_id?: string | null;
 }
 
@@ -1129,7 +1154,6 @@ export interface SessionHistoryPayload {
 export type EventPayload =
   EventEnvelope & (
     StreamTextPayload |
-    StreamRetryPayload |
     ThinkingPayload |
     ToolUsePayload |
     ToolResultPayload |
@@ -1141,6 +1165,7 @@ export type EventPayload =
     ErrorPayload |
     TurnCompletePayload |
     StreamModePayload |
+    StreamRetryPayload |
     SteeringAppliedPayload |
     DocumentJobPayload |
     DocumentSelectionTranslationPayload |

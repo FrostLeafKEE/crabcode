@@ -400,6 +400,17 @@ export interface SessionInfo {
 
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
+export interface PromptBudget {
+  source: "estimated";
+  mode: "eager" | "discovery";
+  system_tokens: number;
+  tool_tokens: number;
+  directory_tokens: number;
+  loaded_tools: number;
+  available_tools: number;
+  loaded_names: string[];
+}
+
 export interface SessionStatus {
   session_id: string;
   version?: string;
@@ -423,6 +434,7 @@ export interface SessionStatus {
   thinking_enabled?: boolean;
   max_tokens?: number;
   tool_count?: number | null;
+  prompt_budget?: PromptBudget | null;
   agent_total?: number;
   agent_active?: number;
   agent_failed?: number;
@@ -541,6 +553,7 @@ export interface ToolInfo {
   description: string;
   is_read_only: boolean;
   is_enabled: boolean;
+  is_loaded?: boolean | null;
 }
 
 export interface ScheduleJobInfo {
@@ -733,6 +746,7 @@ export interface GatewayEvent {
   context_token_source?: "server" | "calibrated" | "estimated";
   context_used_percent?: number;
   assistant_message_uuid?: string | null;
+  prompt_budget?: PromptBudget | null;
   usage?: Record<string, unknown>;
   error_type?: string;
   recoverable?: boolean;

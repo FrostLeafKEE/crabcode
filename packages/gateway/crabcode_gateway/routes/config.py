@@ -858,6 +858,8 @@ async def list_tools(
                     description=t.description or "",
                     is_read_only=t.is_read_only,
                     is_enabled=t.is_enabled,
+                    is_loaded=(t.name in session.last_prompt_budget.get("loaded_names", [])
+                               if getattr(session, "last_prompt_budget", None) else None),
                 )
                 for t in session.tools
                 if bool(getattr(t, "is_enabled", True))

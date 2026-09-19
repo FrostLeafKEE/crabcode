@@ -85,6 +85,7 @@ class AgentSnapshot:
     callback_state: str = "disabled"
     callback_message_id: str | None = None
     callback_epoch: int = 0
+    loaded_tools: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -110,6 +111,7 @@ class AgentSnapshot:
             "callback_state": self.callback_state,
             "callback_message_id": self.callback_message_id,
             "callback_epoch": self.callback_epoch,
+            "loaded_tools": list(self.loaded_tools),
         }
 
 
@@ -1475,6 +1477,13 @@ class AgentManager:
                     snapshot_max_size_mb=settings.snapshot.max_size_mb,
                     filesystem_timeout=settings.filesystem_timeout,
                 )
+                from crabcode_core.tools.loading import ToolLoadingState
+
+                def persist_loaded_tools(names: list[str]) -> None:
+                    run.snapshot.loaded_tools = list(names)
+                    if not run.detached:
+                        self._persist()
+
                 params = QueryParams(
                     messages=list(run.messages),
                     system_prompt=[agent_prompt],
@@ -1483,6 +1492,9 @@ class AgentManager:
                     tools=tools,
                     tool_context=tool_context,
                     api_adapter=adapter,
+                    tool_loading=settings.tool_loading,
+                    tool_loading_state=ToolLoadingState.restore(run.snapshot.loaded_tools),
+                    on_tools_loaded=persist_loaded_tools,
                     max_turns=agent_settings.max_turns,
                     permission_manager=(
                         run.run_permission_manager

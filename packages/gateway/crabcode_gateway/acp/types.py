@@ -59,7 +59,7 @@ def to_tool_kind(tool_name: str) -> str:
         return "fetch"
     if tool in ("applypatch", "apply_patch", "edit", "patch", "file_edit", "file_write", "write"):
         return "edit"
-    if tool in ("grep", "glob"):
+    if tool in ("grep", "glob", "toolsearch"):
         return "search"
     if tool == "read" or tool == "file_read":
         return "read"

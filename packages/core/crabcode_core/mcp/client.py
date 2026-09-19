@@ -132,7 +132,7 @@ class McpManager:
                 timeout=30,
             )
             session = ClientSession(read_stream, write_stream)
-            await session.initialize()
+            initialization = await session.initialize()
             self._connections[name] = session
 
             tools_response = await session.list_tools()
@@ -146,6 +146,7 @@ class McpManager:
                     client=session,
                 )
                 tools.append(wrapper)
+                wrapper.server_instructions = getattr(initialization, "instructions", None) or ""
 
             return tools
 

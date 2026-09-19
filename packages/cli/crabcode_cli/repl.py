@@ -1092,6 +1092,8 @@ class _Spinner:
 
 def _tool_summary(name: str, inp: dict) -> str:
     """Return a human-readable one-liner for a tool call."""
+    if name == "ToolSearch":
+        return str(inp.get("query") or inp.get("group") or ", ".join(inp.get("names", [])) or "Browse available tools")
     if name == "Bash":
         cmd = inp.get("command", "")
         lines = cmd.split("\n")
@@ -3227,6 +3229,13 @@ async def _handle_command(
             f"[bold]⚙️  Config:[/] effort={effort} · ultra={ultra} · "
             f"think={thinking} · max_tokens={max_tok} · tools={tool_display}",
         ]
+        budget = getattr(session, "last_prompt_budget", None)
+        if budget:
+            lines.append(
+                f"[bold]Prompt (estimated):[/] system={budget['system_tokens']} · tools={budget['tool_tokens']} "
+                f"· directory (included)={budget['directory_tokens']} · loaded={budget['loaded_tools']}/{budget['available_tools']} "
+                f"({budget['mode']}, last request)"
+            )
         agents = session.list_agents()
         if agents:
             active_agents = sum(1 for item in agents if item.status in {"queued", "running"})

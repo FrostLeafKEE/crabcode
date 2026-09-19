@@ -1140,6 +1140,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       lines.push(`**提示缓存：** ${cachedUsage.cacheDetail}`);
     }
     const tools = status.tool_count == null ? "未加载" : status.tool_count.toLocaleString();
+    const budget = status.prompt_budget;
+    if (budget) {
+      lines.push(`**上次请求工具：** ${budget.loaded_tools}/${budget.available_tools} · ${budget.mode}`);
+      lines.push(`**Prompt（估算）：** system=${budget.system_tokens} · tools=${budget.tool_tokens} · 其中目录=${budget.directory_tokens} tokens`);
+    }
     lines.push(
       `**消息数：** ${status.message_count ?? 0} · **压缩次数：** ${status.compact_count ?? 0} · **自动压缩：** ${status.auto_compact_enabled === false ? "关闭" : "开启"}`,
       `**配置：** think=${status.thinking_enabled ? "on" : "off"} · max_tokens=${status.max_tokens ?? 0} · tools=${tools}`,
@@ -7902,6 +7907,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     const TOOL_PRESENTATIONS = {
+      toolsearch: ['search', '加载工具', 'S'],
       read: ['file', '读取文件', 'R'], fileread: ['file', '读取文件', 'R'],
       edit: ['file', '编辑文件', 'E'], fileedit: ['file', '编辑文件', 'E'],
       apply_patch: ['file', '应用补丁', '±'],
@@ -7930,6 +7936,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     };
 
     const TOOL_FIELD_LABELS = {
+      names: '工具名称', group: '工具分组',
       reference_image_paths: '参考图片',
       action: '操作', file_path: '文件', path: '路径', target_file: '文件', target_directory: '目录', cwd: '工作目录', program: '程序',
       command: '命令', timeout: '超时', timeout_seconds: '超时', offset: '起始行', limit: '行数', old_string: '替换前', new_string: '替换后',
@@ -8000,7 +8007,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       const rawAction = typeof input.action === 'string' ? input.action : '';
       const action = rawAction ? (TOOL_ACTION_LABELS[rawAction.toLowerCase()] || rawAction) : '';
       const summaryKeys = {
-        file: ['affected_paths', 'file_path', 'path', 'target_file', 'patch'], terminal: ['command', 'paths', 'linter', 'file_path', 'path'], search: ['query', 'pattern', 'glob'],
+        file: ['affected_paths', 'file_path', 'path', 'target_file', 'patch'], terminal: ['command', 'paths', 'linter', 'file_path', 'path'], search: ['query', 'names', 'group', 'pattern', 'glob'],
         web: ['url', 'selector', 'text', 'path'], image: ['prompt', 'path', 'mime_type', 'mimeType'], debug: ['program', 'pid', 'path', 'expression', 'session_id'], memory: ['title', 'query', 'content'],
         task: ['description', 'command', 'task_id'], agent: ['description', 'name', 'prompt', 'agent_id', 'agent_ids'], message: ['to', 'text', 'question'],
         checkpoint: ['label', 'checkpoint_id'], checklist: ['title', 'checklist_id', 'item'], goal: ['objective', 'status'], mode: ['target_mode', 'explanation'],

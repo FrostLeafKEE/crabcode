@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { getToolPresentation, parseChecklistResult } from "./toolPresentation";
 
 describe("tool card presentations", () => {
+  it("presents discovery with the requested tool names", () => {
+    const card = getToolPresentation("ToolSearch", { names: ["Browser", "WebSearch"] });
+    expect(card).toMatchObject({ known: true, kind: "search", label: "加载工具", summary: "Browser · WebSearch" });
+    expect(card.fields[0].label).toBe("工具名称");
+  });
   it("builds a readable file edit summary and structured fields", () => {
     const card = getToolPresentation("Edit", {
       file_path: "src/App.tsx",

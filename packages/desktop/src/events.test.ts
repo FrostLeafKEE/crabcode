@@ -25,6 +25,23 @@ afterEach(() => {
 });
 
 describe("Gateway event reducer", () => {
+  it("keeps prompt estimates separate from the server context count", () => {
+    const current = state();
+    current.status = {
+      session_id: current.id, cwd: current.cwd, model: "test", provider: "test", mode: "agent",
+      permission_mode: "default", context_used_tokens: 0, context_window_tokens: 32000, context_used_percent: 0,
+    };
+    const budget = {
+      source: "estimated" as const, mode: "discovery" as const,
+      system_tokens: 1000, tool_tokens: 3000, directory_tokens: 160,
+      loaded_tools: 12, available_tools: 47, loaded_names: ["ToolSearch"],
+    };
+    const updated = applyGatewayEvent(current, {
+      type: "turn_complete", context_used_tokens: 5000, context_token_source: "server", prompt_budget: budget,
+    });
+    expect(updated.status?.prompt_budget).toEqual(budget);
+    expect(updated.status?.context_token_source).toBe("server");
+  });
   it("merges streaming assistant chunks", () => {
     let current = applyGatewayEvent(state(), { type: "stream_text", text: "Hello" });
     current = applyGatewayEvent(current, { type: "stream_text", text: " world" });

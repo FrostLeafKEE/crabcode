@@ -380,6 +380,17 @@ class AnthropicAdapter(APIAdapter):
         system_blocks = safe_utf8_json_tree(
             [{"type": "text", "text": s} for s in system if s]
         )
+        # Mark the real static boundary; custom gateways must explicitly opt in.
+        static_count = getattr(system, "static_count", 0)
+        cache_enabled = self.config.prompt_caching == "enabled" or (
+            self.config.prompt_caching == "auto" and type(self) is AnthropicAdapter
+            and not self.config.base_url
+            and str(self.client.base_url).rstrip("/") == "https://api.anthropic.com"
+        )
+        if cache_enabled and static_count:
+            index = sum(bool(s) for s in system[:static_count]) - 1
+            if index >= 0:
+                system_blocks[index]["cache_control"] = {"type": "ephemeral"}
 
         params: dict[str, Any] = {
             "model": model,

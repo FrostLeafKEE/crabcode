@@ -650,6 +650,17 @@ class SearchIndexStatus(BaseModel):
     total: int | None = None
 
 
+class PromptBudget(BaseModel):
+    source: Literal["estimated"] = "estimated"
+    mode: Literal["eager", "discovery"]
+    system_tokens: int
+    tool_tokens: int
+    directory_tokens: int
+    loaded_tools: int
+    available_tools: int
+    loaded_names: list[str] = Field(default_factory=list)
+
+
 class SessionRuntimeStatus(BaseModel):
     """Complete, non-secret runtime status shared by CLI-style clients."""
 
@@ -675,6 +686,7 @@ class SessionRuntimeStatus(BaseModel):
     thinking_enabled: bool = False
     max_tokens: int = 0
     tool_count: int | None = None
+    prompt_budget: PromptBudget | None = None
     agent_total: int = 0
     agent_active: int = 0
     agent_failed: int = 0
@@ -730,6 +742,7 @@ class ToolInfo(BaseModel):
     description: str = ""
     is_read_only: bool = False
     is_enabled: bool = True
+    is_loaded: bool | None = None
 
 
 class SkillInfo(BaseModel):
@@ -1087,6 +1100,7 @@ class TurnCompletePayload(BaseModel):
     context_used_percent: float = 0.0
     context_token_source: Literal["server", "calibrated", "estimated"] = "estimated"
     assistant_message_uuid: str | None = None
+    prompt_budget: PromptBudget | None = None
 
 
 class StreamModePayload(BaseModel):
@@ -1437,6 +1451,7 @@ def core_event_to_payload(event: Any) -> EventPayload:
             context_remaining_tokens=event.context_remaining_tokens,
             context_used_percent=event.context_used_percent,
             assistant_message_uuid=event.assistant_message_uuid,
+            prompt_budget=event.prompt_budget or None,
         )
     if isinstance(event, StreamModeEvent):
         return StreamModePayload(mode=event.mode, agent_id=event.agent_id)

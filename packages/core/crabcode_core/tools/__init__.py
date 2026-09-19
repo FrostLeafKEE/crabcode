@@ -52,10 +52,12 @@ def get_default_tools() -> list[Tool]:
         TeamTaskCompleteTool,
     )
     from crabcode_core.tools.web_search import WebSearchTool
+    from crabcode_core.tools.tool_search import ToolSearchTool
 
     monitor_manager = MonitorManager()
 
     return [
+        ToolSearchTool(),
         BashTool(),
         FileReadTool(),
         ApplyPatchTool(),

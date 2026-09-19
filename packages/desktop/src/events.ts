@@ -699,6 +699,7 @@ export function applyGatewayEvent(
               context_window_tokens: event.context_window_tokens ?? state.status.context_window_tokens,
               context_remaining_tokens: event.context_remaining_tokens ?? state.status.context_remaining_tokens,
               context_used_percent: event.context_used_percent ?? state.status.context_used_percent,
+              prompt_budget: event.prompt_budget ?? state.status.prompt_budget,
             }
           : state.status,
       };

@@ -104,6 +104,7 @@ class TurnCompleteEvent:
     context_used_percent: float = 0.0
     context_token_source: str = "estimated"
     assistant_message_uuid: str | None = None
+    prompt_budget: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

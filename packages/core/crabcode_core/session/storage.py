@@ -1261,7 +1261,7 @@ class SessionStorage:
                 "message_count": len(cloned_messages),
             }
         )
-        for key in ("summary", "goal", "git_branch", "git_sha"):
+        for key in ("summary", "goal", "git_branch", "git_sha", "loaded_tools"):
             if source_meta.get(key) is not None:
                 metadata[key] = source_meta[key]
         lines = [_dump_jsonl_line({"type": "session_meta", **metadata})]
@@ -1285,6 +1285,13 @@ class SessionStorage:
             )
         except Exception:
             logger.warning("Failed to persist session title for %s", self.session_id, exc_info=True)
+
+    def update_loaded_tools(self, names: list[str]) -> None:
+        """Persist discovery state without replacing unrelated session metadata."""
+        try:
+            self._commit_metadata_update(lambda _meta: {"loaded_tools": list(names)})
+        except OSError:
+            logger.warning("Failed to persist tool discovery state for %s", self.session_id, exc_info=True)
 
     def update_model(self, *, model: str = "", provider: str = "") -> None:
         """Persist the active model/provider for an existing session.

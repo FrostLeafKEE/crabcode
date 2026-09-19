@@ -47,6 +47,7 @@ export interface ChecklistResult {
 type ToolDefinition = Pick<ToolPresentation, "kind" | "label" | "glyph">;
 
 const DEFINITIONS: Record<string, ToolDefinition> = {
+  toolsearch: { kind: "search", label: "加载工具", glyph: "S" },
   read: { kind: "file", label: "读取文件", glyph: "R" },
   fileread: { kind: "file", label: "读取文件", glyph: "R" },
   edit: { kind: "file", label: "编辑文件", glyph: "E" },
@@ -129,6 +130,8 @@ const FIELD_LABELS: Record<string, string> = {
   pattern: "匹配模式",
   glob: "文件过滤",
   query: "查询",
+  names: "工具名称",
+  group: "工具分组",
   scope: "范围",
   num_results: "结果数",
   case_insensitive: "忽略大小写",
@@ -362,7 +365,7 @@ function summaryFor(kind: ToolKind, input: Record<string, unknown>, action: stri
   const keysByKind: Partial<Record<ToolKind, string[]>> = {
     file: ["affected_paths", "file_path", "path", "target_file", "patch"],
     terminal: ["command", "paths", "linter", "file_path", "path"],
-    search: ["query", "pattern", "glob"],
+    search: ["query", "names", "group", "pattern", "glob"],
     web: ["url", "selector", "text", "path"],
     image: ["prompt", "path", "mime_type", "mimeType"],
     debug: ["program", "pid", "path", "expression", "session_id"],

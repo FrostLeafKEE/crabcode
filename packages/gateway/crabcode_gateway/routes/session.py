@@ -1028,6 +1028,7 @@ async def session_status(
             thinking_enabled=bool(getattr(active_config, "thinking_enabled", False)),
             max_tokens=max(0, int(getattr(active_config, "max_tokens", 0) or 0)),
             tool_count=enabled_tools,
+            prompt_budget=getattr(session, "last_prompt_budget", None) or None,
             agent_total=len(agents),
             agent_active=sum(
                 1 for item in agents

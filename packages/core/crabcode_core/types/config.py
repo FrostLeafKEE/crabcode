@@ -111,6 +111,7 @@ class ApiConfig(BaseModel):
     unbounded_connection_retries: bool = True
     context_window: int | None = None  # override auto-detected context window
     prompt_cache_key: str | None = None  # OpenAI Responses API prompt cache routing key
+    prompt_caching: Literal["auto", "enabled", "disabled"] = "auto"
     prompt_cache_retention: Literal["in_memory", "24h"] | None = None
     extra_body: dict[str, Any] = Field(default_factory=dict)
     azure_endpoint: str | None = None  # Azure OpenAI endpoint URL
@@ -238,6 +239,11 @@ class GatewaySettings(BaseModel):
     workspace: GatewayWorkspaceSettings = Field(default_factory=GatewayWorkspaceSettings)
 
 
+class ToolLoadingSettings(BaseModel):
+    mode: Literal["eager", "discovery"] = "discovery"
+    pinned_tools: list[str] = Field(default_factory=list)
+
+
 class CrabCodeSettings(BaseModel):
     """Full settings.json schema."""
     permissions: PermissionsSettings = Field(default_factory=PermissionsSettings)
@@ -256,6 +262,7 @@ class CrabCodeSettings(BaseModel):
     output_style: str | None = None
     prompt_profile: dict[str, Any] | None = None
     extra_tools: list[str] = Field(default_factory=list)
+    tool_loading: ToolLoadingSettings = Field(default_factory=ToolLoadingSettings)
     ultra_mode: bool = False
     tool_call_timeout: float | None = None
     filesystem_timeout: float | None = Field(

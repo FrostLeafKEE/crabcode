@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Callable, Coroutine
 from crabcode_core.types.config import DEFAULT_FILESYSTEM_TIMEOUT
 
 if TYPE_CHECKING:
+    from crabcode_core.tools.loading import ToolCatalog
     from crabcode_core.types.message import AssistantMessage, Message
 
 
@@ -75,6 +76,7 @@ class ToolContext:
     session: Any | None = None  # CoreSession — for checkpoint/revert operations
     api_adapter: Any | None = None  # Active turn's provider, including subagent/model switches
     model: str | None = None
+    tool_catalog: ToolCatalog | None = None
     snapshot_enabled: bool = True
     snapshot_max_size_mb: int = 1024
     filesystem_timeout: float | None = DEFAULT_FILESYSTEM_TIMEOUT

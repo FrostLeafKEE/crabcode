@@ -25,8 +25,10 @@ from crabcode_core.compact.compact import (
 )
 from crabcode_core.compact.context_tokens import ContextTokenTracker, RequestSnapshot, TokenMeasurement
 from crabcode_core.logging_utils import get_logger
+from crabcode_core.prompts.blocks import SystemPrompt
+from crabcode_core.tools.loading import ToolCatalog, ToolLoadingState
 from crabcode_core.query.retry import ResponsesStreamRetryState, StreamRetry
-from crabcode_core.types.config import ApiConfig
+from crabcode_core.types.config import ApiConfig, ToolLoadingSettings
 from crabcode_core.types.event import (
     CompactEvent,
     CoreEvent,
@@ -402,6 +404,10 @@ class QueryParams:
     # messages are drained only at model-request boundaries, after a complete
     # tool-result batch has been appended to the conversation.
     drain_steering_messages: Callable[[], list[Message]] | None = None
+    tool_loading: ToolLoadingSettings | None = None
+    tool_loading_state: ToolLoadingState | None = None
+    on_tools_loaded: Callable[[list[str]], None] | None = None
+    pinned_tools: tuple[str, ...] = ()
 
 
 def _plan_mode_is_active(params: QueryParams) -> bool:
@@ -426,6 +432,8 @@ def _append_system_context(
         return system_prompt
     extra = "\n".join(f"{k}: {v}" for k, v in context.items() if v)
     if extra:
+        if isinstance(system_prompt, SystemPrompt):
+            return system_prompt.with_dynamic(extra)
         return [*system_prompt, extra]
     return system_prompt
 
@@ -630,6 +638,15 @@ async def _run_tools(
 
         timeout_enabled = tool_call_timeout is not None and tool_call_timeout > 0
         try:
+            # Permissions/hooks may have awaited user input since dispatch.
+            # Recheck live availability, retaining the request's immutable exposure set.
+            catalog = call_context.tool_catalog
+            if catalog is not None and (
+                tool.name not in catalog.exposed_names or not tool.is_available(call_context)
+            ):
+                raise PermissionError("Tool is not exposed or is no longer available")
+            if getattr(call_context.session, "agent_mode", None) == "plan" and not tool.is_read_only:
+                raise PermissionError("Plan mode: write operations are not allowed")
             if timeout_enabled:
                 result = await asyncio.wait_for(
                     tool.call(block.input, call_context),
@@ -1264,11 +1281,42 @@ async def query_loop(
         messages_for_api = _prepend_user_context(messages, params.user_context)
 
         plan_mode_active = _plan_mode_is_active(params)
-        tool_schemas = [
-            t.to_api_schema()
-            for t in params.tools
+        available_tools = [
+            t for t in params.tools
             if t.is_available(params.tool_context) and (not plan_mode_active or t.is_read_only)
         ]
+        directory = ""
+        loading_mode = "eager"
+        params.tool_context.tool_catalog = None
+        if params.tool_loading is not None:
+            if params.tool_loading_state is None:
+                params.tool_loading_state = ToolLoadingState()
+            catalog = ToolCatalog(
+                params.tools, params.tool_context, params.tool_loading, params.tool_loading_state,
+                plan_mode=plan_mode_active, on_change=params.on_tools_loaded, pinned=params.pinned_tools,
+            )
+            params.tool_context.tool_catalog = catalog
+            loading_mode = catalog.mode
+            available_tools = catalog.loaded
+            directory = catalog.directory()
+            full_system = _append_system_context(full_system, {
+                "capabilities": directory, "toolInstructions": catalog.instructions(),
+            })
+        tool_schemas = [
+            t.to_api_schema()
+            for t in available_tools
+        ]
+        exposed_names = frozenset(t.name for t in available_tools)
+        prompt_budget = {
+            "source": "estimated",
+            "mode": loading_mode,
+            "system_tokens": estimate_token_count([], system=full_system),
+            "tool_tokens": estimate_token_count([], tools=tool_schemas),
+            "directory_tokens": estimate_token_count([], system=[directory]) if directory else 0,
+            "loaded_tools": len(tool_schemas),
+            "loaded_names": [t.name for t in available_tools],
+            "available_tools": sum(t.is_available(params.tool_context) and (not plan_mode_active or t.is_read_only) for t in params.tools),
+        }
 
         max_tokens = effective_max_tokens
 
@@ -1461,6 +1509,7 @@ async def query_loop(
                 context_remaining_tokens=context_remaining,
                 context_used_percent=context_percent,
                 assistant_message_uuid=assistant_uuid,
+                prompt_budget=prompt_budget,
             )
 
         assistant_content: list[ContentBlock] = []
@@ -1981,6 +2030,16 @@ async def query_loop(
             # tools derive permission targets by parsing their input; treating
             # a parse failure as DENY makes malformed input look like a user or
             # filesystem permission failure instead of a validation error.
+            if tool is not None and (block.name not in exposed_names or not tool.is_available(params.tool_context)):
+                result = "Tool is not loaded or is unavailable. Use ToolSearch and wait for the next response before calling it."
+                messages.append(create_tool_result_message(
+                    tool_use_id=block.id, result=result, is_error=True,
+                    source_tool_assistant_uuid=assistant_msg.uuid,
+                ))
+                params.messages[:] = messages
+                yield ToolResultEvent(tool_use_id=block.id, tool_name=block.name,
+                                      result=result, is_error=True, tool_input=block.input)
+                continue
             if tool is not None:
                 validation_error = await tool.validate_input(block.input)
                 if validation_error:
