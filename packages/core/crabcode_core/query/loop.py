@@ -1977,6 +1977,31 @@ async def query_loop(
                 )
                 continue
 
+            # Semantic validation must happen before permission checks. Some
+            # tools derive permission targets by parsing their input; treating
+            # a parse failure as DENY makes malformed input look like a user or
+            # filesystem permission failure instead of a validation error.
+            if tool is not None:
+                validation_error = await tool.validate_input(block.input)
+                if validation_error:
+                    result = f"Validation error: {validation_error}"
+                    msg = create_tool_result_message(
+                        tool_use_id=block.id,
+                        result=result,
+                        is_error=True,
+                        source_tool_assistant_uuid=assistant_msg.uuid,
+                    )
+                    messages.append(msg)
+                    params.messages[:] = messages
+                    yield ToolResultEvent(
+                        tool_use_id=block.id,
+                        tool_name=block.name,
+                        result=result,
+                        is_error=True,
+                        tool_input=block.input,
+                    )
+                    continue
+
             if not params.permission_manager or not params.permission_queue:
                 approved_blocks.append(block)
                 continue

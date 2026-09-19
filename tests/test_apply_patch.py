@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import codecs
 import os
 from pathlib import Path
@@ -7,10 +8,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from crabcode_core.api.base import StreamChunk
 from crabcode_core.permissions.manager import PermissionManager
+from crabcode_core.query.loop import QueryParams, query_loop
 from crabcode_core.tools import get_default_tools
 from crabcode_core.tools.apply_patch import ApplyPatchTool, PatchError, parse_patch
-from crabcode_core.types.config import PermissionRule, PermissionsSettings
+from crabcode_core.types.config import ApiConfig, PermissionRule, PermissionsSettings
+from crabcode_core.types.event import PermissionRequestEvent, ToolResultEvent
+from crabcode_core.types.message import create_user_message
 from crabcode_core.types.tool import PermissionBehavior, ToolContext
 from crabcode_gateway.acp.types import to_locations, to_tool_kind
 
@@ -34,6 +39,26 @@ class ApplyPatchParserTests(unittest.TestCase):
         self.assertEqual(actions[0].content, "added\n")
         self.assertEqual(actions[1].move_to, "moved.txt")
         self.assertEqual(actions[1].hunks[0].hint, "function_name")
+
+    def test_accepts_unambiguous_envelope_variants(self) -> None:
+        for begin, end in (
+            ("*** Begin Patch ***", "*** End Patch ***"),
+            ("  *** Begin Patch ***  ", "  *** End Patch  "),
+            (
+                "*** Begin Patch ***",
+                "*** End Patch ***\n*** End of File ***",
+            ),
+        ):
+            with self.subTest(begin=begin, end=end):
+                actions = parse_patch(
+                    f"""\n{begin}
+*** Add File: added.txt
++added
+{end}\n"""
+                )
+                self.assertEqual(len(actions), 1)
+                self.assertEqual(actions[0].path, "added.txt")
+                self.assertEqual(actions[0].content, "added\n")
 
     def test_rejects_malformed_envelopes_and_hunks(self) -> None:
         for value in (
@@ -278,3 +303,66 @@ class ApplyPatchToolTests(unittest.IsolatedAsyncioTestCase):
             to_locations("apply_patch", {"patch": patch_text}),
             [{"path": "src/a.py"}, {"path": "src/b.py"}],
         )
+
+
+class _ValidationAdapter:
+    def __init__(self) -> None:
+        self.config = ApiConfig(
+            model="test",
+            thinking_enabled=False,
+            max_tokens=1000,
+            max_retries=0,
+        )
+        self.requests = 0
+
+    async def stream_message(self, messages, system, tools, config):
+        self.requests += 1
+        if self.requests == 1:
+            yield StreamChunk(
+                type="tool_use_start",
+                tool_name="apply_patch",
+                tool_use_id="patch-1",
+            )
+            yield StreamChunk(
+                type="tool_use_end",
+                tool_name="apply_patch",
+                tool_use_id="patch-1",
+                tool_input_json='{"patch":"not a patch"}',
+            )
+        else:
+            yield StreamChunk(type="text", text="done")
+        yield StreamChunk(type="message_stop")
+
+    async def count_input_tokens(self, messages, system, tools, config):
+        return None
+
+
+class ApplyPatchQueryLoopTests(unittest.IsolatedAsyncioTestCase):
+    async def test_malformed_patch_is_validation_error_before_permission(self) -> None:
+        adapter = _ValidationAdapter()
+        messages = [create_user_message("edit a file")]
+        events = [
+            event
+            async for event in query_loop(
+                QueryParams(
+                    messages=messages,
+                    system_prompt=[],
+                    user_context={},
+                    system_context={},
+                    tools=[ApplyPatchTool()],
+                    tool_context=ToolContext(messages=messages),
+                    api_adapter=adapter,
+                    api_config=adapter.config,
+                    permission_manager=PermissionManager(),
+                    permission_queue=asyncio.Queue(),
+                    auto_compact_enabled=False,
+                )
+            )
+        ]
+
+        result = next(event for event in events if isinstance(event, ToolResultEvent))
+        self.assertEqual(
+            result.result,
+            "Validation error: patch must start with '*** Begin Patch'",
+        )
+        self.assertFalse(any(isinstance(event, PermissionRequestEvent) for event in events))

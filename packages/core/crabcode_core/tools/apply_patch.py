@@ -26,6 +26,9 @@ logger = get_logger(__name__)
 
 _BEGIN = "*** Begin Patch"
 _END = "*** End Patch"
+_BEGIN_RE = re.compile(r"^\s*\*\*\* Begin Patch(?:\s+\*\*\*)?\s*$")
+_END_RE = re.compile(r"^\s*\*\*\* End Patch(?:\s+\*\*\*)?\s*$")
+_END_OF_FILE_RE = re.compile(r"^\s*\*\*\* End of File(?:\s+\*\*\*)?\s*$")
 _ACTION_RE = re.compile(r"^\*\*\* (Add|Update|Delete) File: (.+)$")
 _MOVE_RE = re.compile(r"^\*\*\* Move to: (.+)$")
 _HUNK_RE = re.compile(r"^@@(?:\s(.*?))?\s*$")
@@ -75,11 +78,22 @@ def parse_patch(patch: str) -> list[PatchAction]:
         raise PatchError(f"patch exceeds the {_MAX_PATCH_CHARS} character limit")
 
     lines = patch.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    while lines and lines[-1] == "":
-        lines.pop()
-    if not lines or lines[0] != _BEGIN:
+    start = 0
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    end = len(lines)
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    lines = lines[start:end]
+    if not lines or not _BEGIN_RE.fullmatch(lines[0]):
         raise PatchError(f"patch must start with {_BEGIN!r}")
-    if len(lines) < 2 or lines[-1] != _END:
+    if (
+        len(lines) >= 3
+        and _END_OF_FILE_RE.fullmatch(lines[-1])
+        and _END_RE.fullmatch(lines[-2])
+    ):
+        lines.pop()
+    if len(lines) < 2 or not _END_RE.fullmatch(lines[-1]):
         raise PatchError(f"patch must end with {_END!r}")
 
     actions: list[PatchAction] = []
@@ -136,7 +150,7 @@ def parse_patch(patch: str) -> list[PatchAction]:
             end_of_file = False
             while index < final:
                 line = lines[index]
-                if line == "*** End of File":
+                if _END_OF_FILE_RE.fullmatch(line):
                     end_of_file = True
                     index += 1
                     break
