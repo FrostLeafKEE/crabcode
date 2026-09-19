@@ -3784,7 +3784,7 @@ function App() {
                     <div className="attachment-strip">
                       {pendingImages.map((image) => (
                         <div className="attachment-thumb" key={image.id} title={image.name}>
-                          <img src={image.dataUrl} alt={image.name} />
+                          <PreviewableImage src={image.dataUrl} alt={image.name} />
                           <button
                             className="icon-button tiny"
                             title="移除图片"
@@ -5848,13 +5848,82 @@ function MessageBlockCopy({ text, label }: { text: string; label: string }) {
   );
 }
 
+function PreviewableImage({ src, alt, className, loading }: {
+  src: string;
+  alt: string;
+  className?: string;
+  loading?: "eager" | "lazy";
+}) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLImageElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+    closeButtonRef.current?.focus();
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+      triggerRef.current?.focus();
+    };
+  }, [open]);
+
+  const openPreview = () => setOpen(true);
+  return (
+    <>
+      <img
+        ref={triggerRef}
+        className={`previewable-image ${className ?? ""}`.trim()}
+        src={src}
+        alt={alt}
+        loading={loading}
+        role="button"
+        tabIndex={0}
+        aria-label={`放大查看：${alt || "图片"}`}
+        onClick={openPreview}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          openPreview();
+        }}
+      />
+      {open && createPortal(
+        <div
+          className="image-preview-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label={alt ? `图片预览：${alt}` : "图片预览"}
+          onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}
+        >
+          <img className="image-preview-content" src={src} alt={alt} />
+          <button
+            ref={closeButtonRef}
+            type="button"
+            className="image-preview-close"
+            title="关闭图片预览"
+            aria-label="关闭图片预览"
+            onClick={() => setOpen(false)}
+          ><X /></button>
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
 function InlineImages({ images }: { images?: Array<{ media_type: string; data: string; description?: string }> }) {
   if (!images?.length) return null;
   return (
     <div className="message-images" aria-label="图片附件">
       {images.map((image, index) => (
         <figure className="message-image" key={`${image.media_type}-${index}`}>
-          <img
+          <PreviewableImage
             src={`data:${image.media_type};base64,${image.data}`}
             alt={`图片 ${index + 1}`}
             loading="lazy"
@@ -5869,7 +5938,7 @@ function InlineImages({ images }: { images?: Array<{ media_type: string; data: s
 const MESSAGE_MARKDOWN_COMPONENTS: Components = {
   img: ({ src, alt }) => (
     typeof src === "string" && /^(?:https?:|data:image\/)/i.test(src)
-      ? <img src={src} alt={alt ?? "图片"} loading="lazy" />
+      ? <PreviewableImage src={src} alt={alt ?? "图片"} loading="lazy" />
       : null
   ),
   table: ({ children }) => (

@@ -6381,6 +6381,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       cursor: pointer;
     }
     .msg-images img:hover { opacity: 0.88; }
+    [data-image-preview] { cursor: zoom-in; }
+    [data-image-preview]:focus-visible {
+      outline: 2px solid var(--vscode-focusBorder, #007fd4);
+      outline-offset: 2px;
+    }
     .assistant-inline-image {
       display: block;
       max-width: 100%;
@@ -6413,6 +6418,49 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       line-height: 1.5;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
+    }
+    #image-preview {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 52px;
+      background: rgba(5, 7, 10, 0.9);
+      backdrop-filter: blur(8px);
+    }
+    #image-preview[hidden] { display: none; }
+    #image-preview-image {
+      display: block;
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      border-radius: 6px;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+    }
+    #image-preview-close {
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      border-radius: 999px;
+      background: rgba(20, 23, 29, 0.82);
+      color: white;
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    #image-preview-close:hover { background: rgba(50, 54, 62, 0.96); }
+    :root.image-preview-open body { overflow: hidden; }
+    @media (max-width: 420px) {
+      #image-preview { padding: 48px 8px 8px; }
+      #image-preview-close { top: 8px; right: 8px; }
     }
 
     :root[data-panel-width="narrow"] #messages {
@@ -6996,6 +7044,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     </div>
     <input type="file" id="file-input-image" accept="image/*" multiple hidden />
   </div>
+  <div id="image-preview" role="dialog" aria-modal="true" aria-label="图片预览" hidden>
+    <img id="image-preview-image" alt="图片预览" />
+    <button type="button" id="image-preview-close" title="关闭图片预览" aria-label="关闭图片预览">×</button>
+  </div>
   <div id="context-tooltip" class="context-tooltip" role="tooltip"></div>
   <div id="slash-popup" class="hidden" role="listbox" aria-label="命令列表">
     <div id="slash-popup-list" class="slash-popup-list"></div>
@@ -7095,6 +7147,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         const ultraMenuItem = plusMenu.querySelector('[data-action="ultra"]');
         const contextMeter = document.getElementById('context-meter');
         const contextTooltip = document.getElementById('context-tooltip');
+        const imagePreview = document.getElementById('image-preview');
+        const imagePreviewImage = document.getElementById('image-preview-image');
+        const imagePreviewClose = document.getElementById('image-preview-close');
         const pendingEditsBar = document.getElementById('pending-edits-bar');
         const permBtn = document.getElementById('perm-btn');
         const permLabel = document.getElementById('perm-label');
@@ -7624,6 +7679,52 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       stickToBottom = isNearBottom();
     });
 
+    let imagePreviewReturnFocus = null;
+
+    function openImagePreview(image) {
+      imagePreviewReturnFocus = image;
+      imagePreviewImage.src = image.currentSrc || image.src;
+      imagePreviewImage.alt = image.alt || '图片预览';
+      imagePreview.hidden = false;
+      rootEl.classList.add('image-preview-open');
+      imagePreviewClose.focus();
+    }
+
+    function closeImagePreview() {
+      if (imagePreview.hidden) return;
+      imagePreview.hidden = true;
+      imagePreviewImage.removeAttribute('src');
+      rootEl.classList.remove('image-preview-open');
+      const returnTarget = imagePreviewReturnFocus;
+      imagePreviewReturnFocus = null;
+      if (returnTarget && returnTarget.isConnected) returnTarget.focus();
+    }
+
+    document.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const image = target.closest('[data-image-preview]');
+      if (!(image instanceof HTMLImageElement)) return;
+      event.preventDefault();
+      openImagePreview(image);
+    });
+    document.addEventListener('keydown', (event) => {
+      if (!imagePreview.hidden && event.key === 'Escape') {
+        event.preventDefault();
+        closeImagePreview();
+        return;
+      }
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const target = event.target;
+      if (!(target instanceof HTMLImageElement) || !target.hasAttribute('data-image-preview')) return;
+      event.preventDefault();
+      openImagePreview(target);
+    });
+    imagePreview.addEventListener('mousedown', (event) => {
+      if (event.target === imagePreview) closeImagePreview();
+    });
+    imagePreviewClose.addEventListener('click', closeImagePreview);
+
     let copyRequestCounter = 0;
     msgContainer.addEventListener('click', (event) => {
       const target = event.target;
@@ -7723,7 +7824,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       const standaloneImage = (value) => {
         const match = String(value || '').trim().match(new RegExp('^!\\\\[([^\\\\]]*)\\\\]\\\\((https?:\\\\/\\\\/[^)\\\\s]+|data:image\\\\/[^)]+)\\\\)$', 'i'));
         if (!match) return '';
-        return '<img class="assistant-inline-image" src="' + escapeAttr(match[2]) + '" alt="' + escapeAttr(match[1] || '图片') + '" loading="lazy" />';
+        const alt = match[1] || '图片';
+        return '<img class="assistant-inline-image" data-image-preview src="' + escapeAttr(match[2]) + '" alt="' + escapeAttr(alt) + '" loading="lazy" role="button" tabindex="0" aria-label="放大查看：' + escapeAttr(alt) + '" />';
       };
 
       const flushParagraph = () => {
@@ -7799,7 +7901,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         html += '<div class="msg-images">';
         for (const img of msg.images) {
           const src = 'data:' + escapeAttr(img.media_type) + ';base64,' + img.data;
-          html += '<img src="' + src + '" alt="attachment" loading="lazy" />';
+          html += '<img data-image-preview src="' + src + '" alt="附件图片" loading="lazy" role="button" tabindex="0" aria-label="放大查看附件图片" />';
         }
         html += '</div>';
       }
@@ -7881,7 +7983,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       const imagesHtml = (card.images || []).map(function(img, index) {
         const caption = typeof img.description === 'string' && img.description
           ? '<figcaption>' + escapeHtml(img.description) + '</figcaption>' : '';
-        return '<figure class="tool-result-figure"><img class="tool-result-image" src="data:' + escapeAttr(img.media_type) + ';base64,' + img.data + '" alt="图片 ' + (index + 1) + '" loading="lazy" />' + caption + '</figure>';
+        return '<figure class="tool-result-figure"><img class="tool-result-image" data-image-preview src="data:' + escapeAttr(img.media_type) + ';base64,' + img.data + '" alt="图片 ' + (index + 1) + '" loading="lazy" role="button" tabindex="0" aria-label="放大查看图片 ' + (index + 1) + '" />' + caption + '</figure>';
       }).join('');
       let bodyHtml = '';
       if (!card.collapsed) {
@@ -8930,7 +9032,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       pendingImages.forEach(function(img, idx) {
         const thumb = document.createElement('div');
         thumb.className = 'attachment-thumb';
-        thumb.innerHTML = '<img src="' + escapeAttr(img.dataUrl) + '" alt="" />' +
+        thumb.innerHTML = '<img data-image-preview src="' + escapeAttr(img.dataUrl) + '" alt="' + escapeAttr(img.name || '待发送图片') + '" role="button" tabindex="0" aria-label="放大查看：' + escapeAttr(img.name || '待发送图片') + '" />' +
           '<button type="button" class="remove-btn" data-kind="img" data-idx="' + idx + '" title="移除">✕</button>';
         attachmentBar.appendChild(thumb);
       });

@@ -345,7 +345,16 @@ s_\theta(x_t,y,t) \approx \nabla_{x_t}\log p_t(x_t\mid y)
         onPlan={vi.fn()}
       />,
     ));
-    expect(container.querySelector(".message-images img")?.getAttribute("src")).toBe("data:image/png;base64,aGVsbG8=");
+    const image = container.querySelector<HTMLImageElement>(".message-images img");
+    expect(image?.getAttribute("src")).toBe("data:image/png;base64,aGVsbG8=");
+    act(() => image?.click());
+    const preview = document.body.querySelector<HTMLElement>('[role="dialog"][aria-label="图片预览：图片 1"]');
+    expect(preview).not.toBeNull();
+    expect(preview?.querySelector<HTMLImageElement>(".image-preview-content")?.getAttribute("src")).toBe("data:image/png;base64,aGVsbG8=");
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(document.body.querySelector(".image-preview-backdrop")).toBeNull();
     act(() => root.unmount());
     container.remove();
   });

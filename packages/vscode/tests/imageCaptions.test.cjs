@@ -55,11 +55,20 @@ test("single and multiple image captions render below their images and escape HT
     const rendered = sandbox.buildToolCardHtml({ toolName: "Image", input: {}, result: "attached", collapsed: false, images: images.slice(0, count) });
     assert.equal((rendered.match(/<figure /g) || []).length, count);
     assert.equal((rendered.match(/<figcaption>/g) || []).length, count);
+    assert.equal((rendered.match(/data-image-preview/g) || []).length, count);
     assert.match(rendered, /<img[^>]*\/><figcaption>单图 &lt;script&gt;alert\(1\)&lt;\/script&gt;\n下一行<\/figcaption>/);
     assert.ok(!rendered.includes("<script>"));
   }
   const legacy = sandbox.buildToolCardHtml({ toolName: "Image", input: {}, result: "attached", collapsed: false, images: [{ media_type: "image/png", data: "YQ==" }] });
   assert.ok(!legacy.includes("<figcaption>"));
+});
+
+test("webview includes an accessible image preview dialog for message, tool, and composer images", () => {
+  assert.match(html, /id="image-preview"[^>]*role="dialog"[^>]*aria-modal="true"/);
+  assert.match(html, /id="image-preview-close"[^>]*aria-label="关闭图片预览"/);
+  assert.match(script, /function openImagePreview\(image\)/);
+  assert.match(script, /function closeImagePreview\(\)/);
+  assert.match(script, /thumb\.innerHTML = '<img data-image-preview/);
 });
 
 test("restored tool captions remain ordered without duplicate user image messages", () => {
