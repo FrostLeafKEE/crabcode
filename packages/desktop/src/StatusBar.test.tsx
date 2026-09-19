@@ -77,13 +77,21 @@ describe("desktop status bar", () => {
     expect(updateGatewayStartup(undefined, "connecting", "retry", 200).startedAt).toBe(200);
   });
 
-  it("opens the Computer Use console, shows the cursor and lets the user disable it", () => {
+  it("shows limited input capability, the cursor, and lets the user disable Computer Use", () => {
     const onEnabledChange = vi.fn();
+    const onOpenInputSettings = vi.fn();
+    const onRefresh = vi.fn();
     const computerUse: ComputerUseState = {
       hostId: "desktop-test",
       enabled: true,
       status: "ready",
-      capabilities: { gui_available: true, platform: "macos", displays: [] },
+      capabilities: {
+        gui_available: true,
+        input_available: false,
+        platform: "macos",
+        displays: [],
+        reason: "Desktop input permission is unavailable",
+      },
       latestFrame: {
         data: "cG5n",
         media_type: "image/png",
@@ -98,9 +106,21 @@ describe("desktop status bar", () => {
       error: null,
     };
     act(() => root.render(
-      <StatusBar computerUse={computerUse} onComputerUseEnabledChange={onEnabledChange} />,
+      <StatusBar
+        computerUse={computerUse}
+        onComputerUseEnabledChange={onEnabledChange}
+        onComputerUseOpenInputSettings={onOpenInputSettings}
+        onComputerUseRefresh={onRefresh}
+      />,
     ));
+    expect(container.querySelector(".status-computer-use > svg")).toBeNull();
     act(() => container.querySelector<HTMLButtonElement>(".status-computer-use")!.click());
+    expect(container.querySelector(".computer-use-console")?.textContent).toContain("有限可用");
+    expect(container.querySelector(".computer-use-permission")?.textContent).toContain("需要开启辅助功能权限");
+    act(() => container.querySelectorAll<HTMLButtonElement>(".computer-use-permission-actions button")[0].click());
+    expect(onOpenInputSettings).toHaveBeenCalledOnce();
+    act(() => container.querySelectorAll<HTMLButtonElement>(".computer-use-permission-actions button")[1].click());
+    expect(onRefresh).toHaveBeenCalledOnce();
     expect(container.querySelector(".computer-use-console")?.textContent).toContain("Clicked");
     const cursor = container.querySelector<SVGElement>(".computer-use-cursor")!;
     expect(cursor.style.left).toBe("50%");

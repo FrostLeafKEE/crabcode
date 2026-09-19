@@ -15172,19 +15172,12 @@ html[data-theme="light"] .project-file-code .token.class-name {
   padding-left: 10px;
 }
 
-.status-computer-use.ready > svg,
-.status-computer-use.busy > svg,
 .status-computer-use.ready .computer-use-dot,
 .status-computer-use.busy .computer-use-dot {
   color: var(--green);
   background: var(--green);
 }
 
-.status-computer-use.busy > svg {
-  color: var(--accent);
-}
-
-.status-computer-use.error > svg,
 .status-computer-use.error .computer-use-dot {
   color: var(--red);
   background: var(--red);
@@ -15300,6 +15293,68 @@ html[data-theme="light"] .project-file-code .token.class-name {
 .computer-use-empty svg {
   width: 28px;
   height: 28px;
+}
+
+.computer-use-warning {
+  margin: 0;
+  padding: 7px 10px;
+  border-top: 1px solid color-mix(in srgb, var(--yellow) 32%, transparent);
+  color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 8%, transparent);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.computer-use-permission {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: start;
+  padding: 9px 10px;
+  border-top: 1px solid color-mix(in srgb, var(--yellow) 32%, transparent);
+  color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 8%, transparent);
+}
+
+.computer-use-permission > svg {
+  width: 17px;
+  height: 17px;
+  margin-top: 1px;
+}
+
+.computer-use-permission > div:not(.computer-use-permission-actions) {
+  display: grid;
+  gap: 2px;
+}
+
+.computer-use-permission strong {
+  font-size: 12px;
+}
+
+.computer-use-permission span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.computer-use-permission-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.computer-use-permission-actions button {
+  min-height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--surface);
+  white-space: nowrap;
+}
+
+.computer-use-permission-actions button:hover {
+  border-color: var(--accent);
+  background: var(--surface-hover);
 }
 
 .computer-use-log {

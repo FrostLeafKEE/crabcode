@@ -105,6 +105,7 @@ import {
   ComputerUseChannel,
   computerUseHostId,
   initialComputerUseState,
+  openComputerUseInputSettings,
   type ComputerUseState,
 } from "./computerUse";
 import { gatewayEnvironmentLog, gatewayLogAddress, updateGatewayStartup, type GatewayStartupState } from "./gatewayStartup";
@@ -4039,6 +4040,12 @@ function App() {
           channelRef.current.forEach((channel) => channel.setComputerUseEnabled(enabled));
           commitSettings((current) => ({ ...current, computer_use_enabled: enabled }));
         }}
+        onComputerUseOpenInputSettings={() => {
+          void openComputerUseInputSettings().catch((error) => {
+            setGlobalError(error instanceof Error ? error.message : String(error));
+          });
+        }}
+        onComputerUseRefresh={() => computerUseChannelRef.current?.refresh()}
         activity={gatewaySuiteBusy
           ? gatewaySuiteProgress?.detail ?? "正在安装 CrabCode 套件…"
           : systemToolBusy

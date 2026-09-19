@@ -7,6 +7,7 @@ export type ComputerUseStatus = "disabled" | "unavailable" | "connecting" | "rea
 
 export interface ComputerUseCapabilities {
   gui_available: boolean;
+  input_available: boolean;
   platform: string;
   displays: Array<{ id: string; name: string; x: number; y: number; width: number; height: number; primary: boolean }>;
   reason?: string | null;
@@ -77,6 +78,11 @@ export function initialComputerUseState(hostId: string, enabled: boolean): Compu
   };
 }
 
+export async function openComputerUseInputSettings(): Promise<void> {
+  if (!isDesktopShell()) throw new Error("辅助功能权限设置只能从 Crab Desktop 打开");
+  await invoke("computer_use_open_input_settings");
+}
+
 export class ComputerUseChannel {
   private socket: WebSocket | null = null;
   private reconnectTimer: number | null = null;
@@ -145,6 +151,7 @@ export class ComputerUseChannel {
     if (!isDesktopShell()) {
       capabilities = {
         gui_available: false,
+        input_available: false,
         platform: "browser",
         displays: [],
         reason: "Computer Use 需要 Crab Desktop 原生应用",
@@ -155,6 +162,7 @@ export class ComputerUseChannel {
       } catch (error) {
         capabilities = {
           gui_available: false,
+          input_available: false,
           platform: navigator.platform || "unknown",
           displays: [],
           reason: error instanceof Error ? error.message : String(error),
@@ -196,6 +204,20 @@ export class ComputerUseChannel {
       enabled,
       gui_available: this.capabilities?.gui_available === true,
       capabilities: this.capabilities,
+    });
+  }
+
+  refresh(): void {
+    if (!this.enabled || this.disposed) return;
+    this.publish({ status: "connecting", error: null });
+    void this.refreshCapabilities().then((applied) => {
+      if (!applied || !this.enabled || this.disposed) return;
+      this.send({
+        type: "computer_use_host_state",
+        enabled: true,
+        gui_available: this.capabilities?.gui_available === true,
+        capabilities: this.capabilities,
+      });
     });
   }
 
@@ -242,7 +264,7 @@ export class ComputerUseChannel {
       const available = message.available === true;
       this.publish({
         status: !this.enabled ? "disabled" : available ? "ready" : "unavailable",
-        error: available ? null : this.capabilities?.reason ?? null,
+        error: this.capabilities?.reason ?? null,
       });
       return;
     }
@@ -297,7 +319,9 @@ export class ComputerUseChannel {
       latestFrame: result.screenshot ?? this.state.latestFrame,
       cursor: result.cursor ?? this.state.cursor,
       logs: [...this.state.logs.filter((item) => item.id !== logId), entry].slice(-100),
-      error: result.ok === false ? String(result.error || "Computer Use action failed") : null,
+      error: result.ok === false
+        ? String(result.error || "Computer Use action failed")
+        : this.capabilities?.reason ?? null,
     });
     this.send({ type: "computer_use_result", request_id: requestId, result });
   }

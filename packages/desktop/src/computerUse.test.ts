@@ -27,6 +27,7 @@ describe("ComputerUseChannel", () => {
   it("does not inspect the GUI while disabled and detects it when enabled", async () => {
     invokeMock.mockResolvedValue({
       gui_available: true,
+      input_available: true,
       platform: "macos",
       displays: [],
     });

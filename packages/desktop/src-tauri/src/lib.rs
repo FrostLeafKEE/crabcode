@@ -12,6 +12,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             computer_use::computer_use_capabilities,
             computer_use::computer_use_execute,
+            computer_use::computer_use_open_input_settings,
             settings::load_desktop_settings,
             settings::save_desktop_settings,
             settings::save_theme_export,

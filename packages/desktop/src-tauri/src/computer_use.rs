@@ -27,6 +27,7 @@ pub struct DisplayInfo {
 #[derive(Debug, Serialize)]
 pub struct ComputerUseCapabilities {
     gui_available: bool,
+    input_available: bool,
     platform: &'static str,
     displays: Vec<DisplayInfo>,
     reason: Option<String>,
@@ -78,12 +79,23 @@ fn monitors() -> Result<Vec<(Monitor, DisplayInfo)>, String> {
         .collect()
 }
 
+fn capability_status(
+    capture_error: Option<String>,
+    input_error: Option<String>,
+) -> (bool, bool, Option<String>) {
+    let gui_available = capture_error.is_none();
+    let input_available = input_error.is_none();
+    let reason = capture_error.or(input_error);
+    (gui_available, input_available, reason)
+}
+
 fn detect_capabilities() -> ComputerUseCapabilities {
     let found = match monitors() {
         Ok(found) if !found.is_empty() => found,
         Ok(_) => {
             return ComputerUseCapabilities {
                 gui_available: false,
+                input_available: false,
                 platform: std::env::consts::OS,
                 displays: Vec::new(),
                 reason: Some("No graphical displays were detected".to_string()),
@@ -92,6 +104,7 @@ fn detect_capabilities() -> ComputerUseCapabilities {
         Err(error) => {
             return ComputerUseCapabilities {
                 gui_available: false,
+                input_available: false,
                 platform: std::env::consts::OS,
                 displays: Vec::new(),
                 reason: Some(error),
@@ -107,13 +120,19 @@ fn detect_capabilities() -> ComputerUseCapabilities {
         .iter()
         .find(|(_, info)| info.primary)
         .or_else(|| found.first());
-    let capture_error = capture_target.and_then(|(monitor, _)| monitor.capture_image().err());
-    let input_error = Enigo::new(&Settings::default()).err();
-    let reason = capture_error
-        .map(|error| format!("Screen capture is unavailable: {error}"))
-        .or_else(|| input_error.map(|error| format!("Desktop input is unavailable: {error}")));
+    let capture_error = capture_target
+        .and_then(|(monitor, _)| monitor.capture_image().err())
+        .map(|error| format!("Screen capture is unavailable: {error}"));
+    let input_error = Enigo::new(&Settings::default())
+        .err()
+        .map(|error| format!("Desktop input permission is unavailable: {error}"));
+    // A missing input permission must not hide ComputerUse from the model. The
+    // agent can still observe the desktop and use non-input actions such as
+    // open_app. Only a missing/capture-inaccessible GUI disables the tool.
+    let (gui_available, input_available, reason) = capability_status(capture_error, input_error);
     ComputerUseCapabilities {
-        gui_available: reason.is_none(),
+        gui_available,
+        input_available,
         platform: std::env::consts::OS,
         displays,
         reason,
@@ -126,10 +145,40 @@ pub async fn computer_use_capabilities() -> ComputerUseCapabilities {
         .await
         .unwrap_or_else(|error| ComputerUseCapabilities {
             gui_available: false,
+            input_available: false,
             platform: std::env::consts::OS,
             displays: Vec::new(),
             reason: Some(format!("Computer Use capability detection failed: {error}")),
         })
+}
+
+#[tauri::command]
+pub async fn computer_use_open_input_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        return tauri::async_runtime::spawn_blocking(|| {
+            Command::new("open")
+                .arg(
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                )
+                .status()
+                .map_err(|error| format!("Unable to open Accessibility settings: {error}"))
+                .and_then(|status| {
+                    if status.success() {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "Unable to open Accessibility settings; process exited with {status}"
+                        ))
+                    }
+                })
+        })
+        .await
+        .map_err(|error| format!("Unable to open Accessibility settings: {error}"))?;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    Err("Opening Accessibility settings is only supported on macOS".to_string())
 }
 
 fn required<T: Copy>(value: Option<T>, name: &str) -> Result<T, String> {
@@ -594,5 +643,14 @@ mod tests {
     #[test]
     fn rejects_unknown_mouse_button() {
         assert!(mouse_button(Some("sideways")).is_err());
+    }
+
+    #[test]
+    fn missing_input_permission_keeps_graphical_computer_use_available() {
+        let (gui_available, input_available, reason) =
+            capability_status(None, Some("accessibility permission denied".to_string()));
+        assert!(gui_available);
+        assert!(!input_available);
+        assert_eq!(reason.as_deref(), Some("accessibility permission denied"));
     }
 }
