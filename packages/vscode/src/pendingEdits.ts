@@ -13,7 +13,7 @@ import type {
   ToolUsePayload,
 } from "./client/types";
 
-type PendingEditAction = "create" | "modify";
+type PendingEditAction = "create" | "modify" | "delete";
 type LineOpKind = "equal" | "delete" | "insert";
 
 interface ToolSnapshot {
@@ -39,6 +39,7 @@ interface PendingChange {
   shortPath: string;
   action: PendingEditAction;
   beforeExists: boolean;
+  afterExists: boolean;
   beforeContent: string;
   afterContent: string;
   stats: DiffStats;
@@ -73,7 +74,7 @@ const CONTEXT_LINES = 3;
 const REVIEW_REVEAL_DELAY_MS = 120;
 
 export class PendingEditManager implements vscode.Disposable, vscode.CodeLensProvider, vscode.InlayHintsProvider {
-  private readonly toolSnapshots = new Map<string, ToolSnapshot>();
+  private readonly toolSnapshots = new Map<string, ToolSnapshot[]>();
   private readonly changes = new Map<string, PendingChange>();
   private readonly changeByPath = new Map<string, string>();
   private readonly disposables: vscode.Disposable[] = [];
@@ -436,25 +437,28 @@ export class PendingEditManager implements vscode.Disposable, vscode.CodeLensPro
   }
 
   private async captureToolUse(payload: ToolUsePayload): Promise<void> {
-    if (!isEditOrWriteTool(payload.tool_name)) {
+    if (!isTrackedFileTool(payload.tool_name)) {
       return;
     }
-    const filePath = this.resolveToolFilePath(payload.tool_input);
-    if (!filePath) {
+    const filePaths = this.resolveToolFilePaths(payload.tool_name, payload.tool_input);
+    if (filePaths.length === 0) {
       return;
     }
-    const before = await readTextFile(filePath);
-    this.toolSnapshots.set(payload.tool_use_id, {
-      toolUseId: payload.tool_use_id,
-      filePath,
-      beforeExists: before.exists,
-      beforeContent: before.content,
-    });
+    const snapshots = await Promise.all(filePaths.map(async (filePath) => {
+      const before = await readTextFile(filePath);
+      return {
+        toolUseId: payload.tool_use_id,
+        filePath,
+        beforeExists: before.exists,
+        beforeContent: before.content,
+      };
+    }));
+    this.toolSnapshots.set(payload.tool_use_id, snapshots);
   }
 
   private async finalizeToolResult(payload: ToolResultPayload): Promise<void> {
-    const snapshot = this.toolSnapshots.get(payload.tool_use_id);
-    if (!snapshot) {
+    const snapshots = this.toolSnapshots.get(payload.tool_use_id);
+    if (!snapshots) {
       return;
     }
     this.toolSnapshots.delete(payload.tool_use_id);
@@ -463,18 +467,26 @@ export class PendingEditManager implements vscode.Disposable, vscode.CodeLensPro
       return;
     }
 
+    for (const snapshot of snapshots) {
+      await this.finalizeSnapshot(snapshot);
+    }
+  }
+
+  private async finalizeSnapshot(snapshot: ToolSnapshot): Promise<void> {
     const after = await readTextFile(snapshot.filePath);
-    if (!after.exists) {
+    if (!snapshot.beforeExists && !after.exists) {
       return;
     }
 
     const existing = this.getChangeForPath(snapshot.filePath);
     const beforeExists = existing?.beforeExists ?? snapshot.beforeExists;
     const beforeContent = existing?.beforeContent ?? (snapshot.beforeExists ? snapshot.beforeContent : "");
-    const action: PendingEditAction = beforeExists ? "modify" : "create";
-    const diff = computeLineDiff(beforeContent, after.content);
+    const afterExists = after.exists;
+    const afterContent = after.exists ? after.content : "";
+    const action: PendingEditAction = !afterExists ? "delete" : beforeExists ? "modify" : "create";
+    const diff = computeLineDiff(beforeContent, afterContent);
 
-    if (beforeExists && diff.hunks.length === 0) {
+    if (beforeExists === afterExists && diff.hunks.length === 0) {
       if (existing) {
         this.removeChange(existing.id);
       }
@@ -487,8 +499,9 @@ export class PendingEditManager implements vscode.Disposable, vscode.CodeLensPro
       shortPath: shortFilePath(snapshot.filePath),
       action,
       beforeExists,
+      afterExists,
       beforeContent,
-      afterContent: after.content,
+      afterContent,
       stats: diff.stats,
       hunks: diff.hunks,
       toolUseIds: new Set<string>(),
@@ -497,8 +510,9 @@ export class PendingEditManager implements vscode.Disposable, vscode.CodeLensPro
 
     change.action = action;
     change.beforeExists = beforeExists;
+    change.afterExists = afterExists;
     change.beforeContent = beforeContent;
-    change.afterContent = after.content;
+    change.afterContent = afterContent;
     change.stats = diff.stats;
     change.hunks = diff.hunks;
     change.toolUseIds.add(snapshot.toolUseId);
@@ -512,16 +526,15 @@ export class PendingEditManager implements vscode.Disposable, vscode.CodeLensPro
     vscode.window.setStatusBarMessage(`CrabCode：待确认 ${change.shortPath}`, 3000);
   }
 
-  private resolveToolFilePath(input: Record<string, unknown>): string | null {
-    const raw = firstString(input.file_path, input.path);
-    if (!raw) {
-      return null;
-    }
-    if (path.isAbsolute(raw)) {
-      return normalizeFilePath(raw);
-    }
+  private resolveToolFilePaths(toolName: string, input: Record<string, unknown>): string[] {
+    const normalized = toolName.toLowerCase();
+    const rawPaths = normalized === "applypatch" || normalized === "apply_patch"
+      ? extractApplyPatchPaths(input)
+      : [firstString(input.file_path, input.path)].filter((value): value is string => value !== null);
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    return normalizeFilePath(cwd ? path.resolve(cwd, raw) : path.resolve(raw));
+    return [...new Set(rawPaths.map((raw) => normalizeFilePath(
+      path.isAbsolute(raw) ? raw : cwd ? path.resolve(cwd, raw) : path.resolve(raw),
+    )))];
   }
 
   private async handleChatAction(msg: PendingEditActionMessage): Promise<void> {
@@ -580,7 +593,7 @@ export class PendingEditManager implements vscode.Disposable, vscode.CodeLensPro
     const picked = await vscode.window.showQuickPick(
       changes.map((change) => ({
         label: change.shortPath,
-        description: change.action === "create" ? "new file" : `${formatStats(change.stats)}`,
+        description: change.action === "create" ? "new file" : change.action === "delete" ? "deleted file" : `${formatStats(change.stats)}`,
         changeId: change.id,
       })),
       { title: "CrabCode：选择要查看的文件 diff" },
@@ -739,6 +752,21 @@ export class PendingEditManager implements vscode.Disposable, vscode.CodeLensPro
 
     const current = await readTextFile(change.filePath);
     if (!current.exists) {
+      if (!change.afterExists && hunk.newLineCount === 0) {
+        const eol = detectEol(change.beforeContent);
+        const lines = splitLines(change.afterContent);
+        const start = Math.min(Math.max(hunk.newStartLine - 1, 0), lines.length);
+        lines.splice(start, 0, ...hunk.oldLines);
+        const nextContent = joinLines(lines, eol, hasFinalNewline(change.beforeContent));
+        await writeTextFile(change.filePath, nextContent);
+        change.afterExists = true;
+        change.afterContent = nextContent;
+        this.recomputeChange(change);
+        this.updatePresentation();
+        await this.revealChange(change, true);
+        vscode.window.setStatusBarMessage(`CrabCode：已撤销 ${change.shortPath} 的 block`, 3000);
+        return;
+      }
       vscode.window.showWarningMessage(`CrabCode：无法撤销，文件不存在：${change.shortPath}`);
       return;
     }
@@ -756,6 +784,7 @@ export class PendingEditManager implements vscode.Disposable, vscode.CodeLensPro
     lines.splice(start, hunk.newLineCount, ...hunk.oldLines);
     const nextContent = joinLines(lines, eol, hasFinalNewline(current.content));
     await writeTextFile(change.filePath, nextContent);
+    change.afterExists = true;
     change.afterContent = nextContent;
     this.recomputeChange(change);
     this.updatePresentation();
@@ -778,7 +807,11 @@ export class PendingEditManager implements vscode.Disposable, vscode.CodeLensPro
     change.beforeContent = applyHunkToBase(change.beforeContent, hunk, change.afterContent);
     const current = await readTextFile(change.filePath);
     if (current.exists) {
+      change.afterExists = true;
       change.afterContent = current.content;
+    } else {
+      change.afterExists = false;
+      change.afterContent = "";
     }
     this.recomputeChange(change);
     this.updatePresentation();
@@ -788,10 +821,7 @@ export class PendingEditManager implements vscode.Disposable, vscode.CodeLensPro
   private async confirmIfDrifted(change: PendingChange, verb: string): Promise<boolean> {
     const current = await readTextFile(change.filePath);
     const currentContent = current.exists ? current.content : "";
-    if (current.exists === true && currentContent === change.afterContent) {
-      return true;
-    }
-    if (!current.exists && !change.beforeExists) {
+    if (current.exists === change.afterExists && currentContent === change.afterContent) {
       return true;
     }
     const choice = await vscode.window.showWarningMessage(
@@ -813,8 +843,12 @@ export class PendingEditManager implements vscode.Disposable, vscode.CodeLensPro
       this.removeChange(change.id, false);
       return;
     }
-    if (!change.beforeExists) {
+    if (!change.afterExists) {
+      change.action = "delete";
+    } else if (!change.beforeExists) {
       change.action = "create";
+    } else {
+      change.action = "modify";
     }
     this.changes.set(change.id, change);
     this.changeByPath.set(filePathKey(change.filePath), change.id);
@@ -955,6 +989,10 @@ export class PendingEditManager implements vscode.Disposable, vscode.CodeLensPro
   }
 
   private async revealChange(change: PendingChange, preserveFocus = false): Promise<void> {
+    if (!change.afterExists) {
+      await this.reviewFileNative(change.id);
+      return;
+    }
     if (change.hunks.length === 0) {
       await this.revealFile(change.filePath, preserveFocus);
       return;
@@ -1492,9 +1530,30 @@ export class PendingEditManager implements vscode.Disposable, vscode.CodeLensPro
   }
 }
 
-function isEditOrWriteTool(toolName: string): boolean {
+function isTrackedFileTool(toolName: string): boolean {
   const normalized = toolName.toLowerCase();
-  return normalized === "edit" || normalized === "write";
+  return normalized === "edit"
+    || normalized === "write"
+    || normalized === "applypatch"
+    || normalized === "apply_patch";
+}
+
+function extractApplyPatchPaths(input: Record<string, unknown>): string[] {
+  const provided = input.affected_paths;
+  if (Array.isArray(provided)) {
+    return provided.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  }
+  const patchText = typeof input.patch === "string" ? input.patch : "";
+  const paths: string[] = [];
+  for (const line of patchText.split(/\r?\n/)) {
+    const match = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/)
+      ?? line.match(/^\*\*\* Move to: (.+)$/);
+    const candidate = match?.[1]?.trim();
+    if (candidate && !paths.includes(candidate)) {
+      paths.push(candidate);
+    }
+  }
+  return paths;
 }
 
 function firstString(...values: unknown[]): string | null {

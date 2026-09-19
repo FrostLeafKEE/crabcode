@@ -290,7 +290,7 @@ export interface PendingEditFileSummary {
   id: string;
   path: string;
   shortPath: string;
-  action: "create" | "modify";
+  action: "create" | "modify" | "delete";
   added: number;
   removed: number;
   hunkCount: number;
@@ -4096,6 +4096,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       state.history.push({ kind: "tool", card });
       if (updateWebview) this.postMessage({ type: "toolUse", card });
     }
+    card.input = payload.tool_input ?? card.input;
     card.result = payload.result_for_display ?? payload.result;
     card.isError = payload.is_error ?? false;
     card.images = payload.images ?? [];
@@ -7884,6 +7885,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     const TOOL_PRESENTATIONS = {
       read: ['file', '读取文件', 'R'], fileread: ['file', '读取文件', 'R'],
       edit: ['file', '编辑文件', 'E'], fileedit: ['file', '编辑文件', 'E'],
+      apply_patch: ['file', '应用补丁', '±'],
       write: ['file', '写入文件', 'W'], filewrite: ['file', '写入文件', 'W'],
       bash: ['terminal', '运行命令', '>_'], lint: ['terminal', '检查诊断', '!'],
       grep: ['search', '搜索内容', 'G'], glob: ['search', '查找文件', '*'],
@@ -7912,7 +7914,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       reference_image_paths: '参考图片',
       action: '操作', file_path: '文件', path: '路径', target_file: '文件', target_directory: '目录', cwd: '工作目录', program: '程序',
       command: '命令', timeout: '超时', timeout_seconds: '超时', offset: '起始行', limit: '行数', old_string: '替换前', new_string: '替换后',
-      content: '内容', replace_all: '全部替换', pattern: '匹配模式', glob: '文件过滤', query: '查询', num_results: '结果数', mime_type: 'MIME 类型', mimeType: 'MIME 类型',
+      content: '内容', patch: '补丁', affected_paths: '影响文件', replace_all: '全部替换', pattern: '匹配模式', glob: '文件过滤', query: '查询', num_results: '结果数', mime_type: 'MIME 类型', mimeType: 'MIME 类型',
       case_insensitive: '忽略大小写', url: '网址', selector: '选择器', script: '脚本', text: '消息', prompt: '任务', description: '说明',
       objective: '目标', token_budget: 'Token 预算', status: '状态', target_mode: '目标模式', explanation: '原因', plan: '执行计划',
       session_id: 'Session', agent_id: 'Agent', agent_ids: 'Agents', task_id: '任务 ID', team_id: 'Team', to: '接收方', role: '角色',
@@ -7933,7 +7935,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     };
 
     const TOOL_FIELD_ORDER = {
-      file: ['file_path', 'path', 'target_file', 'offset', 'limit', 'replace_all', 'old_string', 'new_string', 'content'],
+      file: ['affected_paths', 'file_path', 'path', 'target_file', 'offset', 'limit', 'replace_all', 'old_string', 'new_string', 'patch', 'content'],
       terminal: ['command', 'paths', 'linter', 'file_path', 'path', 'language', 'timeout'],
       search: ['query', 'pattern', 'path', 'target_directory', 'glob', 'num_results', 'case_insensitive'],
       web: ['action', 'url', 'selector', 'text', 'script', 'path', 'session_id', 'tab_id', 'headless', 'wait_until', 'return_format', 'timeout_seconds', 'options'],
@@ -7979,7 +7981,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       const rawAction = typeof input.action === 'string' ? input.action : '';
       const action = rawAction ? (TOOL_ACTION_LABELS[rawAction.toLowerCase()] || rawAction) : '';
       const summaryKeys = {
-        file: ['file_path', 'path', 'target_file'], terminal: ['command', 'paths', 'linter', 'file_path', 'path'], search: ['query', 'pattern', 'glob'],
+        file: ['affected_paths', 'file_path', 'path', 'target_file', 'patch'], terminal: ['command', 'paths', 'linter', 'file_path', 'path'], search: ['query', 'pattern', 'glob'],
         web: ['url', 'selector', 'text', 'path'], image: ['prompt', 'path', 'mime_type', 'mimeType'], debug: ['program', 'pid', 'path', 'expression', 'session_id'], memory: ['title', 'query', 'content'],
         task: ['description', 'command', 'task_id'], agent: ['description', 'name', 'prompt', 'agent_id', 'agent_ids'], message: ['to', 'text', 'question'],
         checkpoint: ['label', 'checkpoint_id'], checklist: ['title', 'checklist_id', 'item'], goal: ['objective', 'status'], mode: ['target_mode', 'explanation'],
@@ -7997,7 +7999,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         if (Array.isArray(value) && value.every(item => ['string', 'number', 'boolean'].includes(typeof item))) variant = 'list';
         else if (value !== null && typeof value === 'object') variant = 'json';
         else if (['file_path', 'path', 'target_file', 'target_directory', 'cwd', 'program', 'output_path', 'module_path'].includes(key)) variant = 'path';
-        else if (['command', 'script', 'old_string', 'new_string', 'content', 'pattern', 'expression'].includes(key)) variant = 'code';
+        else if (['command', 'script', 'old_string', 'new_string', 'patch', 'content', 'pattern', 'expression'].includes(key)) variant = 'code';
         return { key, label: TOOL_FIELD_LABELS[key] || key.replaceAll('_', ' '), value: toolValue(value), variant };
       });
       return { kind, label: definition[1], glyph: definition[2], action, summary: [action, summaryValue].filter(Boolean).join(' · '), fields };
@@ -8753,7 +8755,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         const stats = '<span>+' + escapeHtml(String(file.added || 0)) + '</span> ' +
           '<span class="removed">-' + escapeHtml(String(file.removed || 0)) + '</span>';
         return '<div class="pending-edit-row">' +
-          '<span class="pending-edit-icon">' + (file.action === 'create' ? '+' : '↔') + '</span>' +
+          '<span class="pending-edit-icon">' + (file.action === 'create' ? '+' : file.action === 'delete' ? '−' : '↔') + '</span>' +
           '<button type="button" class="pending-edit-name" data-pending-action="reviewFile" data-change-id="' + escapeAttr(file.id) + '" title="' + escapeAttr(file.path) + '">' + escapeHtml(file.shortPath || file.path) + '</button>' +
           '<span class="pending-edit-stats">' + stats + '</span>' +
           '<span class="pending-edit-actions">' +

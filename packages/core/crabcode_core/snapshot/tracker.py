@@ -1,6 +1,6 @@
 """Lightweight snapshot tracker — bridges tools and SnapshotManager.
 
-Provides module-level convenience functions so that tools (Edit, Write, Bash)
+Provides module-level convenience functions so that tools (apply_patch, Edit, Write, Bash)
 can record file changes without managing a SnapshotManager instance themselves.
 """
 
@@ -109,7 +109,7 @@ class SnapshotInfo:
     timestamp: float
     tool_name: str
     files: list[str] = field(default_factory=list)
-    action: str = ""  # "modify" | "create" | "delete" | "bash"
+    action: str = ""  # "modify" | "create" | "delete" | "patch" | "bash"
 
 
 def _session_log_path(cwd: str, session_id: str) -> Path:
@@ -173,6 +173,8 @@ def pre_bash_snapshot(
     *,
     enabled: bool = True,
     max_size_mb: int = 1024,
+    tool_name: str = "Bash",
+    action: str = "bash",
 ) -> str | None:
     """Create a full working-directory snapshot before a bash command.
 
@@ -191,9 +193,9 @@ def pre_bash_snapshot(
                 "snapshot_id": snap_id,
                 "session_id": session_id,
                 "timestamp": time.time(),
-                "tool_name": "Bash",
+                "tool_name": tool_name,
                 "files": [],
-                "action": "bash",
+                "action": action,
             })
         return snap_id
     except Exception:

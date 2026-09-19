@@ -57,7 +57,7 @@ def to_tool_kind(tool_name: str) -> str:
         return "execute"
     if tool == "web_search":
         return "fetch"
-    if tool in ("edit", "patch", "file_edit", "file_write", "write"):
+    if tool in ("applypatch", "apply_patch", "edit", "patch", "file_edit", "file_write", "write"):
         return "edit"
     if tool in ("grep", "glob"):
         return "search"
@@ -76,6 +76,14 @@ def to_locations(tool_name: str, tool_input: dict[str, Any]) -> list[dict[str, s
     if tool in ("read", "file_read", "edit", "file_edit", "write", "file_write"):
         path = tool_input.get("filePath") or tool_input.get("file_path") or ""
         return [{"path": path}] if path else []
+    if tool in ("applypatch", "apply_patch", "patch"):
+        try:
+            from crabcode_core.tools.apply_patch import patch_paths
+
+            paths = tool_input.get("affected_paths") or patch_paths(str(tool_input.get("patch") or ""))
+        except (TypeError, ValueError):
+            paths = []
+        return [{"path": path} for path in paths if isinstance(path, str) and path]
     if tool in ("glob", "grep"):
         path = tool_input.get("path") or ""
         return [{"path": path}] if path else []

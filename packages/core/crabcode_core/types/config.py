@@ -141,6 +141,7 @@ class DisplaySettings(BaseModel):
     _TOOL_DEFAULTS: dict[str, int] = {
         "Agent": 120,
         "Bash": 60,
+        "apply_patch": 120,
         "Grep": 50,
         "Glob": 30,
         "Read": 80,
@@ -254,7 +255,7 @@ class CrabCodeSettings(BaseModel):
         default=DEFAULT_FILESYSTEM_TIMEOUT,
         gt=0,
         allow_inf_nan=False,
-        description="Default timeout in seconds for Read, Write, Edit, Glob, Grep, and Bash; null disables it.",
+        description="Default timeout in seconds for Read, apply_patch, Write, Edit, Glob, Grep, and Bash; null disables it.",
     )
     tool_settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
     agent: AgentSettings = Field(default_factory=AgentSettings)

@@ -730,6 +730,7 @@ group) is protected until you switch away from it.
 | ------ | ------ | ------------- |
 | `Bash` | write | Execute shell commands |
 | `Read` | read | Read file contents |
+| `apply_patch` | write | Apply a validated, transactional multi-file patch |
 | `Write` | write | Create or overwrite files |
 | `StrReplace` | write | Precise in-place text replacement |
 | `Glob` | read | Find files by glob pattern |
@@ -739,6 +740,13 @@ group) is protected until you switch away from it.
 | `Lint` | read | Run linters and type-checkers |
 | `Memory` | write | Store and retrieve persistent notes |
 | `AskUser` | read | Present choices to the user and wait for selection |
+
+For shell-level discovery, CrabCode reports whether `rg`, `sed`, and `find` are
+available in the runtime environment. The agent prefers dedicated tools for
+ordinary reads and searches, while using read-only `sed -n` pipelines and
+advanced `find` predicates when they are a better fit. File mutation stays in
+`apply_patch`, `Edit`, or `Write`, so changes retain permission checks, snapshots,
+and diff rendering.
 
 ### Lint
 
@@ -971,7 +979,7 @@ Default permission behavior:
 
 ### Diff Display
 
-When the agent edits a file via `StrReplace` or `Write`, the terminal shows a compact inline diff:
+When the agent edits files via `apply_patch`, `Edit`, or `Write`, the terminal shows an inline diff. Multi-file patches are grouped by file:
 
 ```
   ✎ src/auth.py  lines 42–55  (+8 / -3)
@@ -986,7 +994,7 @@ CrabCode automatically tracks file-system changes made during a session, allowin
 **How it works:**
 
 1. Every time you create a checkpoint (`/checkpoint`), CrabCode takes a snapshot of the working directory state using git internals (or file-copy fallback for non-git projects).
-2. Tools that modify files (`Edit`, `Write`, `Bash`) also record per-file snapshots before each change.
+2. Tools that modify files (`apply_patch`, `Edit`, `Write`, `Bash`) also record per-file snapshots before each change.
 3. You can revert to any checkpoint to restore both the conversation **and** the files to that point.
 
 **Commands:**
@@ -1275,7 +1283,7 @@ By default, CrabCode does not apply a global timeout to tool calls. Set the top-
 
 Omit `tool_call_timeout` or set it to `null` to disable the global limit. Filesystem and tool-specific timeouts, such as `filesystem_timeout`, `Bash.timeout`, or `agent.timeout`, still apply independently and may be shorter.
 
-The shared filesystem tool timeout defaults to **3600 seconds** for Read, Write, Edit, Glob, Grep, and Bash. Set the top-level `filesystem_timeout` field in `~/.crabcode/settings.json` or the project's `.crabcode/settings.json` to change it:
+The shared filesystem tool timeout defaults to **3600 seconds** for Read, apply_patch, Write, Edit, Glob, Grep, and Bash. Set the top-level `filesystem_timeout` field in `~/.crabcode/settings.json` or the project's `.crabcode/settings.json` to change it:
 
 ```json
 {
@@ -2010,7 +2018,7 @@ crabcode/
 │   │   ├── types/              # Pydantic types (Message, Tool, Event, Config)
 │   │   ├── api/                # API adapters (Anthropic, OpenAI, Router)
 │   │   ├── query/              # Agentic turn loop
-│   │   ├── tools/              # Built-in tools (Bash, Read, Edit, Write, Grep, Glob, WebSearch, Lint, Memory, AskUser, Team)
+│   │   ├── tools/              # Built-in tools (Bash, Read, apply_patch, Edit, Write, Grep, Glob, WebSearch, Lint, Memory, AskUser, Team)
 │   │   ├── team/               # Agent Teams (models, message bus, manager, inbox, recovery, bridge)
 │   │   ├── lsp/                # LSP client integration (LSPClient, LSPManager, diagnostics formatting, server registry)
 │   │   ├── skills/             # Skill loading + auto-trigger matching (SkillDefinition, load_skills, auto_match)

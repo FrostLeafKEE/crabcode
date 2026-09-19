@@ -44,6 +44,7 @@ DEFAULT_AGENT_PROMPT = (
 TOOL_NAMES = {
     "bash": "Bash",
     "file_read": "Read",
+    "apply_patch": "apply_patch",
     "file_edit": "Edit",
     "file_write": "Write",
     "glob": "Glob",

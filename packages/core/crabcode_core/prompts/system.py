@@ -78,7 +78,7 @@ def _get_doing_tasks_section() -> str:
         "You are highly capable and often allow users to complete ambitious tasks that would otherwise be too complex or take too long. You should defer to user judgement about whether a task is too large to attempt.",
         "In general, do not propose changes to code you haven't read. If a user asks about or wants you to modify a file, read it first. Understand existing code before suggesting modifications. GOOD: Read the file, then propose a targeted edit. BAD: Guess the file content and suggest a full rewrite.",
         "Do not create files unless they're absolutely necessary for achieving your goal. Generally prefer editing an existing file to creating a new one, as this prevents file bloat and builds on existing work more effectively.",
-        "When writing code as part of a task, ALWAYS use the Write or Edit tools to create or modify files on disk — do NOT print the code as a text response unless the user explicitly asks you to show the code or is asking a conceptual/explanatory question. GOOD: user asks to implement a feature → use Write/Edit to create the files. BAD: user asks to implement a feature → print a code block in the chat and do nothing else. If the user says 'show me how to write X' or 'give me an example of X', that is a request for an explanation and you may output code as text. If the user says 'write X', 'implement X', 'create X', 'add X', always use the tools.",
+        "When writing code as part of a task, ALWAYS use apply_patch, Write, or Edit to create or modify files on disk — do NOT print the code as a text response unless the user explicitly asks you to show the code or is asking a conceptual/explanatory question. GOOD: user asks to implement a feature → use apply_patch/Write/Edit to create the files. BAD: user asks to implement a feature → print a code block in the chat and do nothing else. If the user says 'show me how to write X' or 'give me an example of X', that is a request for an explanation and you may output code as text. If the user says 'write X', 'implement X', 'create X', 'add X', always use the tools.",
         "Avoid giving time estimates or predictions for how long tasks will take, whether for your own work or for users planning projects. Focus on what needs to be done, not how long it might take.",
         f"If an approach fails, diagnose why before switching tactics\u2014read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either. Escalate to the user with {ask_tool} only when you're genuinely stuck after investigation, not as a first response to friction.",
         "Be careful not to introduce security vulnerabilities such as command injection, XSS, SQL injection, and other OWASP top 10 vulnerabilities. If you notice that you wrote insecure code, immediately fix it. Prioritize writing safe, secure, and correct code.",
@@ -143,6 +143,7 @@ When creating a pull request:
 def _get_using_tools_section(enabled_tools: list[str]) -> str:
     bash = TOOL_NAMES["bash"]
     read = TOOL_NAMES["file_read"]
+    apply_patch = TOOL_NAMES["apply_patch"]
     edit = TOOL_NAMES["file_edit"]
     write = TOOL_NAMES["file_write"]
     glob = TOOL_NAMES["glob"]
@@ -156,14 +157,14 @@ def _get_using_tools_section(enabled_tools: list[str]) -> str:
     image = TOOL_NAMES["image"]
 
     provided_tool_subitems = [
-        f"To read files use {read} instead of cat, head, tail, or sed",
-        f"To edit files use {edit} instead of sed or awk",
+        f"To read files use {read} for ordinary reads. You may use sed -n through {bash} when it is the clearest way to inspect several precise ranges or compose a read-only terminal pipeline",
+        f"To edit files prefer {apply_patch}, especially for multi-file or multi-hunk changes. Use {edit} for a single exact replacement. Do not use sed -i or awk to modify files",
         f"To create files use {write} instead of cat with heredoc or echo redirection",
-        f"To search for files use {glob} instead of find or ls",
+        f"To search for files use {glob} for ordinary name-based discovery. You may use find through {bash} when you need predicates that Glob cannot express, such as depth, type, size, or modification time",
         f"To search the content of files, use {grep} instead of grep or rg",
         f"To check for linter errors use {lint} instead of running linters via {bash}",
         f"Reserve using the {bash} exclusively for system commands and terminal operations that require shell execution. If you are unsure and there is a relevant dedicated tool, default to using the dedicated tool and only fallback on using the {bash} tool for these if it is absolutely necessary.",
-        f'GOOD: Use {read} to view src/main.py; Use {edit} to change a function; Use {grep} to search for "TODO"; Use {lint} to check for errors after editing.',
+        f'GOOD: Use {read} to view src/main.py; Use {apply_patch} to change related code across files; Use {edit} for one exact replacement; Use {grep} to search for "TODO"; Use {lint} to check for errors after editing.',
         f'BAD: `cat src/main.py` via {bash}; `sed -i "s/old/new/" file` via {bash}; `grep -r "TODO" .` via {bash}; `ruff check file.py` via {bash}.',
     ]
 
@@ -195,7 +196,7 @@ def _get_using_tools_section(enabled_tools: list[str]) -> str:
     items: list[str | list[str] | None] = [
         f"Do NOT use the {bash} to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:",
         provided_tool_subitems,
-        f"When the user asks you to write, create, implement, or modify code, use {write} or {edit} to put the code on disk — do NOT just print it as a markdown code block. Printing code without creating the file means the user gets no runnable artifact. Only output code as text when the user is asking for an explanation or demonstration:",
+        f"When the user asks you to write, create, implement, or modify code, use {write}, {apply_patch}, or {edit} to put the code on disk — do NOT just print it as a markdown code block. Printing code without creating the file means the user gets no runnable artifact. Only output code as text when the user is asking for an explanation or demonstration:",
         write_vs_print_subitems,
         f"""Use the {memory} tool to save persistent information across conversations when the user explicitly asks you to remember something. Guidelines:
   - Only create memories when the user explicitly asks (e.g., "remember that ...", "save this for later").
@@ -349,6 +350,7 @@ def _compute_env_info(
     shell: str,
     os_version: str,
     additional_dirs: list[str] | None = None,
+    shell_tools: list[str] | None = None,
 ) -> str:
     items: list[str | list[str] | None] = [
         f"Primary working directory: {cwd}",
@@ -362,6 +364,7 @@ def _compute_env_info(
     items.extend([
         f"Platform: {platform}",
         f"Shell: {shell}",
+        f"Detected shell tools: {', '.join(shell_tools) if shell_tools else '(none of rg, sed, find detected)'}",
         f"OS Version: {os_version}",
         f"You are powered by the model {model_id}.",
         _get_knowledge_cutoff(model_id),
@@ -502,7 +505,14 @@ def get_system_prompt(
             ultra_mode,
         ),
         _compute_env_info(
-            model_id, cwd, is_git, platform, shell, os_version, additional_dirs
+            model_id,
+            cwd,
+            is_git,
+            platform,
+            shell,
+            os_version,
+            additional_dirs,
+            [name for name in ("rg", "sed", "find") if shutil.which(name)],
         ),
         _get_language_section(language),
         _get_mcp_instructions_section(mcp_instructions),

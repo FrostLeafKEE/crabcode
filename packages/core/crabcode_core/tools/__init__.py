@@ -12,6 +12,7 @@ def get_default_tools() -> list[Tool]:
         AgentWaitTool,
     )
     from crabcode_core.tools.ask_user import AskUserTool
+    from crabcode_core.tools.apply_patch import ApplyPatchTool
     from crabcode_core.tools.checklist import ChecklistTool
     from crabcode_core.tools.checkpoint import CheckpointTool
     from crabcode_core.tools.bash import BashTool
@@ -57,6 +58,7 @@ def get_default_tools() -> list[Tool]:
     return [
         BashTool(),
         FileReadTool(),
+        ApplyPatchTool(),
         FileEditTool(),
         FileWriteTool(),
         GrepTool(),

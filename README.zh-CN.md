@@ -710,6 +710,7 @@ crabcode --model-profile smart    # 简写：-M smart
 | ------ | ------ | ------ |
 | `Bash` | 写 | 执行 shell 命令 |
 | `Read` | 读 | 读取文件内容 |
+| `apply_patch` | 写 | 以事务方式应用经过校验的跨文件补丁 |
 | `Write` | 写 | 创建或覆盖文件 |
 | `StrReplace` | 写 | 精确的原地文本替换 |
 | `Glob` | 读 | 按 glob 模式查找文件 |
@@ -719,6 +720,12 @@ crabcode --model-profile smart    # 简写：-M smart
 | `Lint` | 读 | 运行代码检查器和类型检查器 |
 | `Memory` | 写 | 存储和读取持久化笔记 |
 | `AskUser` | 读 | 向用户展示选项并等待选择 |
+
+对于 shell 层面的查找，CrabCode 会在运行环境中检测并报告 `rg`、`sed` 和
+`find` 是否可用。普通读取和搜索仍优先使用专用工具；遇到精确范围读取或
+Glob 无法表达的深度、类型、大小、修改时间等条件时，agent 可以使用只读的
+`sed -n` 管道和高级 `find` 谓词。文件修改仍通过 `apply_patch`、`Edit` 或
+`Write` 完成，以保留权限检查、快照和 diff 展示。
 
 ### Lint（代码检查）
 
@@ -948,7 +955,7 @@ CrabCode 集成了 **Language Server Protocol (LSP)** 服务器，为 AI agent �
 
 ### Diff 显示
 
-通过 `StrReplace` 或 `Write` 修改文件时，终端会展示精简的内联 diff：
+通过 `apply_patch`、`Edit` 或 `Write` 修改文件时，终端会展示内联 diff；多文件补丁会按文件分组：
 
 ```
   ✎ src/auth.py  lines 42–55  (+8 / -3)
@@ -963,7 +970,7 @@ CrabCode 会自动追踪会话期间的文件变更，让你可以**撤销**代�
 **工作原理：**
 
 1. 每次创建检查点（`/checkpoint`），CrabCode 会使用 git 内部机制（或非 git 项目的文件拷贝备份）对工作目录做一次快照。
-2. 修改文件的工具（`Edit`、`Write`、`Bash`）在每次变更前也会记录单文件快照。
+2. 修改文件的工具（`apply_patch`、`Edit`、`Write`、`Bash`）在每次变更前也会记录单文件快照。
 3. 你可以回退到任意检查点，同时恢复对话**和**文件到该时刻的状态。
 
 **命令：**
@@ -1247,7 +1254,7 @@ VS Code 扩展默认使用“跟随配置”（`crabcode.permissionMode: "defaul
 
 省略 `tool_call_timeout` 或设为 `null` 时，工具调用不会因为全局配置而超时。文件系统及工具自身的超时配置（例如 `filesystem_timeout`、`Bash.timeout` 或 `agent.timeout`）仍会独立生效，并且可能更短。
 
-Read、Write、Edit、Glob、Grep 和 Bash 共用的文件系统工具超时默认为 **3600 秒**。可以在 `~/.crabcode/settings.json` 或项目的 `.crabcode/settings.json` 中设置顶层 `filesystem_timeout` 字段：
+Read、apply_patch、Write、Edit、Glob、Grep 和 Bash 共用的文件系统工具超时默认为 **3600 秒**。可以在 `~/.crabcode/settings.json` 或项目的 `.crabcode/settings.json` 中设置顶层 `filesystem_timeout` 字段：
 
 ```json
 {
@@ -1959,7 +1966,7 @@ crabcode/
 │   │   ├── types/              # Pydantic 类型定义（Message、Tool、Event、Config）
 │   │   ├── api/                # API 适配器（Anthropic、OpenAI、Router）
 │   │   ├── query/              # Agent 对话循环
-│   │   ├── tools/              # 内置工具（Bash、Read、Edit、Write、Grep、Glob、WebSearch、Lint、Memory、AskUser、Team）
+│   │   ├── tools/              # 内置工具（Bash、Read、apply_patch、Edit、Write、Grep、Glob、WebSearch、Lint、Memory、AskUser、Team）
 │   │   ├── team/               # Agent Teams（数据模型、消息总线、管理器、收件箱、崩溃恢复、跨团队桥接）
 │   │   ├── lsp/                # LSP 客户端集成（LSPClient、LSPManager、诊断格式化、服务器注册表）
 │   │   ├── skills/             # Skill 加载 + 自动触发匹配（SkillDefinition、load_skills、auto_match）

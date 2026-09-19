@@ -68,6 +68,26 @@ describe("Gateway event reducer", () => {
     });
   });
 
+  it("uses normalized tool input returned with the result", () => {
+    let current = applyGatewayEvent(state(), {
+      type: "tool_use",
+      tool_name: "apply_patch",
+      tool_use_id: "patch-1",
+      tool_input: { patch: "*** Begin Patch" },
+    });
+    current = applyGatewayEvent(current, {
+      type: "tool_result",
+      tool_name: "apply_patch",
+      tool_use_id: "patch-1",
+      tool_input: { patch: "*** Begin Patch", affected_paths: ["src/a.ts", "src/b.ts"] },
+      result: "Applied patch",
+    });
+    expect(current.items[0].input).toEqual({
+      patch: "*** Begin Patch",
+      affected_paths: ["src/a.ts", "src/b.ts"],
+    });
+  });
+
   it("shows tool result image attachments immediately", () => {
     const current = applyGatewayEvent(state(), {
       type: "tool_result",

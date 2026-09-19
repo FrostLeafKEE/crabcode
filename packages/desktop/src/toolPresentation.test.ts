@@ -19,6 +19,15 @@ describe("tool card presentations", () => {
     expect(card.fields[0]).toMatchObject({ label: "target", value: "demo" });
   });
 
+  it("presents ApplyPatch as a file edit with affected paths", () => {
+    const card = getToolPresentation("apply_patch", {
+      affected_paths: ["src/a.ts", "src/b.ts"],
+      patch: "*** Begin Patch\n*** End Patch",
+    });
+    expect(card).toMatchObject({ kind: "file", label: "应用补丁", summary: "src/a.ts · src/b.ts" });
+    expect(card.fields[0]).toMatchObject({ key: "affected_paths", label: "影响文件" });
+  });
+
   it("parses checklist output into progress cards", () => {
     expect(parseChecklistResult("Checklist created:\n  📋 Release\n  ✅ 1. Build\n  ◻ 2. Ship\n  (1/2 completed)"))
       .toEqual([{ title: "Release", items: [{ text: "Build", checked: true }, { text: "Ship", checked: false }], done: 1, total: 2 }]);

@@ -1097,6 +1097,26 @@ def _tool_summary(name: str, inp: dict) -> str:
         if len(lines) > 3:
             return "\n".join(lines[:3]) + "\n…"
         return cmd
+    if name in ("apply_patch", "ApplyPatch"):
+        paths = inp.get("affected_paths")
+        if not isinstance(paths, list):
+            paths = []
+            for line in str(inp.get("patch", "")).splitlines():
+                for prefix in (
+                    "*** Add File: ",
+                    "*** Update File: ",
+                    "*** Delete File: ",
+                    "*** Move to: ",
+                ):
+                    if line.startswith(prefix):
+                        paths.append(line.removeprefix(prefix).strip())
+                        break
+        unique_paths = list(dict.fromkeys(str(path) for path in paths if path))
+        if not unique_paths:
+            return "Apply structured patch"
+        preview = ", ".join(unique_paths[:4])
+        suffix = f" (+{len(unique_paths) - 4} more)" if len(unique_paths) > 4 else ""
+        return f"{len(unique_paths)} file{'s' if len(unique_paths) != 1 else ''}: {preview}{suffix}"
     if name in ("Write", "Edit", "Read"):
         return inp.get("file_path", inp.get("path", ""))
     if name == "Grep":
@@ -1228,7 +1248,7 @@ def _render_tool_result(event: ToolResultEvent) -> None:
     """Render a tool result."""
     display = event.result_for_display or event.result
 
-    if event.tool_name in ("Edit", "Write") and not event.is_error and "\n@@" in display:
+    if event.tool_name in ("apply_patch", "ApplyPatch", "Edit", "Write") and not event.is_error and "\n@@" in display:
         _render_diff_result(event.tool_name, display)
         return
 

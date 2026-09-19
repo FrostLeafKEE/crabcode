@@ -48,7 +48,7 @@ class BashTool(Tool):
         return (
             "Execute a command in the active platform shell. Use for system commands, "
             "running scripts, git operations, and other terminal tasks. "
-            "Prefer dedicated tools (Read, Edit, Write, Glob, Grep) over "
+            "Prefer dedicated tools (Read, apply_patch, Edit, Write, Glob, Grep) over "
             "bash when they can accomplish the task.\n\n"
             "Commands run in an explicit Bash-compatible shell on Unix and "
             "PowerShell on Windows, with the user's environment. "

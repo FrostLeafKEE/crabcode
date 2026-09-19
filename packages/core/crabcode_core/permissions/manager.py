@@ -78,18 +78,18 @@ class PermissionManager:
                 )
 
         for rule in self.settings.deny:
-            if self._matches_rule(rule, tool, tool_input):
+            if self._matches_rule(rule, tool, tool_input, require_all_paths=False):
                 return PermissionResult(
                     behavior=PermissionBehavior.DENY,
                     reason=f"Denied by rule: {rule.tool}",
                 )
 
         for rule in self.settings.allow:
-            if self._matches_rule(rule, tool, tool_input):
+            if self._matches_rule(rule, tool, tool_input, require_all_paths=True):
                 return PermissionResult(behavior=PermissionBehavior.ALLOW)
 
         for rule in self.settings.ask:
-            if self._matches_rule(rule, tool, tool_input):
+            if self._matches_rule(rule, tool, tool_input, require_all_paths=False):
                 return PermissionResult(
                     behavior=PermissionBehavior.ASK,
                     reason=f"Requires confirmation: {rule.tool}",
@@ -131,7 +131,7 @@ class PermissionManager:
         if key in self._runtime_allow_keys:
             return True
         for rule in self.settings.allow:
-            if self._matches_rule(rule, tool, tool_input):
+            if self._matches_rule(rule, tool, tool_input, require_all_paths=True):
                 return True
         return False
 
@@ -140,6 +140,8 @@ class PermissionManager:
         rule: PermissionRule,
         tool: Tool,
         tool_input: dict[str, Any],
+        *,
+        require_all_paths: bool = False,
     ) -> bool:
         # Command-backed Monitor calls intentionally share Bash permission
         # rules. WebSocket monitors remain a separate Monitor approval.
@@ -152,9 +154,19 @@ class PermissionManager:
             return False
 
         if rule.path:
-            file_path = tool_input.get("file_path", "") or tool_input.get("path", "")
-            if file_path and not fnmatch.fnmatch(file_path, rule.path):
-                return False
+            affected_paths = tool_input.get("affected_paths")
+            if isinstance(affected_paths, list):
+                paths = [path for path in affected_paths if isinstance(path, str) and path]
+            else:
+                file_path = tool_input.get("file_path", "") or tool_input.get("path", "")
+                paths = [file_path] if file_path else []
+            if paths:
+                matches = [fnmatch.fnmatch(path, rule.path) for path in paths]
+                if require_all_paths:
+                    if not all(matches):
+                        return False
+                elif not any(matches):
+                    return False
 
         if rule.command:
             command = tool_input.get("command", "")

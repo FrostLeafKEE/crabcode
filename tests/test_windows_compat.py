@@ -40,6 +40,14 @@ from crabcode_core.types.tool import ToolContext
 
 
 class WindowsCompatibilityTests(unittest.TestCase):
+    def test_system_prompt_reports_detected_shell_tools(self) -> None:
+        with patch(
+            "shutil.which",
+            side_effect=lambda name: f"/tools/{name}" if name in {"rg", "sed", "find"} else None,
+        ):
+            prompt = "\n".join(get_system_prompt([], "test-model", shell="test-shell"))
+        self.assertIn("Detected shell tools: rg, sed, find", prompt)
+
     @unittest.skipUnless(os.name == "nt", "Windows compatibility test")
     def test_lsp_file_uri_round_trips_drive_and_unc_paths(self) -> None:
         self.assertEqual(_uri_to_path("file:///C:/Users/demo/a.py"), r"C:\Users\demo\a.py")

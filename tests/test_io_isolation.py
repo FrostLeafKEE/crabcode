@@ -28,6 +28,7 @@ from crabcode_core.tools.file_edit import FileEditTool
 from crabcode_core.tools.glob import GlobTool
 from crabcode_core.tools.grep import GrepTool
 from crabcode_core.tools.bash import BashTool
+from crabcode_core.tools.apply_patch import ApplyPatchTool
 from crabcode_core.types.config import CrabCodeSettings
 from crabcode_core.types.tool import ToolContext
 
@@ -90,7 +91,7 @@ class FileIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def test_file_tools_share_default_and_configured_timeouts(self):
         for settings in (CrabCodeSettings(), CrabCodeSettings(filesystem_timeout=7200)):
             context = ToolContext(filesystem_timeout=settings.filesystem_timeout)
-            for tool in (FileReadTool(), FileWriteTool(), FileEditTool(), GlobTool(), GrepTool(), BashTool()):
+            for tool in (FileReadTool(), FileWriteTool(), FileEditTool(), ApplyPatchTool(), GlobTool(), GrepTool(), BashTool()):
                 with self.subTest(tool=tool.name, timeout=settings.filesystem_timeout):
                     with patch.object(io_worker, "run_io", new_callable=AsyncMock,
                                       side_effect=asyncio.TimeoutError) as run_io:
@@ -102,7 +103,7 @@ class FileIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def test_file_tools_can_disable_timeouts(self):
         settings = CrabCodeSettings(filesystem_timeout=None)
         context = ToolContext(filesystem_timeout=settings.filesystem_timeout)
-        for tool in (FileReadTool(), FileWriteTool(), FileEditTool(), GlobTool(), GrepTool(), BashTool()):
+        for tool in (FileReadTool(), FileWriteTool(), FileEditTool(), ApplyPatchTool(), GlobTool(), GrepTool(), BashTool()):
             with self.subTest(tool=tool.name):
                 with patch.object(io_worker, "run_io", new_callable=AsyncMock,
                                   return_value={"result_for_model": "done"}) as run_io:
@@ -205,6 +206,7 @@ class FileIsolationTests(unittest.IsolatedAsyncioTestCase):
             (FileReadTool(), {"file_path": "target.txt"}),
             (FileWriteTool(), {"file_path": "target.txt", "content": "changed"}),
             (FileEditTool(), {"file_path": "target.txt", "old_string": "before", "new_string": "after"}),
+            (ApplyPatchTool(), {"patch": "*** Begin Patch\n*** Update File: target.txt\n@@\n-before\n+after\n*** End Patch"}),
             (GlobTool(), {"pattern": "*.txt"}),
             (GrepTool(), {"pattern": "before", "path": "target.txt"}),
             (BashTool(), {"command": "echo done"}),
@@ -237,7 +239,7 @@ class FileIsolationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertLess(time.monotonic() - started, 2)
                     self.assertGreater(ticks, 20)
                     self.assertEqual(path.read_text(), "before")
-                    if tool.name in {"Write", "Edit", "Bash"}:
+                    if tool.name in {"Write", "Edit", "apply_patch", "Bash"}:
                         self.assertIn("outcome is unknown", result.result_for_model)
                 finally:
                     pulse.cancel()

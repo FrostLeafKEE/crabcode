@@ -1723,13 +1723,18 @@ async def query_loop(
                 continue
 
             effective_block = block.model_copy(deep=True)
-            rule_perm = params.permission_manager.check(tool, effective_block.input)
             tool_perm = await tool.check_permissions(
                 effective_block.input,
                 params.tool_context,
             )
             if tool_perm.updated_input is not None:
                 effective_block.input = tool_perm.updated_input
+
+            # Tool-specific normalization may expose derived permission targets
+            # (for example, every path embedded in an ApplyPatch payload). Apply
+            # policy rules to that normalized input rather than the model's raw
+            # arguments so path-scoped rules cannot miss multi-file edits.
+            rule_perm = params.permission_manager.check(tool, effective_block.input)
 
             permission_key = tool_perm.permission_key or tool.get_permission_key(effective_block.input)
 

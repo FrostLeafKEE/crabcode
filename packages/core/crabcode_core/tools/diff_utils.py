@@ -19,8 +19,11 @@ def compute_diff(
       display     - formatted diff string (for terminal display)
       stats       - {"added": N, "removed": N}
     """
-    old_lines = old.splitlines(keepends=True)
-    new_lines = new.splitlines(keepends=True)
+    # ``unified_diff`` supplies separators through ``lineterm``. Passing
+    # keepends=True and then joining the result inserted blank lines between
+    # every diff row in terminal and desktop renderers.
+    old_lines = old.splitlines(keepends=False)
+    new_lines = new.splitlines(keepends=False)
 
     diff_lines = list(difflib.unified_diff(
         old_lines,

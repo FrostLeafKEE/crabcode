@@ -400,6 +400,7 @@ export function applyGatewayEvent(
         ? updateByToolId(state.items, toolUseId, (item) => ({
             ...completeItem(item, now),
             detail: result,
+            input: event.tool_input ?? item.input,
             result,
             images: event.images,
             isError: event.is_error ?? false,

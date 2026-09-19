@@ -175,7 +175,7 @@ async def run_file_tool(name: str, tool_input: dict[str, Any], context: Any) -> 
         detail = str(exc) or (
             f"timed out after {timeout:g}s" if timeout is not None else type(exc).__name__
         )
-        if name in {"Edit", "Write", "Bash"}:
+        if name in {"apply_patch", "Edit", "Write", "Bash"}:
             detail += ". Write outcome is unknown; inspect affected files and snapshots before retrying"
         return ToolResult(result_for_model=f"{name} filesystem operation failed: {detail}",
                           is_error=True)
@@ -186,6 +186,7 @@ async def _call_file_tool(name: str, tool_input: dict[str, Any], fields: dict[st
     from crabcode_core.types.tool import ToolContext
 
     modules = {"Read": ("file_read", "FileReadTool"), "Write": ("file_write", "FileWriteTool"),
+               "apply_patch": ("apply_patch", "ApplyPatchTool"),
                "Edit": ("file_edit", "FileEditTool"), "Glob": ("glob", "GlobTool"),
                "Grep": ("grep", "GrepTool"), "Bash": ("bash", "BashTool")}
     module, cls = modules[name]

@@ -51,6 +51,7 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
   fileread: { kind: "file", label: "读取文件", glyph: "R" },
   edit: { kind: "file", label: "编辑文件", glyph: "E" },
   fileedit: { kind: "file", label: "编辑文件", glyph: "E" },
+  apply_patch: { kind: "file", label: "应用补丁", glyph: "±" },
   write: { kind: "file", label: "写入文件", glyph: "W" },
   filewrite: { kind: "file", label: "写入文件", glyph: "W" },
   bash: { kind: "terminal", label: "运行命令", glyph: ">_" },
@@ -122,6 +123,8 @@ const FIELD_LABELS: Record<string, string> = {
   old_string: "替换前",
   new_string: "替换后",
   content: "内容",
+  patch: "补丁",
+  affected_paths: "影响文件",
   replace_all: "全部替换",
   pattern: "匹配模式",
   glob: "文件过滤",
@@ -233,7 +236,7 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 const FIELD_ORDER: Partial<Record<ToolKind, string[]>> = {
-  file: ["file_path", "path", "target_file", "offset", "limit", "replace_all", "old_string", "new_string", "content"],
+  file: ["affected_paths", "file_path", "path", "target_file", "offset", "limit", "replace_all", "old_string", "new_string", "patch", "content"],
   terminal: ["command", "paths", "linter", "file_path", "path", "language", "timeout"],
   search: ["query", "pattern", "path", "target_directory", "glob", "num_results", "case_insensitive"],
   web: ["action", "url", "selector", "text", "script", "path", "session_id", "tab_id", "headless", "wait_until", "return_format", "timeout_seconds", "options"],
@@ -343,7 +346,7 @@ function fieldVariant(key: string, value: unknown): ToolFieldVariant {
   if (Array.isArray(value) && value.every((item) => ["string", "number", "boolean"].includes(typeof item))) return "list";
   if (value !== null && typeof value === "object") return "json";
   if (["file_path", "path", "target_file", "target_directory", "cwd", "program", "output_path", "module_path"].includes(key)) return "path";
-  if (["command", "script", "old_string", "new_string", "content", "pattern", "expression"].includes(key)) return "code";
+  if (["command", "script", "old_string", "new_string", "patch", "content", "pattern", "expression"].includes(key)) return "code";
   return "text";
 }
 
@@ -357,7 +360,7 @@ function orderedEntries(kind: ToolKind, input: Record<string, unknown>): Array<[
 
 function summaryFor(kind: ToolKind, input: Record<string, unknown>, action: string | null): string {
   const keysByKind: Partial<Record<ToolKind, string[]>> = {
-    file: ["file_path", "path", "target_file"],
+    file: ["affected_paths", "file_path", "path", "target_file", "patch"],
     terminal: ["command", "paths", "linter", "file_path", "path"],
     search: ["query", "pattern", "glob"],
     web: ["url", "selector", "text", "path"],
