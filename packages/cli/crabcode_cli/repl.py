@@ -3144,6 +3144,17 @@ async def _handle_command(
             getattr(session, "last_context_window_tokens", 0)
             or session.settings.max_context_length
             or active_cfg.context_window
+        )
+        adapter = getattr(session, "_api_adapter", None)
+        if not ctx_window and provider == "codex" and hasattr(
+            adapter, "resolve_context_window"
+        ):
+            try:
+                ctx_window = await adapter.resolve_context_window()
+            except Exception:
+                ctx_window = 0
+        ctx_window = (
+            ctx_window
             or lookup_context_window(active_cfg.model)
             or DEFAULT_CONTEXT_WINDOW
         )

@@ -959,10 +959,25 @@ async def session_status(
                 int(
                     getattr(settings, "max_context_length", None)
                     or getattr(active_config, "context_window", None)
-                    or lookup_context_window(getattr(active_config, "model", None))
-                    or DEFAULT_CONTEXT_WINDOW
+                    or 0
                 ),
             )
+            adapter = getattr(session, "_api_adapter", None)
+            if not window and provider == "codex" and hasattr(
+                adapter, "resolve_context_window"
+            ):
+                try:
+                    window = max(0, int(await adapter.resolve_context_window()))
+                except Exception:
+                    window = 0
+            if not window:
+                window = max(
+                    0,
+                    int(
+                        lookup_context_window(getattr(active_config, "model", None))
+                        or DEFAULT_CONTEXT_WINDOW
+                    ),
+                )
 
         search_index = None
         extra_tools = list(getattr(settings, "extra_tools", ()) or ())
