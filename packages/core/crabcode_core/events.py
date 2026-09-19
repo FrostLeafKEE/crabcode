@@ -105,6 +105,12 @@ class CoreSession:
         # and integrations retaining that list reference observed different
         # tool containers.
         self.tools: list[Tool] = tools if tools is not None else []
+        # Gateways may bind a session to a GUI host before initialize().  The
+        # ComputerUse tool reads these dynamically so disabling the host also
+        # removes its schema and prompt from the next model request.
+        self.computer_use_backend: Any | None = None
+        self.computer_use_host_id: str | None = None
+        self.computer_use_enabled: bool = False
         # Instances loaded from project ``extra_tools`` are tracked so a
         # cross-project resume can close/remove the old set before loading the
         # target project's extensions.

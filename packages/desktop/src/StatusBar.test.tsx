@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StatusBar } from "./StatusBar";
 import { updateGatewayStartup } from "./gatewayStartup";
+import type { ComputerUseState } from "./computerUse";
 import type { ConnectionPreset, GatewayViewState } from "./types";
 
 const connection = { id: "local", name: "Local", base_url: "http://127.0.0.1:4096" } as ConnectionPreset;
@@ -74,5 +75,37 @@ describe("desktop status bar", () => {
     expect(startup.history[0].detail).toBe("line 51");
     expect(updateGatewayStartup(startup, "installing", "line 150").history).toHaveLength(100);
     expect(updateGatewayStartup(undefined, "connecting", "retry", 200).startedAt).toBe(200);
+  });
+
+  it("opens the Computer Use console, shows the cursor and lets the user disable it", () => {
+    const onEnabledChange = vi.fn();
+    const computerUse: ComputerUseState = {
+      hostId: "desktop-test",
+      enabled: true,
+      status: "ready",
+      capabilities: { gui_available: true, platform: "macos", displays: [] },
+      latestFrame: {
+        data: "cG5n",
+        media_type: "image/png",
+        width: 100,
+        height: 50,
+        origin_x: 10,
+        origin_y: 20,
+        frame_id: "frame-1",
+      },
+      cursor: { x: 60, y: 45 },
+      logs: [{ id: "action-1", time: Date.now(), action: "click", summary: "Clicked", ok: true }],
+      error: null,
+    };
+    act(() => root.render(
+      <StatusBar computerUse={computerUse} onComputerUseEnabledChange={onEnabledChange} />,
+    ));
+    act(() => container.querySelector<HTMLButtonElement>(".status-computer-use")!.click());
+    expect(container.querySelector(".computer-use-console")?.textContent).toContain("Clicked");
+    const cursor = container.querySelector<SVGElement>(".computer-use-cursor")!;
+    expect(cursor.style.left).toBe("50%");
+    expect(cursor.style.top).toBe("50%");
+    act(() => container.querySelector<HTMLButtonElement>(".computer-use-power")!.click());
+    expect(onEnabledChange).toHaveBeenCalledWith(false);
   });
 });

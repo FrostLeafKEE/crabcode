@@ -21,6 +21,7 @@ import type {
 
 const settings: DesktopSettings = {
   schema_version: 4,
+  computer_use_enabled: true,
   active_connection_id: "local",
   connection_order: ["local", "remote"],
   connections: [

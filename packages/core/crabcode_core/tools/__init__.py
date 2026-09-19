@@ -15,6 +15,7 @@ def get_default_tools() -> list[Tool]:
     from crabcode_core.tools.apply_patch import ApplyPatchTool
     from crabcode_core.tools.checklist import ChecklistTool
     from crabcode_core.tools.checkpoint import CheckpointTool
+    from crabcode_core.tools.computer_use import ComputerUseTool
     from crabcode_core.tools.bash import BashTool
     from crabcode_core.tools.browser import BrowserTool
     from crabcode_core.tools.image import ImageTool
@@ -67,6 +68,7 @@ def get_default_tools() -> list[Tool]:
         GlobTool(),
         WebSearchTool(),
         BrowserTool(),
+        ComputerUseTool(),
         ImageTool(),
         ImageGenerateTool(),
         LintTool(),

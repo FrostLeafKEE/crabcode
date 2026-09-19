@@ -91,6 +91,7 @@ export interface DesktopSettings {
   file_upload_mode: FileUploadMode;
   file_upload_max_size_mb: number;
   dock_icon: DockIconChoice;
+  computer_use_enabled: boolean;
 }
 
 export type DockIconChoice = "dark" | "light" | "custom";

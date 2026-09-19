@@ -1,5 +1,6 @@
-import { AlertTriangle, Check, ChevronUp, Clock, Folder, LoaderCircle, RefreshCw, Server, Terminal, WifiOff, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronUp, Clock, Folder, LoaderCircle, MonitorUp, MousePointer2, Power, RefreshCw, Server, Terminal, WifiOff, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import type { ComputerUseState } from "./computerUse";
 import type { GatewayStartupState } from "./gatewayStartup";
 import type { ConnectionPreset, GatewayViewState, ProjectPreset } from "./types";
 
@@ -13,14 +14,18 @@ interface StatusBarProps {
   activity?: string | null;
   onRetry?: () => void;
   onConnections?: () => void;
+  computerUse?: ComputerUseState;
+  onComputerUseEnabledChange?: (enabled: boolean) => void;
 }
 
-export function StatusBar({ connection, gateway, startup, project, loading, error, activity, onRetry, onConnections }: StatusBarProps) {
+export function StatusBar({ connection, gateway, startup, project, loading, error, activity, onRetry, onConnections, computerUse, onComputerUseEnabledChange }: StatusBarProps) {
   const [expanded, setExpanded] = useState(false);
+  const [computerExpanded, setComputerExpanded] = useState(false);
   const [now, setNow] = useState(Date.now);
   const [mountedAt] = useState(Date.now);
   const logRef = useRef<HTMLDivElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
+  const computerToggleRef = useRef<HTMLButtonElement>(null);
   const failed = Boolean(error || gateway?.status === "error");
   const busy = !failed && Boolean(loading || activity || (connection && (!gateway || gateway.status === "connecting")));
   const status = failed ? "error" : busy ? "busy" : gateway?.status === "online" ? "online" : "offline";
@@ -45,12 +50,24 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
     setExpanded(false);
     toggleRef.current?.focus();
   };
+  const computerStatusLabel = computerUse?.status === "ready" ? "可用"
+    : computerUse?.status === "busy" ? "Agent 正在操作"
+      : computerUse?.status === "connecting" ? "正在连接"
+        : computerUse?.status === "unavailable" ? "不可用"
+          : computerUse?.status === "error" ? "连接错误" : "已关闭";
+  const frame = computerUse?.latestFrame;
+  const cursor = computerUse?.cursor;
+  const cursorLeft = frame && cursor ? (cursor.x - frame.origin_x) / frame.width * 100 : -1;
+  const cursorTop = frame && cursor ? (cursor.y - frame.origin_y) / frame.height * 100 : -1;
 
   return (
     <footer className={`desktop-status-bar ${status}`} aria-label="应用状态栏" onKeyDown={(event) => {
-      if (event.key === "Escape" && expanded) {
+      if (event.key === "Escape" && (expanded || computerExpanded)) {
         event.stopPropagation();
-        close();
+        if (computerExpanded) {
+          setComputerExpanded(false);
+          computerToggleRef.current?.focus();
+        } else close();
       }
     }}>
       {expanded && (
@@ -72,6 +89,50 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
           </div>
         </section>
       )}
+      {computerExpanded && computerUse && (
+        <section className="computer-use-console" id="computer-use-console" aria-label="Computer Use 控制台">
+          <header>
+            <strong><MonitorUp />Computer Use</strong>
+            <span className={`computer-use-state ${computerUse.status}`}>{computerStatusLabel}</span>
+            <button
+              className={`computer-use-power ${computerUse.enabled ? "enabled" : ""}`}
+              onClick={() => onComputerUseEnabledChange?.(!computerUse.enabled)}
+              title={computerUse.enabled ? "关闭 Computer Use" : "开启 Computer Use"}
+            >
+              <Power />{computerUse.enabled ? "关闭" : "开启"}
+            </button>
+            <button className="icon-button tiny" aria-label="关闭 Computer Use 控制台" onClick={() => setComputerExpanded(false)}><X /></button>
+          </header>
+          <div className="computer-use-preview">
+            {frame ? (
+              <div className="computer-use-frame">
+                <img src={`data:${frame.media_type};base64,${frame.data}`} alt="Agent 当前看到的桌面" />
+                {cursor && cursorLeft >= 0 && cursorLeft <= 100 && cursorTop >= 0 && cursorTop <= 100 && (
+                  <MousePointer2
+                    className="computer-use-cursor"
+                    style={{ left: `${cursorLeft}%`, top: `${cursorTop}%` }}
+                    aria-label={`光标 ${cursor.x}, ${cursor.y}`}
+                  />
+                )}
+              </div>
+            ) : (
+              <div className="computer-use-empty">
+                <MonitorUp />
+                <span>{computerUse.enabled ? computerUse.error || "等待 Agent 开始操作电脑" : "Computer Use 已关闭，不会向 Agent 暴露相关工具"}</span>
+              </div>
+            )}
+          </div>
+          <div className="computer-use-log" aria-label="Agent 操作记录">
+            {computerUse.logs.length ? [...computerUse.logs].reverse().map((entry) => (
+              <div className={`computer-use-log-line ${entry.ok ? "ok" : "failed"}`} key={entry.id}>
+                <time>{new Date(entry.time).toLocaleTimeString("zh-CN", { hour12: false })}</time>
+                <code>{entry.action}</code>
+                <span>{entry.summary}</span>
+              </div>
+            )) : <p>还没有 Computer Use 操作。</p>}
+          </div>
+        </section>
+      )}
       {connection && (
         <button className="status-connection" onClick={onConnections} title={`管理连接 · ${connection.name}`}>
           <Server /><span>{connection.name}</span>
@@ -80,7 +141,10 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
       <button
         className="status-current"
         ref={toggleRef}
-        onClick={() => setExpanded((value) => !value)}
+        onClick={() => {
+          setComputerExpanded(false);
+          setExpanded((value) => !value);
+        }}
         aria-expanded={expanded}
         aria-controls="startup-details"
         title={`${detail}\n点击查看启动详情`}
@@ -93,6 +157,23 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
       {failed && onRetry && <button className="status-retry" onClick={onRetry} title={connection ? "重新连接 Gateway" : "重新加载桌面配置"}><RefreshCw />重试</button>}
       <div className="status-spacer" />
       {project && <span className="status-project" title={project.path}><Folder />{project.name}</span>}
+      {computerUse && (
+        <button
+          className={`status-computer-use ${computerUse.status}`}
+          ref={computerToggleRef}
+          onClick={() => {
+            setExpanded(false);
+            setComputerExpanded((value) => !value);
+          }}
+          aria-expanded={computerExpanded}
+          aria-controls="computer-use-console"
+          title={`Computer Use · ${computerStatusLabel}\n点击查看 Agent 对电脑的操作`}
+        >
+          {computerUse.status === "busy" || computerUse.status === "connecting" ? <LoaderCircle className="spin" /> : <MonitorUp />}
+          <span>Computer Use</span>
+          <span className="computer-use-dot" />
+        </button>
+      )}
     </footer>
   );
 }

@@ -1659,6 +1659,7 @@ async def _handle_send_message(ws: WebSocket, msg: dict) -> None:
     event_bus: EventBus = ws.app.state.event_bus
     text = msg.get("text", "")
     max_turns = msg.get("max_turns", 0)
+    computer_use_enabled = msg.get("computer_use_enabled")
     raw_images = msg.get("images")  # Optional list of {media_type, data} dicts
     requested_operation_id = msg.get("operation_id")
     document_job = msg.get("_document_job") if isinstance(msg.get("_document_job"), _DocumentJobContext) else None
@@ -1678,6 +1679,16 @@ async def _handle_send_message(ws: WebSocket, msg: dict) -> None:
         await _send_ws_command_error(
             ws,
             "max_turns must be a non-negative integer",
+            command="send_message",
+            request=msg,
+            operation_id=(requested_operation_id if isinstance(requested_operation_id, str) else None),
+            error_type="invalid_request",
+        )
+        return
+    if computer_use_enabled is not None and not isinstance(computer_use_enabled, bool):
+        await _send_ws_command_error(
+            ws,
+            "computer_use_enabled must be a boolean",
             command="send_message",
             request=msg,
             operation_id=(requested_operation_id if isinstance(requested_operation_id, str) else None),
@@ -1739,6 +1750,8 @@ async def _handle_send_message(ws: WebSocket, msg: dict) -> None:
                 # its stream is not silently discarded while the connection
                 # still points at a different conversation.
                 _set_active_session(ws, session.session_id)
+            if session is not None and computer_use_enabled is not None:
+                session.computer_use_enabled = computer_use_enabled
 
         if session is None:
             error_message = (
@@ -2279,7 +2292,7 @@ async def _handle_new_session(ws: WebSocket, msg: dict) -> None:
     """Create a new session and publish its id to connected clients."""
     import os
     from crabcode_core.session import CoreSession
-    from crabcode_gateway.routes.session import _build_session_settings
+    from crabcode_gateway.routes.session import _bind_computer_use, _build_session_settings
     from crabcode_gateway.schemas import NewSessionRequest, ServerConnectedPayload
 
     if getattr(ws.app.state, "gateway_closing", False):
@@ -2302,6 +2315,12 @@ async def _handle_new_session(ws: WebSocket, msg: dict) -> None:
         )
         return
     session = CoreSession(cwd=cwd, settings=settings)
+    _bind_computer_use(
+        session,
+        ws.app.state,
+        req.computer_use_host_id,
+        req.computer_use_enabled,
+    )
     async def _publish_background(event) -> None:
         await ws.app.state.event_bus.publish_background(
             session.session_id,
@@ -3189,6 +3208,7 @@ async def _handle_resume_session(ws: WebSocket, msg: dict) -> None:
     import os
     from crabcode_core.session import CoreSession
     from crabcode_gateway.routes.session import (
+        _bind_computer_use,
         _build_session_settings,
         _has_session_overrides,
         _resolve_session_selector,
@@ -3294,6 +3314,12 @@ async def _handle_resume_session(ws: WebSocket, msg: dict) -> None:
                     cwd=resolved_cwd,
                     settings=_build_session_settings(req, resolved_cwd),
                 )
+                _bind_computer_use(
+                    session,
+                    ws.app.state,
+                    req.computer_use_host_id,
+                    req.computer_use_enabled,
+                )
 
             if not rejected and not override_conflict and not reused and session is not None:
                 candidate = session
@@ -3384,6 +3410,14 @@ async def _handle_resume_session(ws: WebSocket, msg: dict) -> None:
             session_id=session_id, error_type="session_resume_failed",
         )
         return
+
+    if session is not None:
+        _bind_computer_use(
+            session,
+            ws.app.state,
+            req.computer_use_host_id,
+            req.computer_use_enabled,
+        )
 
     if override_conflict:
         await _send_ws_command_error(

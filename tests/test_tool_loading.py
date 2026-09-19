@@ -69,6 +69,7 @@ def test_plan_disabled_removed_and_model_changes_filter_restored_state():
     ("浏览", "Browser"), ("生成", "ImageGenerate"), ("子代理", "Agent"),
     ("会话", "SendMessage"), ("团队", "TeamCreate"), ("后台", "Monitor"),
     ("定时", "ScheduleCreate"), ("记住", "Memory"), ("回滚", "Revert"), ("目标", "get_goal"),
+    ("电脑", "ComputerUse"),
 ])
 def test_group_alias_discovery(query, name):
     c = catalog(Example(name))

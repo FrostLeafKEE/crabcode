@@ -497,6 +497,13 @@ export class GatewayApi {
     if (this.token) url.searchParams.set("auth_token", this.token);
     return url.toString();
   }
+
+  computerUseWebSocketUrl(): string {
+    const url = new URL("computer-use/ws", this.baseUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    if (this.token) url.searchParams.set("auth_token", this.token);
+    return url.toString();
+  }
 }
 
 interface SessionChannelOptions {
@@ -504,6 +511,8 @@ interface SessionChannelOptions {
   cwd: string;
   additionalDirectories?: string[];
   modelProfile?: string;
+  computerUseHostId?: string;
+  computerUseEnabled?: boolean;
   onEvent: (event: GatewayEvent) => void;
   onReady: (sessionId: string) => void;
   onState: (connected: boolean, error?: string) => void;
@@ -598,6 +607,8 @@ export class SessionChannel {
         type: "resume_session",
         session_id: this.sessionId,
         additional_directories: this.options.additionalDirectories ?? [],
+        computer_use_host_id: this.options.computerUseHostId,
+        computer_use_enabled: this.options.computerUseEnabled,
       });
     } else {
       this.sendRaw({
@@ -605,6 +616,8 @@ export class SessionChannel {
         cwd: this.options.cwd,
         additional_directories: this.options.additionalDirectories ?? [],
         model_profile: this.options.modelProfile,
+        computer_use_host_id: this.options.computerUseHostId,
+        computer_use_enabled: this.options.computerUseEnabled,
       });
     }
   }
@@ -628,8 +641,13 @@ export class SessionChannel {
       max_turns: 0,
       session_id: this.sessionId,
       operation_id: operationId,
+      computer_use_enabled: this.options.computerUseEnabled,
     });
     return operationId;
+  }
+
+  setComputerUseEnabled(enabled: boolean): void {
+    this.options.computerUseEnabled = enabled;
   }
 
   documentAction(

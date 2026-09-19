@@ -133,6 +133,7 @@ const DEFAULT_SETTINGS: DesktopSettings = {
   file_upload_mode: "content",
   file_upload_max_size_mb: 5,
   dock_icon: "dark",
+  computer_use_enabled: true,
 };
 
 function validHexColor(value: unknown): value is string {
@@ -318,6 +319,7 @@ export function normalizeSettings(raw: DesktopSettings): DesktopSettings {
     file_upload_mode: raw.file_upload_mode === "path" ? "path" : "content",
     file_upload_max_size_mb: clampInteger(raw.file_upload_max_size_mb, 1, 100, 5),
     dock_icon: dockIcon,
+    computer_use_enabled: raw.computer_use_enabled !== false,
     project_files_width: clampInteger(raw.project_files_width, 480, 1_000, 640),
     project_files_max_tabs: clampInteger(raw.project_files_max_tabs, 1, 50, 5),
     document_agent_width: clampInteger(raw.document_agent_width, 320, 4_000, 400),

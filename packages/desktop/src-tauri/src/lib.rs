@@ -1,3 +1,4 @@
+mod computer_use;
 mod gateway;
 mod settings;
 
@@ -9,6 +10,8 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(GatewayProcesses::default())
         .invoke_handler(tauri::generate_handler![
+            computer_use::computer_use_capabilities,
+            computer_use::computer_use_execute,
             settings::load_desktop_settings,
             settings::save_desktop_settings,
             settings::save_theme_export,

@@ -15165,6 +15165,177 @@ html[data-theme="light"] .project-file-code .token.class-name {
   white-space: nowrap;
 }
 
+.desktop-status-bar .status-computer-use {
+  flex: 0 0 auto;
+  border-left: 1px solid var(--border-soft);
+  border-radius: 0;
+  padding-left: 10px;
+}
+
+.status-computer-use.ready > svg,
+.status-computer-use.busy > svg,
+.status-computer-use.ready .computer-use-dot,
+.status-computer-use.busy .computer-use-dot {
+  color: var(--green);
+  background: var(--green);
+}
+
+.status-computer-use.busy > svg {
+  color: var(--accent);
+}
+
+.status-computer-use.error > svg,
+.status-computer-use.error .computer-use-dot {
+  color: var(--red);
+  background: var(--red);
+}
+
+.computer-use-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--subtle);
+}
+
+.computer-use-console {
+  position: absolute;
+  z-index: 30;
+  right: 8px;
+  bottom: calc(100% + 1px);
+  width: min(680px, calc(100vw - 16px));
+  max-height: min(640px, 76vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.computer-use-console > header {
+  flex: 0 0 auto;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 9px 0 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.computer-use-console > header strong {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-right: auto;
+}
+
+.computer-use-state {
+  color: var(--muted);
+}
+
+.computer-use-state.ready,
+.computer-use-state.busy {
+  color: var(--green);
+}
+
+.computer-use-state.error {
+  color: var(--red);
+}
+
+.desktop-status-bar .computer-use-power {
+  height: 26px;
+  color: var(--muted);
+}
+
+.desktop-status-bar .computer-use-power.enabled {
+  color: var(--green);
+}
+
+.computer-use-preview {
+  flex: 0 1 auto;
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  padding: 10px;
+  overflow: hidden;
+  background: #111;
+}
+
+.computer-use-frame {
+  position: relative;
+  max-width: 100%;
+  max-height: min(430px, 52vh);
+  line-height: 0;
+}
+
+.computer-use-frame img {
+  display: block;
+  max-width: 100%;
+  max-height: min(430px, 52vh);
+  object-fit: contain;
+}
+
+.computer-use-frame .computer-use-cursor {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  color: #fff;
+  fill: #111;
+  filter: drop-shadow(0 1px 2px #000);
+  transform: translate(-2px, -2px);
+  pointer-events: none;
+}
+
+.computer-use-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: #aaa;
+  text-align: center;
+}
+
+.computer-use-empty svg {
+  width: 28px;
+  height: 28px;
+}
+
+.computer-use-log {
+  flex: 0 0 auto;
+  max-height: 150px;
+  overflow: auto;
+  padding: 7px 10px;
+  border-top: 1px solid var(--border-soft);
+  font: 11px/1.6 var(--code-font-family);
+}
+
+.computer-use-log > p {
+  margin: 4px 2px;
+  color: var(--muted);
+}
+
+.computer-use-log-line {
+  display: grid;
+  grid-template-columns: 66px 92px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+
+.computer-use-log-line time {
+  color: var(--subtle);
+}
+
+.computer-use-log-line code {
+  color: var(--accent);
+}
+
+.computer-use-log-line.failed span,
+.computer-use-log-line.failed code {
+  color: var(--red);
+}
+
 .desktop-status-bar .status-current {
   flex: 0 1 auto;
   min-width: 0;

@@ -63,6 +63,7 @@ class SendMessageRequest(BaseModel):
     session_id: str | None = None
     operation_id: str | None = Field(default=None, min_length=1)
     images: list[ImageAttachment] = Field(default_factory=list)
+    computer_use_enabled: bool | None = None
 
     @model_validator(mode="after")
     def validate_content(self) -> "SendMessageRequest":
@@ -79,6 +80,8 @@ class NewSessionRequest(BaseModel):
     base_url: str | None = None
     api_format: str | None = None
     model_profile: str | None = None
+    computer_use_host_id: str | None = Field(default=None, min_length=1, max_length=200)
+    computer_use_enabled: bool | None = None
 
 
 class ResumeSessionRequest(BaseModel):
@@ -89,6 +92,8 @@ class ResumeSessionRequest(BaseModel):
     base_url: str | None = None
     api_format: str | None = None
     model_profile: str | None = None
+    computer_use_host_id: str | None = Field(default=None, min_length=1, max_length=200)
+    computer_use_enabled: bool | None = None
 
 
 class ForkSessionRequest(BaseModel):

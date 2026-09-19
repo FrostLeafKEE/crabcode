@@ -17,6 +17,7 @@ CORE_TOOLS = (
 GROUPS = {
     "web": ("WebSearch", "Browser"),
     "images": ("Image", "ImageGenerate"),
+    "computer": ("ComputerUse",),
     "agents": ("Agent", "AgentStatus", "AgentWait", "AgentCancel", "AgentSendInput"),
     "sessions": ("ListAgents", "SendMessage"),
     "teams": ("TeamCreate", "TeamSpawn", "TeamMessage", "TeamBroadcast", "TeamStatus",
@@ -31,6 +32,7 @@ GROUPS = {
 ALIASES = {
     "web": "search browse internet 网页 浏览 搜索 联网",
     "images": "image picture generate 图片 生成 看图",
+    "computer": "computer desktop gui screen mouse keyboard 电脑 桌面 图形界面 鼠标 键盘 操作",
     "agents": "delegate subagent 子代理 委派",
     "sessions": "peer message 会话 消息",
     "teams": "team coordinate 团队 协作",

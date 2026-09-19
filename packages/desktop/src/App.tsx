@@ -101,6 +101,12 @@ import {
   type FavoriteFolderDeleteMode,
 } from "./favorites";
 import { GatewayApi, SessionChannel } from "./gateway";
+import {
+  ComputerUseChannel,
+  computerUseHostId,
+  initialComputerUseState,
+  type ComputerUseState,
+} from "./computerUse";
 import { gatewayEnvironmentLog, gatewayLogAddress, updateGatewayStartup, type GatewayStartupState } from "./gatewayStartup";
 import { StatusBar } from "./StatusBar";
 import { SettingsView, type SettingsSectionId } from "./SettingsView";
@@ -763,8 +769,11 @@ function App() {
   const [connectionModal, setConnectionModal] = useState<"new" | string | null>(null);
   const [checkpointModal, setCheckpointModal] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
+  const [computerUseId] = useState(computerUseHostId);
+  const [computerUseState, setComputerUseState] = useState<ComputerUseState>(() => initialComputerUseState(computerUseId, false));
   const apiRef = useRef(new Map<string, GatewayApi>());
   const channelRef = useRef(new Map<string, SessionChannel>());
+  const computerUseChannelRef = useRef<ComputerUseChannel | null>(null);
   const connectedRef = useRef(new Set<string>());
   const connectionAttemptRef = useRef(new Map<string, symbol>());
   const deletingSessionIdsRef = useRef(new Set<string>());
@@ -1438,6 +1447,11 @@ function App() {
       modelProfile: info
         ? undefined
         : resolveRememberedModel(connection, gateways[connection.id]?.models ?? []),
+      // Bind every session to this Desktop host. Availability stays dynamic in
+      // the Gateway, so turning Computer Use back on works without reopening
+      // the session while a disabled host still exposes no model context.
+      computerUseHostId: computerUseId,
+      computerUseEnabled: settingsRef.current?.computer_use_enabled === true,
       onEvent: (event: GatewayEvent) => {
         if (!isCurrentChannel()) return;
         if (event.type === "model_change" && event.model_profile) {
@@ -1563,6 +1577,7 @@ function App() {
     channelRef.current.set(key, channel);
     void channel.connect();
   }, [
+    computerUseId,
     gateways,
     refreshProjectSessions,
     restoreSessionPreferences,
@@ -1728,8 +1743,49 @@ function App() {
     return () => {
       channelRef.current.forEach((channel) => channel.dispose());
       channelRef.current.clear();
+      computerUseChannelRef.current?.dispose();
+      computerUseChannelRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    computerUseChannelRef.current?.dispose();
+    computerUseChannelRef.current = null;
+    if (!activeConnection || activeGateway?.status !== "online") {
+      setComputerUseState(initialComputerUseState(computerUseId, settings?.computer_use_enabled === true));
+      return;
+    }
+    const api = apiRef.current.get(activeConnection.id);
+    if (!api) return;
+    let channel: ComputerUseChannel;
+    channel = new ComputerUseChannel(
+      api,
+      computerUseId,
+      settings?.computer_use_enabled === true,
+      (state) => {
+        if (computerUseChannelRef.current === channel) setComputerUseState(state);
+      },
+    );
+    computerUseChannelRef.current = channel;
+    void channel.connect();
+    return () => {
+      if (computerUseChannelRef.current === channel) computerUseChannelRef.current = null;
+      channel.dispose();
+    };
+  }, [activeConnection?.id, activeGateway?.status, computerUseId]);
+
+  useEffect(() => {
+    const enabled = settings?.computer_use_enabled === true;
+    const channel = computerUseChannelRef.current;
+    if (channel) channel.setEnabled(enabled);
+    else setComputerUseState((current) => ({
+      ...current,
+      enabled,
+      status: enabled ? "connecting" : "disabled",
+      error: null,
+    }));
+    channelRef.current.forEach((sessionChannel) => sessionChannel.setComputerUseEnabled(enabled));
+  }, [settings?.computer_use_enabled]);
 
   useEffect(() => {
     if (!settings) return;
@@ -3977,6 +4033,12 @@ function App() {
         gateway={activeGateway}
         startup={activeConnection ? gatewayStartups[activeConnection.id] : undefined}
         project={activeProject}
+        computerUse={computerUseState}
+        onComputerUseEnabledChange={(enabled) => {
+          computerUseChannelRef.current?.setEnabled(enabled);
+          channelRef.current.forEach((channel) => channel.setComputerUseEnabled(enabled));
+          commitSettings((current) => ({ ...current, computer_use_enabled: enabled }));
+        }}
         activity={gatewaySuiteBusy
           ? gatewaySuiteProgress?.detail ?? "正在安装 CrabCode 套件…"
           : systemToolBusy

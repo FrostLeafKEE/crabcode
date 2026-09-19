@@ -25,12 +25,14 @@ from crabcode_core import VERSION
 from crabcode_core.logging_utils import get_logger
 from crabcode_core.types.config import GatewaySecuritySettings
 from crabcode_gateway.auth import verify_password
+from crabcode_gateway.computer_use import ComputerUseBroker
 from crabcode_gateway.event_bus import EventBus
 from crabcode_gateway.middleware import register_middleware
 from crabcode_gateway.routes import (
     agent,
     auth,
     config,
+    computer_use,
     document,
     event,
     health,
@@ -52,6 +54,7 @@ from crabcode_gateway.task_registry import (
 )
 
 logger = get_logger(__name__)
+_WEBSOCKET_MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 
 
 class GatewayServer:
@@ -114,6 +117,7 @@ class GatewayServer:
         app.state.sessions: dict[str, Any] = {}
         app.state.default_session_id: str | None = None
         app.state.event_bus = self._event_bus
+        app.state.computer_use_broker = ComputerUseBroker()
         app.state.client_contexts: dict[str, Any] = {}
         app.state.standalone_schedule_manager = None
         app.state.standalone_schedule_manager_lock = asyncio.Lock()
@@ -193,6 +197,7 @@ class GatewayServer:
         app.include_router(config.router)
         app.include_router(auth.router)
         app.include_router(event.router)
+        app.include_router(computer_use.router)
         app.include_router(snapshot.router)
         app.include_router(tasks.router)
         app.include_router(peer.router)
@@ -239,6 +244,7 @@ class GatewayServer:
                 port=self.port,
                 log_level=self.log_level,
                 loop="asyncio",
+                ws_max_size=_WEBSOCKET_MAX_MESSAGE_BYTES,
             )
             self._http_server = uvicorn.Server(config)
 
@@ -288,6 +294,7 @@ class GatewayServer:
                 port=self.port,
                 log_level=self.log_level,
                 loop="asyncio",
+                ws_max_size=_WEBSOCKET_MAX_MESSAGE_BYTES,
             )
             self._http_server = uvicorn.Server(config)
 

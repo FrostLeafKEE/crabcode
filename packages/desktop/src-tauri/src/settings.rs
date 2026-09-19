@@ -71,7 +71,8 @@ fn default_settings() -> Value {
         "composer_send_key": "enter",
         "file_upload_mode": "content",
         "file_upload_max_size_mb": 5,
-        "dock_icon": "dark"
+        "dock_icon": "dark",
+        "computer_use_enabled": true
     })
 }
 

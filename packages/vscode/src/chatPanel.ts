@@ -8018,6 +8018,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       grep: ['search', '搜索内容', 'G'], glob: ['search', '查找文件', '*'],
       codebasesearch: ['search', '语义搜索', 'S'], websearch: ['web', '搜索网页', '↗'],
       browser: ['web', '浏览器操作', '◎'], debugger: ['debug', '调试程序', 'D'],
+      computeruse: ['task', '电脑操作', '⌁'],
       image: ['image', '发送图片', '▧'],
       imagegenerate: ['image', '生成图片', '▧'],
       processdebugger: ['debug', '进程调试', 'P'], memory: ['memory', '管理记忆', 'M'],
