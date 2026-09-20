@@ -34,6 +34,7 @@ _ACTIONS = {
 }
 _READ_ONLY_ACTIONS = {"observe", "list_displays", "list_windows", "wait"}
 _COMPUTER_USE_MODES = {"background_app", "foreground_desktop"}
+_MAX_SCROLL_DELTA = 10_000
 
 
 class ComputerUseTool(Tool):
@@ -64,8 +65,14 @@ class ComputerUseTool(Tool):
                 "enum": ["left", "middle", "right"],
                 "description": "Mouse button. Defaults to left.",
             },
-            "delta_x": {"type": "integer", "description": "Horizontal scroll amount."},
-            "delta_y": {"type": "integer", "description": "Vertical scroll amount."},
+            "delta_x": {
+                "type": "integer", "minimum": -_MAX_SCROLL_DELTA, "maximum": _MAX_SCROLL_DELTA,
+                "description": "Horizontal scroll: positive right, negative left. Pixels in both macOS modes; wheel steps on other platforms.",
+            },
+            "delta_y": {
+                "type": "integer", "minimum": -_MAX_SCROLL_DELTA, "maximum": _MAX_SCROLL_DELTA,
+                "description": "Vertical scroll: positive down, negative up. Pixels in both macOS modes; wheel steps on other platforms.",
+            },
             "text": {
                 "type": "string",
                 "description": "Text to type, or an application/process name to open or focus.",
@@ -123,6 +130,14 @@ class ComputerUseTool(Tool):
 
     async def get_prompt(self, **kwargs: Any) -> str:
         _backend, _host_id, _enabled, mode = self._binding()
+        scroll_guidance = (
+            " For scroll, provide x/y over the intended scroll area (required in background_app). "
+            "On macOS both modes use pixels: positive delta_y scrolls down, negative scrolls up; "
+            "positive delta_x scrolls right. Other platforms use wheel steps. "
+            "A successful call confirms input dispatch, not that the application scrolled. Compare "
+            "the target area's content before/after; observe again if uncertain. An unchanged image "
+            "does not establish that all messages/history are visible or a boundary was reached."
+        )
         if mode == "background_app":
             return (
                 "Use ComputerUse in background_app mode to inspect and operate one macOS application window without "
@@ -131,14 +146,14 @@ class ComputerUseTool(Tool):
                 "window screenshot origin. Full-desktop capture, display selection, focus_window, and automatic "
                 "foreground fallback are unavailable in this mode. Prefer one deliberate action per call and observe "
                 "again after navigation or any action whose result is uncertain."
-            )
+            ) + scroll_guidance
         return (
             "Use ComputerUse in foreground_desktop mode to inspect and operate the graphical desktop when a task "
             "requires native UI interaction. The coordinate space is the full desktop and may include multiple "
             "displays. Start with observe or list_displays/list_windows, then use the returned image dimensions and "
             "origin for coordinates. This mode controls the visible pointer and keyboard and may interrupt the user. "
             "Prefer one deliberate action per call and observe again after uncertain navigation."
-        )
+        ) + scroll_guidance
 
     async def validate_input(self, tool_input: dict[str, Any]) -> str | None:
         action = str(tool_input.get("action", "")).strip()
@@ -162,12 +177,18 @@ class ComputerUseTool(Tool):
             return "keys must be an array"
         if action == "keypress" and not tool_input.get("keys"):
             return "keys must not be empty"
-        if (
-            action == "scroll"
-            and tool_input.get("delta_x") is None
-            and tool_input.get("delta_y") is None
-        ):
-            return "delta_x or delta_y required for scroll"
+        if action == "scroll":
+            deltas = [tool_input.get(key, 0) for key in ("delta_x", "delta_y")]
+            if any(
+                not isinstance(delta, int) or isinstance(delta, bool)
+                or not -_MAX_SCROLL_DELTA <= delta <= _MAX_SCROLL_DELTA
+                for delta in deltas
+            ):
+                return f"scroll deltas must be integers between -{_MAX_SCROLL_DELTA} and {_MAX_SCROLL_DELTA}"
+            if not any(deltas):
+                return "scroll requires a non-zero delta_x or delta_y"
+            if (tool_input.get("x") is None) != (tool_input.get("y") is None):
+                return "x and y must be provided together for scroll"
         _backend, _host_id, _enabled, mode = self._binding()
         if mode == "background_app":
             if action in {"list_displays", "focus_window"}:
@@ -186,6 +207,8 @@ class ComputerUseTool(Tool):
                 "keypress",
             } and not tool_input.get("window_id"):
                 return "window_id is required in background_app mode; call list_windows first"
+            if action == "scroll" and tool_input.get("x") is None:
+                return "x and y are required over the target scroll area in background_app mode"
         return None
 
     def get_permission_key(self, tool_input: dict[str, Any]) -> str:

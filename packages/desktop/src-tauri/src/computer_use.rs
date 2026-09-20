@@ -1,5 +1,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
+#[cfg(not(target_os = "macos"))]
+use enigo::Axis;
+use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::Cursor;
@@ -13,14 +15,21 @@ use xcap::{Monitor, Window};
 
 #[cfg(target_os = "macos")]
 use core_graphics::event::{
-    CGEvent, CGEventFlags, CGEventType, CGMouseButton, EventField, KeyCode, ScrollEventUnit,
+    CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton, EventField, KeyCode,
+    ScrollEventUnit,
 };
 #[cfg(target_os = "macos")]
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 #[cfg(target_os = "macos")]
 use core_graphics::geometry::CGPoint;
+#[cfg(target_os = "macos")]
+use foreign_types::ForeignType;
 
 const MAX_SCREENSHOT_BYTES: usize = 20 * 1024 * 1024;
+const MAX_SCROLL_DELTA: i32 = 10_000;
+#[cfg(target_os = "macos")]
+const SCROLL_STEP_PIXELS: i32 = 50;
+const SCROLL_SETTLE_MS: u64 = 180;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DisplayInfo {
@@ -390,6 +399,7 @@ fn window_list() -> Result<Vec<Value>, String> {
 
 #[derive(Debug, Clone, Copy)]
 struct WindowTarget {
+    window_id: u32,
     pid: i32,
     x: i32,
     y: i32,
@@ -409,6 +419,7 @@ fn window_target(window_id: &str) -> Result<WindowTarget, String> {
         })
         .ok_or_else(|| format!("Window not found: {window_id}"))?;
     Ok(WindowTarget {
+        window_id: window.id().map_err(|error| error.to_string())?,
         pid: window.pid().map_err(|error| error.to_string())? as i32,
         x: window.x().map_err(|error| error.to_string())?,
         y: window.y().map_err(|error| error.to_string())?,
@@ -487,8 +498,63 @@ fn mac_mouse_event_types(button: CGMouseButton) -> (CGEventType, CGEventType, CG
 }
 
 #[cfg(target_os = "macos")]
+const CG_EVENT_TARGET_WINDOW: u32 = 51;
+#[cfg(target_os = "macos")]
+const CG_EVENT_RECEIVING_WINDOW: u32 = 52;
+
+#[cfg(target_os = "macos")]
+fn mac_target_pointer_event(event: &CGEvent, target: WindowTarget) -> Result<(), String> {
+    type SetWindowLocation = unsafe extern "C" fn(core_graphics::sys::CGEventRef, CGPoint);
+    static SET_WINDOW_LOCATION: std::sync::OnceLock<Option<SetWindowLocation>> =
+        std::sync::OnceLock::new();
+    let set_window_location = SET_WINDOW_LOCATION.get_or_init(|| {
+        // This private CoreGraphics symbol preserves the local point when
+        // posting to a non-key window. Resolve at runtime so an OS without it
+        // can still start the app and use observation/foreground control.
+        let symbol =
+            unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"CGEventSetWindowLocation".as_ptr()) };
+        if symbol.is_null() {
+            None
+        } else {
+            // SAFETY: the symbol has the CGEventRef/CGPoint C ABI above, and
+            // CoreGraphics stays loaded for the entire process lifetime.
+            Some(unsafe { std::mem::transmute::<*mut libc::c_void, SetWindowLocation>(symbol) })
+        }
+    });
+    let set_window_location = set_window_location.ok_or_else(|| {
+        "Window-targeted background input is unavailable on this macOS version; choose foreground_desktop explicitly"
+            .to_string()
+    })?;
+    // A PID can own multiple overlapping windows. Preserve the selected
+    // CGWindowID for AppKit's event routing, including synthetic MouseMoved.
+    // The public mouse-only fields 91/92 are ignored on wheel events; slots
+    // 51/52 carry the receiving window number for both event types.
+    event.set_integer_value_field(CG_EVENT_TARGET_WINDOW, i64::from(target.window_id));
+    event.set_integer_value_field(CG_EVENT_RECEIVING_WINDOW, i64::from(target.window_id));
+    event.set_integer_value_field(
+        EventField::MOUSE_EVENT_WINDOW_UNDER_MOUSE_POINTER,
+        i64::from(target.window_id),
+    );
+    event.set_integer_value_field(
+        EventField::MOUSE_EVENT_WINDOW_UNDER_MOUSE_POINTER_THAT_CAN_HANDLE_THIS_EVENT,
+        i64::from(target.window_id),
+    );
+    let global = event.location();
+    let local = CGPoint::new(
+        global.x - f64::from(target.x),
+        global.y - f64::from(target.y),
+    );
+    // SAFETY: a live, owned CGEvent is passed with a window-local point.
+    unsafe { set_window_location(event.as_ptr(), local) };
+    if event.get_integer_value_field(CG_EVENT_TARGET_WINDOW) != i64::from(target.window_id) {
+        return Err("macOS did not preserve the background event's target window".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn mac_post_mouse(
-    pid: i32,
+    target: WindowTarget,
     event_type: CGEventType,
     button: CGMouseButton,
     x: i32,
@@ -503,7 +569,8 @@ fn mac_post_mouse(
     )
     .map_err(|_| "Unable to create a macOS mouse event".to_string())?;
     event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, click_count);
-    event.post_to_pid(pid);
+    mac_target_pointer_event(&event, target)?;
+    event.post_to_pid(target.pid);
     Ok(())
 }
 
@@ -518,8 +585,8 @@ fn mac_click(
     let button = mac_mouse_button(button_name)?;
     let (down, up, _) = mac_mouse_event_types(button);
     for count in 1..=click_count {
-        mac_post_mouse(target.pid, down, button, x, y, count)?;
-        mac_post_mouse(target.pid, up, button, x, y, count)?;
+        mac_post_mouse(target, down, button, x, y, count)?;
+        mac_post_mouse(target, up, button, x, y, count)?;
         if count < click_count {
             thread::sleep(Duration::from_millis(80));
         }
@@ -537,38 +604,122 @@ fn mac_drag(
 ) -> Result<(), String> {
     let button = mac_mouse_button(button_name)?;
     let (down, up, dragged) = mac_mouse_event_types(button);
-    mac_post_mouse(target.pid, down, button, start.0, start.1, 1)?;
+    mac_post_mouse(target, down, button, start.0, start.1, 1)?;
     let steps = 20i32;
     for step in 1..=steps {
         let x = start.0 + (end.0 - start.0) * step / steps;
         let y = start.1 + (end.1 - start.1) * step / steps;
-        mac_post_mouse(target.pid, dragged, button, x, y, 1)?;
+        mac_post_mouse(target, dragged, button, x, y, 1)?;
         thread::sleep(Duration::from_millis(duration_ms / steps as u64));
     }
-    mac_post_mouse(target.pid, up, button, end.0, end.1, 1)
+    mac_post_mouse(target, up, button, end.0, end.1, 1)
+}
+
+fn scroll_delta(action: &ComputerAction) -> Result<(i32, i32), String> {
+    if action.x.is_some() != action.y.is_some() {
+        return Err("x and y must be provided together for scroll".to_string());
+    }
+    let dx = action.delta_x.unwrap_or(0);
+    let dy = action.delta_y.unwrap_or(0);
+    if dx == 0 && dy == 0 {
+        return Err("scroll requires a non-zero delta_x or delta_y".to_string());
+    }
+    if !(-MAX_SCROLL_DELTA..=MAX_SCROLL_DELTA).contains(&dx)
+        || !(-MAX_SCROLL_DELTA..=MAX_SCROLL_DELTA).contains(&dy)
+    {
+        return Err(format!(
+            "scroll deltas must be between -{MAX_SCROLL_DELTA} and {MAX_SCROLL_DELTA}"
+        ));
+    }
+    Ok((dx, dy))
 }
 
 #[cfg(target_os = "macos")]
-fn mac_scroll(
-    target: WindowTarget,
-    point: Option<(i32, i32)>,
+fn scroll_steps(delta_x: i32, delta_y: i32) -> Vec<(i32, i32)> {
+    let count =
+        ((delta_x.abs().max(delta_y.abs()) + SCROLL_STEP_PIXELS - 1) / SCROLL_STEP_PIXELS).max(1);
+    // Distribute rounding remainders so diagonal scrolling preserves both totals.
+    (0..count)
+        .map(|i| {
+            (
+                delta_x * (i + 1) / count - delta_x * i / count,
+                delta_y * (i + 1) / count - delta_y * i / count,
+            )
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn mac_scroll_event(
+    target: Option<WindowTarget>,
+    point: (i32, i32),
     delta_x: i32,
     delta_y: i32,
-) -> Result<(), String> {
+) -> Result<CGEvent, String> {
     let event = CGEvent::new_scroll_event(
         mac_event_source()?,
         ScrollEventUnit::PIXEL,
         2,
-        delta_y,
-        delta_x,
+        -delta_y,
+        -delta_x,
         0,
     )
     .map_err(|_| "Unable to create a macOS scroll event".to_string())?;
-    if let Some((x, y)) = point {
-        event.set_location(CGPoint::new(x as f64, y as f64));
+    // Public deltas follow viewport movement: positive down/right. Quartz's
+    // wheel signs are the opposite. Both macOS modes use this same conversion.
+    event.set_location(CGPoint::new(point.0 as f64, point.1 as f64));
+    if let Some(target) = target {
+        mac_target_pointer_event(&event, target)?;
     }
-    event.post_to_pid(target.pid);
+    Ok(event)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_scroll(
+    target: Option<WindowTarget>,
+    point: (i32, i32),
+    delta_x: i32,
+    delta_y: i32,
+) -> Result<(), String> {
+    if let Some(target) = target {
+        mac_post_mouse(
+            target,
+            CGEventType::MouseMoved,
+            CGMouseButton::Left,
+            point.0,
+            point.1,
+            0,
+        )?;
+    }
+    // Let the application update its hover/hit-test state before the wheel input.
+    thread::sleep(Duration::from_millis(30));
+    for (dx, dy) in scroll_steps(delta_x, delta_y) {
+        let event = mac_scroll_event(target, point, dx, dy)?;
+        if let Some(target) = target {
+            event.post_to_pid(target.pid);
+        } else {
+            event.post(CGEventTapLocation::HID);
+        }
+        thread::sleep(Duration::from_millis(16));
+    }
     Ok(())
+}
+
+fn add_scroll_receipt(result: &mut Value, action: &ComputerAction) {
+    if action.action != "scroll" {
+        return;
+    }
+    result["effect_verified"] = json!(false);
+    result["scroll"] = json!({
+        "unit": if cfg!(target_os = "macos") { "pixels" } else { "wheel_steps" },
+        "delta_x": action.delta_x.unwrap_or(0),
+        "delta_y": action.delta_y.unwrap_or(0),
+    });
+    result["verification_hint"] = json!(
+        "Input was sent; target scrolling is not confirmed. Compare the target scroll area before and after. \
+         An unchanged image does not prove a history boundary. Background support varies by app; \
+         do not automatically switch to foreground control."
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -834,22 +985,36 @@ fn perform_action(action: &ComputerAction, enigo: &mut Enigo) -> Result<String, 
             Ok("Dragged pointer".to_string())
         }
         "scroll" => {
+            let (delta_x, delta_y) = scroll_delta(action)?;
             if let (Some(x), Some(y)) = (action.x, action.y) {
                 enigo
                     .move_mouse(x, y, Coordinate::Abs)
                     .map_err(|error| error.to_string())?;
             }
-            if let Some(delta_x) = action.delta_x.filter(|value| *value != 0) {
-                enigo
-                    .scroll(delta_x, Axis::Horizontal)
-                    .map_err(|error| error.to_string())?;
+            #[cfg(target_os = "macos")]
+            {
+                // A posted mouse move may not have updated the hardware
+                // cursor yet. Keep the requested point instead of re-reading it.
+                let point = match (action.x, action.y) {
+                    (Some(x), Some(y)) => (x, y),
+                    _ => enigo.location().map_err(|error| error.to_string())?,
+                };
+                mac_scroll(None, point, delta_x, delta_y)?;
             }
-            if let Some(delta_y) = action.delta_y.filter(|value| *value != 0) {
-                enigo
-                    .scroll(delta_y, Axis::Vertical)
-                    .map_err(|error| error.to_string())?;
+            #[cfg(not(target_os = "macos"))]
+            {
+                if delta_x != 0 {
+                    enigo
+                        .scroll(delta_x, Axis::Horizontal)
+                        .map_err(|error| error.to_string())?;
+                }
+                if delta_y != 0 {
+                    enigo
+                        .scroll(delta_y, Axis::Vertical)
+                        .map_err(|error| error.to_string())?;
+                }
             }
-            Ok("Scrolled".to_string())
+            Ok("Scroll input sent; movement unverified".to_string())
         }
         "type" => {
             enigo
@@ -923,6 +1088,7 @@ fn execute_foreground(request: ExecuteRequest) -> Result<Value, String> {
         "summary": summary,
         "cursor": cursor,
     });
+    add_scroll_receipt(&mut result, &request.action);
     if request.action.action == "list_displays" {
         let displays = monitors()?
             .into_iter()
@@ -939,6 +1105,9 @@ fn execute_foreground(request: ExecuteRequest) -> Result<Value, String> {
             "list_displays" | "list_windows" | "wait"
         ));
     if capture {
+        if request.action.action == "scroll" {
+            thread::sleep(Duration::from_millis(SCROLL_SETTLE_MS));
+        }
         match screenshot(&request.action) {
             Ok(frame) => result["screenshot"] = frame,
             Err(error) if request.action.action == "observe" => return Err(error),
@@ -974,7 +1143,7 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
             let target = background_target(action)?;
             let (x, y) = background_point(action, target)?;
             mac_post_mouse(
-                target.pid,
+                target,
                 CGEventType::MouseMoved,
                 CGMouseButton::Left,
                 x,
@@ -1033,22 +1202,12 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
             "Dragged in application window".to_string()
         }
         "scroll" => {
+            let (delta_x, delta_y) = scroll_delta(action)?;
             let target = background_target(action)?;
-            let point = match (action.x, action.y) {
-                (Some(_), Some(_)) => Some(background_point(action, target)?),
-                (None, None) => None,
-                _ => return Err("x and y must be provided together for scroll".to_string()),
-            };
-            mac_scroll(
-                target,
-                point,
-                action.delta_x.unwrap_or(0),
-                action.delta_y.unwrap_or(0),
-            )?;
-            if let Some((x, y)) = point {
-                cursor = json!({ "x": x, "y": y });
-            }
-            "Scrolled application window".to_string()
+            let point = background_point(action, target)?;
+            mac_scroll(Some(target), point, delta_x, delta_y)?;
+            cursor = json!({ "x": point.0, "y": point.1 });
+            "Scroll input sent to application window; movement unverified".to_string()
         }
         "type" => {
             let target = background_target(action)?;
@@ -1102,6 +1261,7 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
         "summary": summary,
         "cursor": cursor,
     });
+    add_scroll_receipt(&mut result, action);
     if action.action == "list_windows" {
         result["windows"] = Value::Array(window_list()?);
     }
@@ -1112,6 +1272,9 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
             "list_windows" | "wait" | "open_app"
         ));
     if capture {
+        if action.action == "scroll" {
+            thread::sleep(Duration::from_millis(SCROLL_SETTLE_MS));
+        }
         match screenshot(action) {
             Ok(frame) => result["screenshot"] = frame,
             Err(error) if action.action == "observe" => return Err(error),
@@ -1158,6 +1321,156 @@ mod tests {
     #[test]
     fn rejects_unknown_mouse_button() {
         assert!(mouse_button(Some("sideways")).is_err());
+    }
+
+    #[test]
+    fn scroll_rejects_noops_unpaired_coordinates_and_excessive_deltas() {
+        for value in [
+            json!({"action": "scroll"}),
+            json!({"action": "scroll", "delta_y": 0}),
+            json!({"action": "scroll", "x": 100, "delta_y": 800}),
+            json!({"action": "scroll", "delta_y": i32::MIN}),
+            json!({"action": "scroll", "delta_y": MAX_SCROLL_DELTA + 1}),
+        ] {
+            let action: ComputerAction = serde_json::from_value(value).unwrap();
+            assert!(scroll_delta(&action).is_err());
+        }
+        let action: ComputerAction = serde_json::from_value(json!({
+            "action": "scroll", "x": 1400, "y": 700, "delta_y": -800
+        }))
+        .unwrap();
+        assert_eq!(scroll_delta(&action).unwrap(), (0, -800));
+        let mut result = json!({"ok": true});
+        add_scroll_receipt(&mut result, &action);
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["effect_verified"], false);
+        assert_eq!(result["scroll"]["delta_y"], -800);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scroll_steps_preserve_signed_diagonal_totals_and_bound_event_size() {
+        for (dx, dy) in [(0, -800), (1, 51), (-51, 13), (0, 1), (10_000, -9_999)] {
+            let steps = scroll_steps(dx, dy);
+            assert!(steps.len() <= 200);
+            assert_eq!(steps.iter().map(|(x, _)| x).sum::<i32>(), dx);
+            assert_eq!(steps.iter().map(|(_, y)| y).sum::<i32>(), dy);
+            assert!(steps
+                .iter()
+                .all(|(x, y)| x.abs() <= SCROLL_STEP_PIXELS && y.abs() <= SCROLL_STEP_PIXELS));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_scroll_event_preserves_window_coordinates_and_pixel_direction() {
+        let target = WindowTarget {
+            window_id: 14461,
+            pid: 42,
+            x: 0,
+            y: 30,
+            width: 2560,
+            height: 1316,
+        };
+        for window_id in [14461, 151872] {
+            let target = WindowTarget {
+                window_id,
+                ..target
+            };
+            let event = mac_scroll_event(Some(target), (1400, 700), 25, -50).unwrap();
+            assert_eq!(
+                event.get_integer_value_field(CG_EVENT_TARGET_WINDOW),
+                i64::from(window_id)
+            );
+            assert_eq!(
+                event.get_integer_value_field(CG_EVENT_RECEIVING_WINDOW),
+                i64::from(window_id)
+            );
+            assert_eq!((event.location().x, event.location().y), (1400.0, 700.0));
+            assert_eq!(
+                event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_IS_CONTINUOUS),
+                1
+            );
+            let foreground = mac_scroll_event(None, (1400, 700), 25, -50).unwrap();
+            for (axis, delta) in [
+                (EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_1, 50),
+                (EventField::SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_2, -25),
+            ] {
+                assert_eq!(event.get_integer_value_field(axis), delta);
+                assert_eq!(foreground.get_integer_value_field(axis), delta);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires macOS Accessibility permission and launches isolated overlapping test windows"]
+    fn macos_background_scroll_targets_one_of_two_windows_without_focus() {
+        use std::fs;
+        use std::process::{Child, Stdio};
+
+        struct Host(Child);
+        impl Drop for Host {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        mac_require_input_permission()
+            .expect("grant Accessibility to the test runner before running this ignored test");
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("scroll-host");
+        let state_path = temp.path().join("state.json");
+        let status = Command::new("xcrun")
+            .args(["swiftc", "tests/fixtures/scroll_host.swift", "-o"])
+            .arg(&binary)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let _host = Host(
+            Command::new(binary)
+                .arg(&state_path)
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let read_state =
+            || -> Option<Value> { serde_json::from_slice(&fs::read(&state_path).ok()?).ok() };
+        let mut initial = None;
+        for _ in 0..100 {
+            initial = read_state();
+            if initial.is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let initial = initial.expect("scroll host did not become ready");
+        assert_eq!(initial["active"], false);
+        let target = WindowTarget {
+            window_id: initial["target_id"].as_u64().unwrap() as u32,
+            pid: initial["pid"].as_i64().unwrap() as i32,
+            x: initial["origin_x"].as_i64().unwrap() as i32,
+            y: initial["origin_y"].as_i64().unwrap() as i32,
+            width: 0,
+            height: 0,
+        };
+        let point = (
+            initial["x"].as_i64().unwrap() as i32,
+            initial["y"].as_i64().unwrap() as i32,
+        );
+        mac_scroll(Some(target), point, 0, 300).unwrap();
+        thread::sleep(Duration::from_millis(500));
+        let after = read_state().unwrap();
+        assert!(
+            after["target_offset"].as_f64().unwrap() > initial["target_offset"].as_f64().unwrap(),
+            "target did not scroll: {after}"
+        );
+        assert_eq!(after["decoy_offset"], initial["decoy_offset"]);
+        assert_eq!(after["decoy_events"], 0);
+        assert_eq!(after["active"], false);
+        assert_eq!(after["frontmost_pid"], initial["frontmost_pid"]);
+        assert_eq!(after["cursor"], initial["cursor"]);
     }
 
     #[test]

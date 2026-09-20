@@ -74,6 +74,14 @@ is the default and never falls back automatically to foreground control. Disabli
 snapshots does not disable conversation checkpoints; changes apply to new or
 reconnected sessions.
 
+On macOS, background pointer events carry a window ID and window-local position.
+The position uses the private `CGEventSetWindowLocation` symbol, resolved at runtime;
+if it is unavailable, background pointer input returns an error without switching
+to foreground control. Compatibility can change with macOS or the target app.
+Scroll results confirm dispatch only (`effect_verified: false`); the agent must
+check the target area in the observation. Both macOS modes now use pixels with
+positive deltas down/right, rather than the old mixed units and signs.
+
 ## Build and test
 
 ```bash
@@ -83,3 +91,14 @@ npm run tauri build
 ```
 
 The Gateway WebSocket protocol remains version 1.
+
+The opt-in macOS scroll integration test launches two overlapping, isolated
+AppKit windows in one process, checks the intended scroll offset and verifies
+that the other window, frontmost app and real pointer stay unchanged. It requires
+Accessibility permission for the test runner and an idle pointer/focus during
+the input check:
+
+```bash
+cd src-tauri
+cargo test --lib computer_use::tests::macos_background_scroll_targets_one_of_two_windows_without_focus -- --ignored --nocapture
+```

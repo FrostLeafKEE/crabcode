@@ -1,6 +1,9 @@
 import asyncio
 import base64
+import json
 from types import SimpleNamespace
+
+import pytest
 
 from crabcode_core.api.base import StreamChunk
 from crabcode_core.query.loop import QueryParams, query_loop
@@ -139,6 +142,49 @@ def test_background_mode_requires_window_and_never_accepts_desktop_actions():
     assert asyncio.run(
         tool.validate_input({"action": "observe", "window_id": "42"})
     ) is None
+
+
+@pytest.mark.parametrize("mode", ["background_app", "foreground_desktop"])
+@pytest.mark.parametrize("arguments", [
+    {}, {"delta_y": 0}, {"delta_y": None}, {"delta_y": True},
+    {"delta_y": "800"}, {"delta_y": 1.5}, {"delta_y": -10001},
+    {"delta_y": 800, "x": 1400},
+])
+def test_scroll_rejects_invalid_input_in_both_modes(mode, arguments):
+    tool, context = prepared_tool(FakeBackend())
+    context.session.computer_use_mode = mode
+    assert asyncio.run(tool.validate_input({"action": "scroll", "window_id": "14461", **arguments}))
+
+
+def test_background_scroll_requires_a_point_but_foreground_can_use_current_pointer():
+    tool, context = prepared_tool(FakeBackend())
+    request = {"action": "scroll", "window_id": "14461", "delta_y": -800}
+    assert asyncio.run(tool.validate_input(request)) is None
+    context.session.computer_use_mode = "background_app"
+    assert "x and y are required" in asyncio.run(tool.validate_input(request))
+    assert asyncio.run(tool.validate_input({**request, "x": 1400, "y": 700})) is None
+
+
+def test_unverified_scroll_receipt_survives_gateway_tool_projection():
+    class ScrollBackend(FakeBackend):
+        async def execute(self, host_id, **kwargs):
+            self.calls.append((host_id, kwargs))
+            return {
+                "ok": True,
+                "summary": "Scroll input sent to application window; movement unverified",
+                "effect_verified": False,
+                "scroll": {"unit": "pixels", "delta_x": 0, "delta_y": -800},
+            }
+
+    backend = ScrollBackend()
+    tool, context = prepared_tool(backend)
+    context.session.computer_use_mode = "background_app"
+    request = {"action": "scroll", "window_id": "14461", "x": 1400, "y": 700, "delta_y": -800}
+    result = asyncio.run(tool.call(request, context))
+    assert not result.is_error
+    assert json.loads(result.result_for_model)["effect_verified"] is False
+    assert "unverified" in result.result_for_display
+    assert backend.calls[0][1]["action"] == request
 
 
 class FakeSocket:
