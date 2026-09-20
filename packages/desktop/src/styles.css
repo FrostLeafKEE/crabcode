@@ -12483,6 +12483,12 @@ html[data-theme="light"] .sidebar :is(.workspace-brand-copy small, .workspace-br
   color: var(--muted);
 }
 
+html[data-theme="light"] .sidebar .section-label-actions .icon-button:hover:not(:disabled) {
+  border-color: var(--border-soft);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 html[data-theme="light"] .sidebar :is(.workspace-nav-item, .workspace-settings-button) {
   color: var(--muted);
 }
