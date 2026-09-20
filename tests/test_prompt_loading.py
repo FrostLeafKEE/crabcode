@@ -61,6 +61,14 @@ def test_plan_language_and_ultra_are_preserved():
     assert "# Doing tasks" not in text
 
 
+def test_default_prompt_requires_real_tool_search_before_deferred_tools():
+    text = "\n".join(get_system_prompt(["ToolSearch"], "test"))
+    assert "entries in the Tool discovery directory are names only, not callable tools" in text
+    assert "first call ToolSearch with its exact listed name" in text
+    assert "never print pseudo-calls such as `<tool_call>`" in text
+    assert "use the newly supplied schema in the next response" in text
+
+
 def test_default_prompt_budget_guardrail():
     from scripts.prompt_budget import measure
     result = asyncio.run(measure())

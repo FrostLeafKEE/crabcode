@@ -93,6 +93,15 @@ def test_pagination_exact_names_and_mcp_instructions_only_when_loaded():
     assert "Unknown" in c.search(names=["missing"], group="", query="", list_only=False, offset=0, limit=5)
 
 
+def test_discovery_directory_requires_real_search_before_tool_use():
+    directory = catalog(Example("ComputerUse")).directory()
+    assert "computer: ComputerUse" in directory
+    assert "names below are NOT callable yet" in directory
+    assert "first make a real ToolSearch call" in directory
+    assert "Never guess its arguments or print a textual/pseudo tool call" in directory
+    assert "callable in the NEXT response only" in directory
+
+
 def call(name, ident, inputs=None):
     return [StreamChunk(type="tool_use_start", tool_name=name, tool_use_id=ident),
             StreamChunk(type="tool_use_end", tool_name=name, tool_use_id=ident, tool_input_json=json.dumps(inputs or {}))]

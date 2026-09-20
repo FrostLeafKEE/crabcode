@@ -110,8 +110,13 @@ class ToolCatalog:
                 groups.setdefault(self.group(name), []).append(name)
         # Large MCP registries stay compact; ToolSearch list pagination is the
         # lossless fallback, so truncation here cannot hide a tool permanently.
-        lines = ["# Tool discovery", "Use ToolSearch to load tools by names, group or query. "
-                 "New tools become callable in the NEXT response. Use list=true to browse all tools."]
+        lines = [
+            "# Tool discovery",
+            "The names below are NOT callable yet and do not include their schemas. When a task needs one, "
+            "first make a real ToolSearch call using its exact name, group or a query. Never guess its "
+            "arguments or print a textual/pseudo tool call. A loaded tool becomes callable in the NEXT "
+            "response only. Use list=true to browse all tools.",
+        ]
         for group, names in sorted(groups.items())[:20]:
             summary = ", ".join(names[:12])
             if len(names) > 12:
