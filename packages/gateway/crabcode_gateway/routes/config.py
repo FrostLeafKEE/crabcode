@@ -327,7 +327,7 @@ def _runtime_settings_from_files(cwd: str) -> RuntimeSettingsResponse:
             continue
         relevant = {
             key: raw[key]
-            for key in ("snapshot", "extra_tools")
+            for key in ("snapshot", "computer_use", "extra_tools")
             if key in raw
         }
         if not relevant:
@@ -379,6 +379,7 @@ def _runtime_settings_from_files(cwd: str) -> RuntimeSettingsResponse:
         cwd=cwd,
         snapshot_enabled=settings.snapshot.enabled,
         snapshot_max_size_mb=settings.snapshot.max_size_mb,
+        computer_use_mode=settings.computer_use.mode,
         extra_tools=list(settings.extra_tools),
         extra_tools_by_source=extra_tools_by_source,
         sources=sources,
@@ -600,6 +601,20 @@ def _mutate_runtime_settings(
             SnapshotSettings.model_validate(snapshot)
         except Exception as exc:
             raise HTTPException(status_code=422, detail=f"快照配置无效：{exc}") from exc
+    elif req.action == "set_computer_use_mode":
+        computer_use = current.get("computer_use")
+        if computer_use is None:
+            computer_use = {}
+            current["computer_use"] = computer_use
+        if not isinstance(computer_use, dict):
+            raise HTTPException(status_code=422, detail="computer_use must be a JSON object")
+        computer_use["mode"] = req.computer_use_mode
+        try:
+            from crabcode_core.types.config import ComputerUseSettings
+
+            ComputerUseSettings.model_validate(computer_use)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"Computer Use 配置无效：{exc}") from exc
     else:
         tool_path = _validate_extra_tool_path(req.tool_path)
         extra_tools = current.get("extra_tools")

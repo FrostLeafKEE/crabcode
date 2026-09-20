@@ -33,6 +33,7 @@ _ACTIONS = {
     "wait",
 }
 _READ_ONLY_ACTIONS = {"observe", "list_displays", "list_windows", "wait"}
+_COMPUTER_USE_MODES = {"background_app", "foreground_desktop"}
 
 
 class ComputerUseTool(Tool):
@@ -75,7 +76,10 @@ class ComputerUseTool(Tool):
                 "description": "Keys to press together, for example ['CTRL', 'L'].",
             },
             "display_id": {"type": "string", "description": "Display to observe."},
-            "window_id": {"type": "string", "description": "Window to observe or focus."},
+            "window_id": {
+                "type": "string",
+                "description": "Target window. Required for observation and input in background_app mode.",
+            },
             "duration_ms": {
                 "type": "integer",
                 "minimum": 0,
@@ -99,27 +103,41 @@ class ComputerUseTool(Tool):
         self._session = context.session
         self.is_enabled = bool(context.tool_config.get("enabled", True))
 
-    def _binding(self) -> tuple[Any | None, str | None, bool]:
+    def _binding(self) -> tuple[Any | None, str | None, bool, str]:
         session = self._session
+        mode = str(getattr(session, "computer_use_mode", "background_app"))
+        if mode not in _COMPUTER_USE_MODES:
+            mode = "background_app"
         return (
             getattr(session, "computer_use_backend", None),
             getattr(session, "computer_use_host_id", None),
             getattr(session, "computer_use_enabled", False) is True,
+            mode,
         )
 
     def is_available(self, context: ToolContext) -> bool:
         if not self.is_enabled:
             return False
-        backend, host_id, enabled = self._binding()
-        return bool(enabled and backend and host_id and backend.is_available(host_id))
+        backend, host_id, enabled, _mode = self._binding()
+        return bool(enabled and backend and host_id and backend.is_available(host_id, _mode))
 
     async def get_prompt(self, **kwargs: Any) -> str:
+        _backend, _host_id, _enabled, mode = self._binding()
+        if mode == "background_app":
+            return (
+                "Use ComputerUse in background_app mode to inspect and operate one macOS application window without "
+                "taking over the user's foreground desktop. Start with list_windows, then pass window_id to observe "
+                "and every pointer or keyboard action. Coordinates are absolute desktop coordinates derived from the "
+                "window screenshot origin. Full-desktop capture, display selection, focus_window, and automatic "
+                "foreground fallback are unavailable in this mode. Prefer one deliberate action per call and observe "
+                "again after navigation or any action whose result is uncertain."
+            )
         return (
-            "Use ComputerUse to inspect and operate the graphical desktop when a task requires native UI interaction. "
-            "The coordinate space is the full desktop and may include multiple displays. Start with observe or "
-            "list_displays/list_windows, then use the returned image dimensions and origin for coordinates. "
-            "Prefer one deliberate action per call and observe again after navigation or any action whose result is uncertain. "
-            "The user can see your actions and can disable Computer Use at any time."
+            "Use ComputerUse in foreground_desktop mode to inspect and operate the graphical desktop when a task "
+            "requires native UI interaction. The coordinate space is the full desktop and may include multiple "
+            "displays. Start with observe or list_displays/list_windows, then use the returned image dimensions and "
+            "origin for coordinates. This mode controls the visible pointer and keyboard and may interrupt the user. "
+            "Prefer one deliberate action per call and observe again after uncertain navigation."
         )
 
     async def validate_input(self, tool_input: dict[str, Any]) -> str | None:
@@ -150,6 +168,24 @@ class ComputerUseTool(Tool):
             and tool_input.get("delta_y") is None
         ):
             return "delta_x or delta_y required for scroll"
+        _backend, _host_id, _enabled, mode = self._binding()
+        if mode == "background_app":
+            if action in {"list_displays", "focus_window"}:
+                return (
+                    f"{action} is unavailable in background_app mode; "
+                    "switch explicitly to foreground_desktop"
+                )
+            if action in {
+                "observe",
+                "move",
+                "click",
+                "double_click",
+                "drag",
+                "scroll",
+                "type",
+                "keypress",
+            } and not tool_input.get("window_id"):
+                return "window_id is required in background_app mode; call list_windows first"
         return None
 
     def get_permission_key(self, tool_input: dict[str, Any]) -> str:
@@ -171,8 +207,8 @@ class ComputerUseTool(Tool):
         )
 
     async def call(self, tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
-        backend, host_id, enabled = self._binding()
-        if not enabled or not backend or not host_id or not backend.is_available(host_id):
+        backend, host_id, enabled, mode = self._binding()
+        if not enabled or not backend or not host_id or not backend.is_available(host_id, mode):
             return ToolResult(
                 result_for_model="Computer Use is unavailable or has been disabled by the user.",
                 result_for_display="Computer Use 不可用或已被用户关闭",
@@ -185,6 +221,7 @@ class ComputerUseTool(Tool):
                 session_id=context.session_id,
                 agent_id=context.agent_id,
                 action=dict(tool_input),
+                mode=mode,
             )
         except Exception as exc:
             return ToolResult(

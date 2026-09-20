@@ -15228,6 +15228,16 @@ html[data-theme="light"] .project-file-code .token.class-name {
   color: var(--muted);
 }
 
+.computer-use-mode {
+  padding: 2px 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .computer-use-state.ready,
 .computer-use-state.busy {
   color: var(--green);

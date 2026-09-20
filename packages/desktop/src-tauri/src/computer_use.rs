@@ -11,6 +11,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use xcap::image::{imageops::FilterType, DynamicImage, ImageFormat, RgbaImage};
 use xcap::{Monitor, Window};
 
+#[cfg(target_os = "macos")]
+use core_graphics::event::{
+    CGEvent, CGEventFlags, CGEventType, CGMouseButton, EventField, KeyCode, ScrollEventUnit,
+};
+#[cfg(target_os = "macos")]
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+#[cfg(target_os = "macos")]
+use core_graphics::geometry::CGPoint;
+
 const MAX_SCREENSHOT_BYTES: usize = 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
@@ -30,12 +39,28 @@ pub struct ComputerUseCapabilities {
     input_available: bool,
     platform: &'static str,
     displays: Vec<DisplayInfo>,
+    supported_modes: Vec<&'static str>,
     reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ExecuteRequest {
+    #[serde(default)]
+    mode: ComputerUseMode,
     action: ComputerAction,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ComputerUseMode {
+    BackgroundApp,
+    ForegroundDesktop,
+}
+
+impl Default for ComputerUseMode {
+    fn default() -> Self {
+        Self::BackgroundApp
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,6 +123,7 @@ fn detect_capabilities() -> ComputerUseCapabilities {
                 input_available: false,
                 platform: std::env::consts::OS,
                 displays: Vec::new(),
+                supported_modes: supported_modes(),
                 reason: Some("No graphical displays were detected".to_string()),
             }
         }
@@ -107,6 +133,7 @@ fn detect_capabilities() -> ComputerUseCapabilities {
                 input_available: false,
                 platform: std::env::consts::OS,
                 displays: Vec::new(),
+                supported_modes: supported_modes(),
                 reason: Some(error),
             }
         }
@@ -135,6 +162,7 @@ fn detect_capabilities() -> ComputerUseCapabilities {
         input_available,
         platform: std::env::consts::OS,
         displays,
+        supported_modes: supported_modes(),
         reason,
     }
 }
@@ -148,8 +176,20 @@ pub async fn computer_use_capabilities() -> ComputerUseCapabilities {
             input_available: false,
             platform: std::env::consts::OS,
             displays: Vec::new(),
+            supported_modes: supported_modes(),
             reason: Some(format!("Computer Use capability detection failed: {error}")),
         })
+}
+
+fn supported_modes() -> Vec<&'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        vec!["background_app", "foreground_desktop"]
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        vec!["foreground_desktop"]
+    }
 }
 
 #[tauri::command]
@@ -346,6 +386,292 @@ fn window_list() -> Result<Vec<Value>, String> {
             }))
         })
         .collect()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WindowTarget {
+    pid: i32,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+fn window_target(window_id: &str) -> Result<WindowTarget, String> {
+    let windows = Window::all().map_err(|error| error.to_string())?;
+    let window = windows
+        .iter()
+        .find(|window| {
+            window
+                .id()
+                .map(|value| value.to_string() == window_id)
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| format!("Window not found: {window_id}"))?;
+    Ok(WindowTarget {
+        pid: window.pid().map_err(|error| error.to_string())? as i32,
+        x: window.x().map_err(|error| error.to_string())?,
+        y: window.y().map_err(|error| error.to_string())?,
+        width: window.width().map_err(|error| error.to_string())?,
+        height: window.height().map_err(|error| error.to_string())?,
+    })
+}
+
+fn background_target(action: &ComputerAction) -> Result<WindowTarget, String> {
+    let window_id = action.window_id.as_deref().ok_or_else(|| {
+        "background_app mode requires window_id; call list_windows first".to_string()
+    })?;
+    window_target(window_id)
+}
+
+fn background_point(action: &ComputerAction, target: WindowTarget) -> Result<(i32, i32), String> {
+    let x = required(action.x, "x")?;
+    let y = required(action.y, "y")?;
+    let right = target.x.saturating_add(target.width as i32);
+    let bottom = target.y.saturating_add(target.height as i32);
+    if x < target.x || x >= right || y < target.y || y >= bottom {
+        return Err(format!(
+            "Point ({x}, {y}) is outside target window bounds ({}, {}) {}x{}",
+            target.x, target.y, target.width, target.height
+        ));
+    }
+    Ok((x, y))
+}
+
+#[cfg(target_os = "macos")]
+fn mac_event_source() -> Result<CGEventSource, String> {
+    CGEventSource::new(CGEventSourceStateID::Private)
+        .map_err(|_| "Unable to create a private macOS input source".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_require_input_permission() -> Result<(), String> {
+    let settings = Settings {
+        open_prompt_to_get_permissions: false,
+        ..Settings::default()
+    };
+    Enigo::new(&settings)
+        .map(|_| ())
+        .map_err(|error| format!("macOS Accessibility permission is required: {error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn mac_mouse_button(name: Option<&str>) -> Result<CGMouseButton, String> {
+    match name.unwrap_or("left").to_ascii_lowercase().as_str() {
+        "left" => Ok(CGMouseButton::Left),
+        "middle" => Ok(CGMouseButton::Center),
+        "right" => Ok(CGMouseButton::Right),
+        value => Err(format!("Unknown mouse button: {value}")),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn mac_mouse_event_types(button: CGMouseButton) -> (CGEventType, CGEventType, CGEventType) {
+    match button {
+        CGMouseButton::Left => (
+            CGEventType::LeftMouseDown,
+            CGEventType::LeftMouseUp,
+            CGEventType::LeftMouseDragged,
+        ),
+        CGMouseButton::Right => (
+            CGEventType::RightMouseDown,
+            CGEventType::RightMouseUp,
+            CGEventType::RightMouseDragged,
+        ),
+        CGMouseButton::Center => (
+            CGEventType::OtherMouseDown,
+            CGEventType::OtherMouseUp,
+            CGEventType::OtherMouseDragged,
+        ),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn mac_post_mouse(
+    pid: i32,
+    event_type: CGEventType,
+    button: CGMouseButton,
+    x: i32,
+    y: i32,
+    click_count: i64,
+) -> Result<(), String> {
+    let event = CGEvent::new_mouse_event(
+        mac_event_source()?,
+        event_type,
+        CGPoint::new(x as f64, y as f64),
+        button,
+    )
+    .map_err(|_| "Unable to create a macOS mouse event".to_string())?;
+    event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, click_count);
+    event.post_to_pid(pid);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_click(
+    target: WindowTarget,
+    x: i32,
+    y: i32,
+    button_name: Option<&str>,
+    click_count: i64,
+) -> Result<(), String> {
+    let button = mac_mouse_button(button_name)?;
+    let (down, up, _) = mac_mouse_event_types(button);
+    for count in 1..=click_count {
+        mac_post_mouse(target.pid, down, button, x, y, count)?;
+        mac_post_mouse(target.pid, up, button, x, y, count)?;
+        if count < click_count {
+            thread::sleep(Duration::from_millis(80));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_drag(
+    target: WindowTarget,
+    start: (i32, i32),
+    end: (i32, i32),
+    button_name: Option<&str>,
+    duration_ms: u64,
+) -> Result<(), String> {
+    let button = mac_mouse_button(button_name)?;
+    let (down, up, dragged) = mac_mouse_event_types(button);
+    mac_post_mouse(target.pid, down, button, start.0, start.1, 1)?;
+    let steps = 20i32;
+    for step in 1..=steps {
+        let x = start.0 + (end.0 - start.0) * step / steps;
+        let y = start.1 + (end.1 - start.1) * step / steps;
+        mac_post_mouse(target.pid, dragged, button, x, y, 1)?;
+        thread::sleep(Duration::from_millis(duration_ms / steps as u64));
+    }
+    mac_post_mouse(target.pid, up, button, end.0, end.1, 1)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_scroll(
+    target: WindowTarget,
+    point: Option<(i32, i32)>,
+    delta_x: i32,
+    delta_y: i32,
+) -> Result<(), String> {
+    let event = CGEvent::new_scroll_event(
+        mac_event_source()?,
+        ScrollEventUnit::PIXEL,
+        2,
+        delta_y,
+        delta_x,
+        0,
+    )
+    .map_err(|_| "Unable to create a macOS scroll event".to_string())?;
+    if let Some((x, y)) = point {
+        event.set_location(CGPoint::new(x as f64, y as f64));
+    }
+    event.post_to_pid(target.pid);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_keycode(name: &str) -> Option<u16> {
+    Some(match name.trim().to_ascii_uppercase().as_str() {
+        "A" => KeyCode::ANSI_A,
+        "B" => KeyCode::ANSI_B,
+        "C" => KeyCode::ANSI_C,
+        "D" => KeyCode::ANSI_D,
+        "E" => KeyCode::ANSI_E,
+        "F" => KeyCode::ANSI_F,
+        "G" => KeyCode::ANSI_G,
+        "H" => KeyCode::ANSI_H,
+        "I" => KeyCode::ANSI_I,
+        "J" => KeyCode::ANSI_J,
+        "K" => KeyCode::ANSI_K,
+        "L" => KeyCode::ANSI_L,
+        "M" => KeyCode::ANSI_M,
+        "N" => KeyCode::ANSI_N,
+        "O" => KeyCode::ANSI_O,
+        "P" => KeyCode::ANSI_P,
+        "Q" => KeyCode::ANSI_Q,
+        "R" => KeyCode::ANSI_R,
+        "S" => KeyCode::ANSI_S,
+        "T" => KeyCode::ANSI_T,
+        "U" => KeyCode::ANSI_U,
+        "V" => KeyCode::ANSI_V,
+        "W" => KeyCode::ANSI_W,
+        "X" => KeyCode::ANSI_X,
+        "Y" => KeyCode::ANSI_Y,
+        "Z" => KeyCode::ANSI_Z,
+        "0" => KeyCode::ANSI_0,
+        "1" => KeyCode::ANSI_1,
+        "2" => KeyCode::ANSI_2,
+        "3" => KeyCode::ANSI_3,
+        "4" => KeyCode::ANSI_4,
+        "5" => KeyCode::ANSI_5,
+        "6" => KeyCode::ANSI_6,
+        "7" => KeyCode::ANSI_7,
+        "8" => KeyCode::ANSI_8,
+        "9" => KeyCode::ANSI_9,
+        "ENTER" | "RETURN" => KeyCode::RETURN,
+        "TAB" => KeyCode::TAB,
+        "SPACE" => KeyCode::SPACE,
+        "BACKSPACE" => KeyCode::DELETE,
+        "DELETE" | "DEL" => KeyCode::FORWARD_DELETE,
+        "ESC" | "ESCAPE" => KeyCode::ESCAPE,
+        "LEFT" | "ARROWLEFT" => KeyCode::LEFT_ARROW,
+        "RIGHT" | "ARROWRIGHT" => KeyCode::RIGHT_ARROW,
+        "UP" | "ARROWUP" => KeyCode::UP_ARROW,
+        "DOWN" | "ARROWDOWN" => KeyCode::DOWN_ARROW,
+        "HOME" => KeyCode::HOME,
+        "END" => KeyCode::END,
+        "PAGEUP" | "PAGE_UP" => KeyCode::PAGE_UP,
+        "PAGEDOWN" | "PAGE_DOWN" => KeyCode::PAGE_DOWN,
+        "F1" => KeyCode::F1,
+        "F10" => KeyCode::F10,
+        "F11" => KeyCode::F11,
+        "F12" => KeyCode::F12,
+        _ => return None,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn mac_press_keys(pid: i32, names: &[String]) -> Result<(), String> {
+    if names.is_empty() {
+        return Err("keys cannot be empty".to_string());
+    }
+    let mut flags = CGEventFlags::CGEventFlagNull;
+    let mut key_name: Option<&str> = None;
+    for name in names {
+        match name.trim().to_ascii_uppercase().as_str() {
+            "CMD" | "COMMAND" | "META" => flags |= CGEventFlags::CGEventFlagCommand,
+            "CTRL" | "CONTROL" => flags |= CGEventFlags::CGEventFlagControl,
+            "ALT" | "OPTION" => flags |= CGEventFlags::CGEventFlagAlternate,
+            "SHIFT" => flags |= CGEventFlags::CGEventFlagShift,
+            _ if key_name.is_none() => key_name = Some(name),
+            _ => return Err("background_app keypress supports one non-modifier key".to_string()),
+        }
+    }
+    let name = key_name.ok_or_else(|| "keypress requires a non-modifier key".to_string())?;
+    let keycode = mac_keycode(name).ok_or_else(|| format!("Unknown macOS key: {name}"))?;
+    for down in [true, false] {
+        let event = CGEvent::new_keyboard_event(mac_event_source()?, keycode, down)
+            .map_err(|_| "Unable to create a macOS keyboard event".to_string())?;
+        event.set_flags(flags);
+        event.post_to_pid(pid);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_type_text(pid: i32, text: &str) -> Result<(), String> {
+    for character in text.chars() {
+        let value = character.to_string();
+        for down in [true, false] {
+            let event = CGEvent::new_keyboard_event(mac_event_source()?, 0, down)
+                .map_err(|_| "Unable to create a macOS text event".to_string())?;
+            event.set_string(&value);
+            event.post_to_pid(pid);
+        }
+    }
+    Ok(())
 }
 
 fn screenshot(action: &ComputerAction) -> Result<Value, String> {
@@ -582,7 +908,7 @@ fn perform_action(action: &ComputerAction, enigo: &mut Enigo) -> Result<String, 
     }
 }
 
-fn execute(request: ExecuteRequest) -> Result<Value, String> {
+fn execute_foreground(request: ExecuteRequest) -> Result<Value, String> {
     let mut enigo = Enigo::new(&Settings::default()).map_err(|error| error.to_string())?;
     let summary = perform_action(&request.action, &mut enigo)?;
     let cursor = enigo
@@ -592,6 +918,7 @@ fn execute(request: ExecuteRequest) -> Result<Value, String> {
 
     let mut result = json!({
         "ok": true,
+        "mode": "foreground_desktop",
         "action": request.action.action,
         "summary": summary,
         "cursor": cursor,
@@ -619,6 +946,194 @@ fn execute(request: ExecuteRequest) -> Result<Value, String> {
         }
     }
     Ok(result)
+}
+
+#[cfg(target_os = "macos")]
+fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
+    let action = &request.action;
+    if matches!(
+        action.action.as_str(),
+        "move" | "click" | "double_click" | "drag" | "scroll" | "type" | "keypress"
+    ) {
+        mac_require_input_permission()?;
+    }
+    let mut cursor = Value::Null;
+    let summary = match action.action.as_str() {
+        "observe" => {
+            background_target(action)?;
+            "Observed application window".to_string()
+        }
+        "list_windows" => "Listed application windows".to_string(),
+        "list_displays" => {
+            return Err(
+                "background_app mode does not expose the full desktop or displays; use list_windows"
+                    .to_string(),
+            )
+        }
+        "move" => {
+            let target = background_target(action)?;
+            let (x, y) = background_point(action, target)?;
+            mac_post_mouse(
+                target.pid,
+                CGEventType::MouseMoved,
+                CGMouseButton::Left,
+                x,
+                y,
+                0,
+            )?;
+            cursor = json!({ "x": x, "y": y });
+            "Moved application pointer".to_string()
+        }
+        "click" | "double_click" => {
+            let target = background_target(action)?;
+            let (x, y) = background_point(action, target)?;
+            mac_click(
+                target,
+                x,
+                y,
+                action.button.as_deref(),
+                if action.action == "double_click" { 2 } else { 1 },
+            )?;
+            cursor = json!({ "x": x, "y": y });
+            if action.action == "double_click" {
+                "Double-clicked application window"
+            } else {
+                "Clicked application window"
+            }
+            .to_string()
+        }
+        "drag" => {
+            let target = background_target(action)?;
+            let start = background_point(action, target)?;
+            let end_action = ComputerAction {
+                action: action.action.clone(),
+                x: action.to_x,
+                y: action.to_y,
+                to_x: None,
+                to_y: None,
+                button: None,
+                delta_x: None,
+                delta_y: None,
+                text: None,
+                keys: None,
+                display_id: None,
+                window_id: action.window_id.clone(),
+                duration_ms: None,
+                include_screenshot: None,
+            };
+            let end = background_point(&end_action, target)?;
+            mac_drag(
+                target,
+                start,
+                end,
+                action.button.as_deref(),
+                action.duration_ms.unwrap_or(400).min(30_000),
+            )?;
+            cursor = json!({ "x": end.0, "y": end.1 });
+            "Dragged in application window".to_string()
+        }
+        "scroll" => {
+            let target = background_target(action)?;
+            let point = match (action.x, action.y) {
+                (Some(_), Some(_)) => Some(background_point(action, target)?),
+                (None, None) => None,
+                _ => return Err("x and y must be provided together for scroll".to_string()),
+            };
+            mac_scroll(
+                target,
+                point,
+                action.delta_x.unwrap_or(0),
+                action.delta_y.unwrap_or(0),
+            )?;
+            if let Some((x, y)) = point {
+                cursor = json!({ "x": x, "y": y });
+            }
+            "Scrolled application window".to_string()
+        }
+        "type" => {
+            let target = background_target(action)?;
+            mac_type_text(
+                target.pid,
+                action
+                    .text
+                    .as_deref()
+                    .ok_or_else(|| "text is required".to_string())?,
+            )?;
+            "Typed into application window".to_string()
+        }
+        "keypress" => {
+            let target = background_target(action)?;
+            mac_press_keys(target.pid, action.keys.as_deref().unwrap_or_default())?;
+            "Pressed keys in application window".to_string()
+        }
+        "open_app" => {
+            let name = action
+                .text
+                .as_deref()
+                .ok_or_else(|| "text is required".to_string())?;
+            let status = Command::new("open")
+                .args(["-g", "-a", name])
+                .status()
+                .map_err(|error| format!("Unable to open app in background: {error}"))?;
+            if !status.success() {
+                return Err(format!("Unable to open app in background; process exited with {status}"));
+            }
+            format!("Opened {name} in background")
+        }
+        "focus_window" => {
+            return Err(
+                "background_app mode cannot focus or raise a window; switch explicitly to foreground_desktop"
+                    .to_string(),
+            )
+        }
+        "wait" => {
+            thread::sleep(Duration::from_millis(
+                action.duration_ms.unwrap_or(500).min(30_000),
+            ));
+            "Waited".to_string()
+        }
+        other => return Err(format!("Unknown Computer Use action: {other}")),
+    };
+
+    let mut result = json!({
+        "ok": true,
+        "mode": "background_app",
+        "action": action.action,
+        "summary": summary,
+        "cursor": cursor,
+    });
+    if action.action == "list_windows" {
+        result["windows"] = Value::Array(window_list()?);
+    }
+
+    let capture = action.action == "observe"
+        || action.include_screenshot.unwrap_or(!matches!(
+            action.action.as_str(),
+            "list_windows" | "wait" | "open_app"
+        ));
+    if capture {
+        match screenshot(action) {
+            Ok(frame) => result["screenshot"] = frame,
+            Err(error) if action.action == "observe" => return Err(error),
+            Err(error) => result["screenshot_error"] = Value::String(error),
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn execute_background(_request: ExecuteRequest) -> Result<Value, String> {
+    Err(
+        "background_app mode is unavailable on this platform; switch explicitly to foreground_desktop"
+            .to_string(),
+    )
+}
+
+fn execute(request: ExecuteRequest) -> Result<Value, String> {
+    match request.mode {
+        ComputerUseMode::BackgroundApp => execute_background(request),
+        ComputerUseMode::ForegroundDesktop => execute_foreground(request),
+    }
 }
 
 #[tauri::command]
@@ -652,5 +1167,104 @@ mod tests {
         assert!(gui_available);
         assert!(!input_available);
         assert_eq!(reason.as_deref(), Some("accessibility permission denied"));
+    }
+
+    #[test]
+    fn computer_use_mode_defaults_to_background_and_rejects_unknown_values() {
+        let request: ExecuteRequest = serde_json::from_value(json!({
+            "action": { "action": "list_windows" }
+        }))
+        .unwrap();
+        assert_eq!(request.mode, ComputerUseMode::BackgroundApp);
+        assert!(serde_json::from_value::<ExecuteRequest>(json!({
+            "mode": "automatic",
+            "action": { "action": "list_windows" }
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn background_mode_rejects_full_desktop_actions_without_fallback() {
+        let request: ExecuteRequest = serde_json::from_value(json!({
+            "mode": "background_app",
+            "action": { "action": "list_displays" }
+        }))
+        .unwrap();
+        let error = execute(request).unwrap_err();
+        assert!(
+            error.contains("does not expose the full desktop")
+                || error.contains("background_app mode is unavailable")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "launches an isolated TextEdit process to verify real background window input"]
+    fn macos_background_window_round_trip_does_not_use_foreground_input() {
+        use std::fs;
+        use std::io::Write as _;
+
+        let permission_settings = Settings {
+            open_prompt_to_get_permissions: false,
+            ..Settings::default()
+        };
+        if Enigo::new(&permission_settings).is_err() {
+            eprintln!("skipped: the test binary does not have macOS Accessibility permission");
+            return;
+        }
+
+        let mut file = tempfile::Builder::new().suffix(".txt").tempfile().unwrap();
+        file.write_all(b"before").unwrap();
+        file.as_file_mut().sync_all().unwrap();
+        let path = file.path().to_path_buf();
+        let filename = path.file_name().unwrap().to_string_lossy().to_string();
+
+        let status = Command::new("open")
+            .args(["-n", "-g", "-a", "TextEdit"])
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let mut target: Option<(String, WindowTarget)> = None;
+        for _ in 0..50 {
+            if let Some(found) = Window::all().unwrap().into_iter().find(|window| {
+                window
+                    .title()
+                    .map(|title| title.contains(&filename))
+                    .unwrap_or(false)
+            }) {
+                let id = found.id().unwrap().to_string();
+                target = Some((id.clone(), window_target(&id).unwrap()));
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        let (window_id, target) = target.expect("isolated TextEdit window did not appear");
+
+        let observe: ComputerAction = serde_json::from_value(json!({
+            "action": "observe",
+            "window_id": window_id,
+        }))
+        .unwrap();
+        assert!(screenshot(&observe).is_ok());
+
+        let x = target.x + target.width as i32 / 2;
+        let y = target.y + target.height as i32 / 2;
+        mac_click(target, x, y, Some("left"), 1).unwrap();
+        mac_press_keys(target.pid, &["CMD".to_string(), "A".to_string()]).unwrap();
+        mac_type_text(target.pid, "background-app-round-trip").unwrap();
+        mac_press_keys(target.pid, &["CMD".to_string(), "S".to_string()]).unwrap();
+
+        let mut saved = String::new();
+        for _ in 0..30 {
+            saved = fs::read_to_string(&path).unwrap_or_default();
+            if saved.contains("background-app-round-trip") {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        let _ = Command::new("kill").arg(target.pid.to_string()).status();
+        assert_eq!(saved, "background-app-round-trip");
     }
 }

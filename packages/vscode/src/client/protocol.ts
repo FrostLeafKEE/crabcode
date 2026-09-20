@@ -29,6 +29,7 @@ export interface SendMessageCommand {
   session_id: string | null;
   operation_id?: string;
   images?: ImageAttachment[];
+  computer_use_mode?: "background_app" | "foreground_desktop";
 }
 
 /** Add user guidance to the foreground turn at its next safe tool boundary. */
@@ -151,6 +152,7 @@ export function buildSendMessageCommand(
     sessionId?: string;
     operationId?: string;
     images?: ImageAttachment[];
+    computerUseMode?: "background_app" | "foreground_desktop";
   } = {},
 ): SendMessageCommand {
   const cmd: SendMessageCommand = {
@@ -163,6 +165,7 @@ export function buildSendMessageCommand(
   if (options.images && options.images.length > 0) {
     cmd.images = options.images;
   }
+  if (options.computerUseMode) cmd.computer_use_mode = options.computerUseMode;
   return cmd;
 }
 

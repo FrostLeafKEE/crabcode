@@ -85,11 +85,20 @@ class ComputerUseBroker:
             if not future.done():
                 future.set_exception(RuntimeError("Computer Use host disconnected"))
 
-    def is_available(self, host_id: str | None) -> bool:
+    def is_available(self, host_id: str | None, mode: str | None = None) -> bool:
         if not host_id:
             return False
         host = self._hosts.get(host_id)
-        return bool(host and host.enabled and host.gui_available)
+        if not (host and host.enabled and host.gui_available):
+            return False
+        if mode is None:
+            return True
+        supported_modes = host.capabilities.get("supported_modes")
+        if not isinstance(supported_modes, list):
+            # Hosts predating mode negotiation only implement the legacy
+            # foreground desktop behavior.
+            return mode == "foreground_desktop"
+        return mode in supported_modes
 
     def resolve(self, host_id: str, request_id: str, result: dict[str, Any]) -> bool:
         pending = self._pending.get(request_id)
@@ -108,10 +117,16 @@ class ComputerUseBroker:
         session_id: str,
         agent_id: str | None,
         action: dict[str, Any],
+        mode: str = "background_app",
     ) -> dict[str, Any]:
         host = self._hosts.get(host_id)
         if host is None or not host.enabled or not host.gui_available:
             raise RuntimeError("Computer Use is unavailable or disabled")
+        supported_modes = host.capabilities.get("supported_modes")
+        if not isinstance(supported_modes, list):
+            supported_modes = ["foreground_desktop"]
+        if mode not in supported_modes:
+            raise RuntimeError(f"Computer Use mode '{mode}' is unavailable on this host")
 
         async with host.action_lock:
             # State may have changed while this request waited for the host.
@@ -126,6 +141,7 @@ class ComputerUseBroker:
                     "request_id": request_id,
                     "session_id": session_id,
                     "agent_id": agent_id,
+                    "mode": mode,
                     "action": action,
                 })
                 return await asyncio.wait_for(future, timeout=self.timeout_seconds)

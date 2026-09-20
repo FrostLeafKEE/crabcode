@@ -5,6 +5,7 @@ in this file.
 
 ## Unreleased
 
+- Add `crabcode.computerUseMode` with background-application and foreground-desktop modes; explicit VS Code values override the Gateway mode without automatic fallback.
 - Add Desktop-style composer capsules for reasoning effort, models, and modes.
 - Add the seven reasoning effort levels and an Ultra toggle in the **+** menu,
   with a removable gradient capsule and bounded spectrum animation.

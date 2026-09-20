@@ -111,6 +111,8 @@ class CoreSession:
         self.computer_use_backend: Any | None = None
         self.computer_use_host_id: str | None = None
         self.computer_use_enabled: bool = False
+        self.computer_use_mode: str = self.settings.computer_use.mode
+        self._computer_use_mode_override: str | None = None
         # Instances loaded from project ``extra_tools`` are tracked so a
         # cross-project resume can close/remove the old set before loading the
         # target project's extensions.
@@ -469,6 +471,9 @@ class CoreSession:
         if self._ultra_mode_override is not None:
             merged.ultra_mode = self._ultra_mode_override
         self.settings = merged
+        self.computer_use_mode = (
+            self._computer_use_mode_override or merged.computer_use.mode
+        )
 
         for key, val in merged.env.items():
             os.environ.setdefault(key, val)
@@ -2132,6 +2137,9 @@ class CoreSession:
             prepared = await self._prepare_project_resources(self.cwd)
         merged = prepared["settings"]
         self.settings = merged
+        self.computer_use_mode = (
+            self._computer_use_mode_override or merged.computer_use.mode
+        )
         if self._schedule_manager is not None:
             if self._schedule_manager.settings.persist != merged.schedule.persist:
                 await self._schedule_manager.close()

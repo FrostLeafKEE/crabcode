@@ -155,6 +155,8 @@ export interface SendMessageRequest {
   session_id?: string | null;
   operation_id?: string | null;
   images?: ImageAttachment[];
+  computer_use_enabled?: boolean | null;
+  computer_use_mode?: "background_app" | "foreground_desktop" | null;
 }
 
 export interface NewSessionRequest {
@@ -165,6 +167,9 @@ export interface NewSessionRequest {
   base_url?: string | null;
   api_format?: string | null;
   model_profile?: string | null;
+  computer_use_host_id?: string | null;
+  computer_use_enabled?: boolean | null;
+  computer_use_mode?: "background_app" | "foreground_desktop" | null;
 }
 
 export interface ResumeSessionRequest {
@@ -175,6 +180,9 @@ export interface ResumeSessionRequest {
   base_url?: string | null;
   api_format?: string | null;
   model_profile?: string | null;
+  computer_use_host_id?: string | null;
+  computer_use_enabled?: boolean | null;
+  computer_use_mode?: "background_app" | "foreground_desktop" | null;
 }
 
 export interface ForkSessionRequest {
@@ -272,13 +280,14 @@ export interface ModelSettingsMutationRequest {
   remove_fields?: string[];
 }
 
-/** A focused mutation for snapshot and extra-tool settings. */
+/** A focused mutation for runtime, Computer Use, and extra-tool settings. */
 export interface RuntimeSettingsMutationRequest {
-  action: "set_snapshot" | "add_extra_tool" | "remove_extra_tool";
+  action: "set_snapshot" | "set_computer_use_mode" | "add_extra_tool" | "remove_extra_tool";
   source?: "userSettings" | "projectSettings" | "localSettings";
   cwd?: string | null;
   snapshot_enabled?: boolean | null;
   snapshot_max_size_mb?: number | null;
+  computer_use_mode?: "background_app" | "foreground_desktop" | null;
   tool_path?: string | null;
 }
 
@@ -744,11 +753,12 @@ export interface ModelSettingsResponse {
   editable_sources?: ModelSettingsSource[];
 }
 
-/** Effective snapshot and extra-tool settings visible from a workspace. */
+/** Effective runtime and extra-tool settings visible from a workspace. */
 export interface RuntimeSettingsResponse {
   cwd: string;
   snapshot_enabled?: boolean;
   snapshot_max_size_mb?: number;
+  computer_use_mode?: "background_app" | "foreground_desktop";
   extra_tools?: string[];
   extra_tools_by_source?: Record<string, string[]>;
   sources?: string[];

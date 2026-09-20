@@ -69,9 +69,15 @@ Open **Settings** and search for `CrabCode`, or add settings such as:
   "crabcode.autoConnect": true,
   "crabcode.gatewayAutoInstall": true,
   "crabcode.pythonPath": "",
-  "crabcode.showDiffOnFileChange": false
+  "crabcode.showDiffOnFileChange": false,
+  "crabcode.computerUseMode": "background_app"
 }
 ```
+
+`crabcode.computerUseMode` accepts `background_app` and
+`foreground_desktop`. A value explicitly saved in VS Code overrides the
+Gateway's `computer_use.mode` for sessions created or resumed by the extension.
+Background mode never falls back automatically to foreground control.
 
 Installing a suite provides its Python package and dependencies. Search and
 Debugger remain disabled until their import paths are added to the Gateway's

@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   HardDrive,
   LoaderCircle,
+  MonitorUp,
   Plus,
   RefreshCw,
   Server,
@@ -95,6 +96,19 @@ export function RuntimeSettingsPanel({
     }
   };
 
+  const saveComputerUseMode = async (mode: "background_app" | "foreground_desktop") => {
+    try {
+      await mutate({
+        action: "set_computer_use_mode",
+        source,
+        cwd: activeProject?.path,
+        computer_use_mode: mode,
+      });
+    } catch {
+      // The mutation banner contains the remote error.
+    }
+  };
+
   const addTool = async (event: FormEvent) => {
     event.preventDefault();
     const value = toolPath.trim();
@@ -129,7 +143,7 @@ export function RuntimeSettingsPanel({
       <div className="settings-section-heading">
         <div>
           <h2 id="runtime-settings-title">运行与工具</h2>
-          <p>管理远程 Gateway 的文件快照和额外工具配置。</p>
+          <p>管理 Gateway 的 Computer Use、文件快照和额外工具配置。</p>
         </div>
         <button
           className="settings-command"
@@ -223,6 +237,41 @@ export function RuntimeSettingsPanel({
                   if (event.key === "Escape") setSnapshotSizeDraft(String(data.snapshot_max_size_mb));
                 }}
               />
+            </div>
+          </section>
+
+          <section className="runtime-settings-group settings-group" aria-labelledby="computer-use-settings-title">
+            <div className="settings-subsection-heading">
+              <div>
+                <h3 id="computer-use-settings-title">Computer Use</h3>
+                <p>选择 Agent 操作桌面应用时使用的隔离方式；修改对新会话生效。</p>
+              </div>
+              <MonitorUp aria-hidden="true" />
+            </div>
+            <div className="settings-row compact">
+              <div className="settings-row-copy">
+                <strong>操作模式</strong>
+                <span>
+                  后台应用模式只操作指定应用窗口，不会自动回退；前台桌面模式会控制真实鼠标和键盘。
+                </span>
+              </div>
+              <div className="settings-segmented" aria-label="Computer Use 操作模式">
+                {(["background_app", "foreground_desktop"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={(data.computer_use_mode ?? "background_app") === mode ? "active" : ""}
+                    aria-pressed={(data.computer_use_mode ?? "background_app") === mode}
+                    disabled={!canEdit || mutationBusy}
+                    onClick={() => void saveComputerUseMode(mode)}
+                  >
+                    {mode === "background_app" ? "后台应用" : "前台桌面"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="runtime-settings-note">
+              后台应用模式当前仅在 macOS 可用；不支持整张桌面、系统级界面或缺少目标窗口的操作。
             </div>
           </section>
 

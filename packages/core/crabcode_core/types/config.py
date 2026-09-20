@@ -215,6 +215,12 @@ class SnapshotSettings(BaseModel):
     max_size_mb: int = Field(default=1024, ge=1, le=1_048_576)
 
 
+class ComputerUseSettings(BaseModel):
+    """Controls how a connected Computer Use host operates the GUI."""
+
+    mode: Literal["background_app", "foreground_desktop"] = "background_app"
+
+
 class GatewaySecuritySettings(BaseModel):
     """Authentication settings for the HTTP/WebSocket/gRPC gateway."""
 
@@ -277,6 +283,7 @@ class CrabCodeSettings(BaseModel):
     cross_session: CrossSessionSettings = Field(default_factory=CrossSessionSettings)
     schedule: ScheduleSettings = Field(default_factory=ScheduleSettings)
     snapshot: SnapshotSettings = Field(default_factory=SnapshotSettings)
+    computer_use: ComputerUseSettings = Field(default_factory=ComputerUseSettings)
     gateway: GatewaySettings = Field(default_factory=GatewaySettings)
     display: DisplaySettings = Field(default_factory=DisplaySettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)

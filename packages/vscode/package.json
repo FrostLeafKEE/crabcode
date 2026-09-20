@@ -161,6 +161,19 @@
           "default": "enter",
           "description": "CrabCode 聊天输入框的发送快捷键"
         },
+        "crabcode.computerUseMode": {
+          "type": "string",
+          "enum": [
+            "background_app",
+            "foreground_desktop"
+          ],
+          "enumDescriptions": [
+            "后台应用模式：只操作指定应用窗口，不自动回退到前台桌面（当前仅支持 macOS）",
+            "前台桌面模式：控制完整桌面、真实鼠标和键盘，会影响当前用户操作"
+          ],
+          "default": "background_app",
+          "description": "Computer Use 操作模式；工作区或用户显式设置后覆盖 Gateway 的 computer_use.mode"
+        },
         "crabcode.chatModels": {
           "type": "array",
           "items": {

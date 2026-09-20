@@ -675,6 +675,7 @@ name = "crabcode-desktop"
 version = "0.1.5"
 dependencies = [
  "base64 0.22.1",
+ "core-graphics",
  "dirs",
  "enigo",
  "keyring",

@@ -99,6 +99,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
         <section className="computer-use-console" id="computer-use-console" aria-label="Computer Use 控制台">
           <header>
             <strong><MonitorUp />Computer Use</strong>
+            <span className="computer-use-mode">{computerUse.mode === "background_app" ? "后台应用" : "前台桌面"}</span>
             <span className={`computer-use-state ${computerUse.status}`}>{computerStatusLabel}</span>
             <button
               className={`computer-use-power ${computerUse.enabled ? "enabled" : ""}`}

@@ -207,6 +207,7 @@ export class CrabCodeConnection implements vscode.Disposable {
       sessionId,
       operationId,
       images: options?.images,
+      computerUseMode: this.computerUseModeOverride(),
     });
     if (sessionId) this.activeForegroundOperations.set(sessionId, operationId);
     this.sendCommand(cmd);
@@ -303,13 +304,21 @@ export class CrabCodeConnection implements vscode.Disposable {
     this.sessionRequestPending = true;
     const hasOverrides = Boolean(overrides && Object.keys(overrides).length > 0);
     this.log(`new_session requested cwd=${cwd ?? "(none)"}${hasOverrides ? " with API overrides" : ""}`);
-    this.sendRaw(serializeCommand(buildNewSessionCommand(cwd, overrides)));
+    const computerUseMode = this.computerUseModeOverride();
+    this.sendRaw(serializeCommand(buildNewSessionCommand(cwd, {
+      ...(computerUseMode ? { computer_use_mode: computerUseMode } : {}),
+      ...overrides,
+    })));
   }
 
   sendResumeSession(sessionId: string, overrides?: SessionLaunchOverrides): void {
     const hasOverrides = Boolean(overrides && Object.keys(overrides).length > 0);
     this.log(`resume_session requested session=${sessionId}${hasOverrides ? " with API overrides" : ""}`);
-    this.sendRaw(serializeCommand(buildResumeSessionCommand(sessionId, overrides)));
+    const computerUseMode = this.computerUseModeOverride();
+    this.sendRaw(serializeCommand(buildResumeSessionCommand(sessionId, {
+      ...(computerUseMode ? { computer_use_mode: computerUseMode } : {}),
+      ...overrides,
+    })));
   }
 
   ensureSession(cwd: string | null): void {
@@ -501,6 +510,12 @@ export class CrabCodeConnection implements vscode.Disposable {
 
   private log(message: string): void {
     this.outputChannel?.appendLine(`[CrabCode][WS] ${message}`);
+  }
+
+  private computerUseModeOverride(): "background_app" | "foreground_desktop" | undefined {
+    const inspect = this.config.inspect?.<string>("computerUseMode");
+    const value = inspect?.workspaceFolderValue ?? inspect?.workspaceValue ?? inspect?.globalValue;
+    return value === "background_app" || value === "foreground_desktop" ? value : undefined;
   }
 
   private logRawPayload(direction: "send" | "recv", raw: string): void {

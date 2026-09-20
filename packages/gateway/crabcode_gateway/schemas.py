@@ -64,6 +64,7 @@ class SendMessageRequest(BaseModel):
     operation_id: str | None = Field(default=None, min_length=1)
     images: list[ImageAttachment] = Field(default_factory=list)
     computer_use_enabled: bool | None = None
+    computer_use_mode: Literal["background_app", "foreground_desktop"] | None = None
 
     @model_validator(mode="after")
     def validate_content(self) -> "SendMessageRequest":
@@ -82,6 +83,7 @@ class NewSessionRequest(BaseModel):
     model_profile: str | None = None
     computer_use_host_id: str | None = Field(default=None, min_length=1, max_length=200)
     computer_use_enabled: bool | None = None
+    computer_use_mode: Literal["background_app", "foreground_desktop"] | None = None
 
 
 class ResumeSessionRequest(BaseModel):
@@ -94,6 +96,7 @@ class ResumeSessionRequest(BaseModel):
     model_profile: str | None = None
     computer_use_host_id: str | None = Field(default=None, min_length=1, max_length=200)
     computer_use_enabled: bool | None = None
+    computer_use_mode: Literal["background_app", "foreground_desktop"] | None = None
 
 
 class ForkSessionRequest(BaseModel):
@@ -237,13 +240,19 @@ class ModelSettingsMutationRequest(BaseModel):
 
 
 class RuntimeSettingsMutationRequest(BaseModel):
-    """A focused mutation for snapshot and extra-tool settings."""
+    """A focused mutation for runtime, Computer Use, and extra-tool settings."""
 
-    action: Literal["set_snapshot", "add_extra_tool", "remove_extra_tool"]
+    action: Literal[
+        "set_snapshot",
+        "set_computer_use_mode",
+        "add_extra_tool",
+        "remove_extra_tool",
+    ]
     source: Literal["userSettings", "projectSettings", "localSettings"] = "projectSettings"
     cwd: str | None = None
     snapshot_enabled: bool | None = None
     snapshot_max_size_mb: int | None = Field(default=None, ge=1, le=1_048_576)
+    computer_use_mode: Literal["background_app", "foreground_desktop"] | None = None
     tool_path: str | None = None
 
     @model_validator(mode="after")
@@ -251,6 +260,9 @@ class RuntimeSettingsMutationRequest(BaseModel):
         if self.action == "set_snapshot":
             if self.snapshot_enabled is None and self.snapshot_max_size_mb is None:
                 raise ValueError("snapshot_enabled or snapshot_max_size_mb is required")
+        elif self.action == "set_computer_use_mode":
+            if self.computer_use_mode is None:
+                raise ValueError("computer_use_mode is required")
         else:
             if self.tool_path is None or not self.tool_path.strip():
                 raise ValueError("tool_path is required for extra tool mutations")
@@ -979,11 +991,12 @@ class ModelSettingsResponse(BaseModel):
 
 
 class RuntimeSettingsResponse(BaseModel):
-    """Effective snapshot and extra-tool settings visible from a workspace."""
+    """Effective runtime and extra-tool settings visible from a workspace."""
 
     cwd: str
     snapshot_enabled: bool = True
     snapshot_max_size_mb: int = 1024
+    computer_use_mode: Literal["background_app", "foreground_desktop"] = "background_app"
     extra_tools: list[str] = Field(default_factory=list)
     extra_tools_by_source: dict[str, list[str]] = Field(default_factory=dict)
     sources: list[str] = Field(default_factory=list)

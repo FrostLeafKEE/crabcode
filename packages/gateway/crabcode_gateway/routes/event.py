@@ -1660,6 +1660,7 @@ async def _handle_send_message(ws: WebSocket, msg: dict) -> None:
     text = msg.get("text", "")
     max_turns = msg.get("max_turns", 0)
     computer_use_enabled = msg.get("computer_use_enabled")
+    computer_use_mode = msg.get("computer_use_mode")
     raw_images = msg.get("images")  # Optional list of {media_type, data} dicts
     requested_operation_id = msg.get("operation_id")
     document_job = msg.get("_document_job") if isinstance(msg.get("_document_job"), _DocumentJobContext) else None
@@ -1689,6 +1690,19 @@ async def _handle_send_message(ws: WebSocket, msg: dict) -> None:
         await _send_ws_command_error(
             ws,
             "computer_use_enabled must be a boolean",
+            command="send_message",
+            request=msg,
+            operation_id=(requested_operation_id if isinstance(requested_operation_id, str) else None),
+            error_type="invalid_request",
+        )
+        return
+    if computer_use_mode is not None and computer_use_mode not in {
+        "background_app",
+        "foreground_desktop",
+    }:
+        await _send_ws_command_error(
+            ws,
+            "computer_use_mode must be background_app or foreground_desktop",
             command="send_message",
             request=msg,
             operation_id=(requested_operation_id if isinstance(requested_operation_id, str) else None),
@@ -1752,6 +1766,9 @@ async def _handle_send_message(ws: WebSocket, msg: dict) -> None:
                 _set_active_session(ws, session.session_id)
             if session is not None and computer_use_enabled is not None:
                 session.computer_use_enabled = computer_use_enabled
+            if session is not None and computer_use_mode is not None:
+                session._computer_use_mode_override = computer_use_mode
+                session.computer_use_mode = computer_use_mode
 
         if session is None:
             error_message = (
@@ -2320,6 +2337,7 @@ async def _handle_new_session(ws: WebSocket, msg: dict) -> None:
         ws.app.state,
         req.computer_use_host_id,
         req.computer_use_enabled,
+        req.computer_use_mode,
     )
     async def _publish_background(event) -> None:
         await ws.app.state.event_bus.publish_background(
@@ -3319,6 +3337,7 @@ async def _handle_resume_session(ws: WebSocket, msg: dict) -> None:
                     ws.app.state,
                     req.computer_use_host_id,
                     req.computer_use_enabled,
+                    req.computer_use_mode,
                 )
 
             if not rejected and not override_conflict and not reused and session is not None:
@@ -3417,6 +3436,7 @@ async def _handle_resume_session(ws: WebSocket, msg: dict) -> None:
             ws.app.state,
             req.computer_use_host_id,
             req.computer_use_enabled,
+            req.computer_use_mode,
         )
 
     if override_conflict:

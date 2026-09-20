@@ -84,12 +84,14 @@ describe("desktop status bar", () => {
     const computerUse: ComputerUseState = {
       hostId: "desktop-test",
       enabled: true,
+      mode: "background_app",
       status: "ready",
       capabilities: {
         gui_available: true,
         input_available: false,
         platform: "macos",
         displays: [],
+        supported_modes: ["background_app", "foreground_desktop"],
         reason: "Desktop input permission is unavailable",
       },
       latestFrame: {

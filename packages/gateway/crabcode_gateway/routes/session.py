@@ -255,14 +255,18 @@ def _bind_computer_use(
     state: Any,
     host_id: str | None,
     enabled: bool | None = None,
+    mode: str | None = None,
 ) -> None:
     """Bind a session to a Desktop host before tools are initialized."""
+    if enabled is not None:
+        session.computer_use_enabled = enabled
+    if mode is not None:
+        session._computer_use_mode_override = mode
+        session.computer_use_mode = mode
     if host_id is None:
         return
     session.computer_use_backend = state.computer_use_broker
     session.computer_use_host_id = host_id
-    if enabled is not None:
-        session.computer_use_enabled = enabled
 
 
 @router.post("/new", response_model=SessionInfo)
@@ -287,6 +291,7 @@ async def new_session(req: NewSessionRequest, request: Request) -> SessionInfo:
             request.app.state,
             req.computer_use_host_id,
             req.computer_use_enabled,
+            req.computer_use_mode,
         )
         _attach_event_bus(session, request.app.state.event_bus)
         await session.initialize()
@@ -395,6 +400,7 @@ async def resume_session(req: ResumeSessionRequest, request: Request) -> Session
                 request.app.state,
                 req.computer_use_host_id,
                 req.computer_use_enabled,
+                req.computer_use_mode,
             )
 
     if session is None:
@@ -425,6 +431,7 @@ async def resume_session(req: ResumeSessionRequest, request: Request) -> Session
                     request.app.state,
                     req.computer_use_host_id,
                     req.computer_use_enabled,
+                    req.computer_use_mode,
                 )
                 _attach_event_bus(candidate, request.app.state.event_bus)
                 try:
@@ -505,6 +512,7 @@ async def resume_session(req: ResumeSessionRequest, request: Request) -> Session
             request.app.state,
             req.computer_use_host_id,
             req.computer_use_enabled,
+            req.computer_use_mode,
         )
 
     # Capture the primitive count while the installed object is still fenced
@@ -812,6 +820,9 @@ async def send_message(req: SendMessageRequest, request: Request):
             raise HTTPException(status_code=404, detail="Session not found")
         if req.computer_use_enabled is not None:
             session.computer_use_enabled = req.computer_use_enabled
+        if req.computer_use_mode is not None:
+            session._computer_use_mode_override = req.computer_use_mode
+            session.computer_use_mode = req.computer_use_mode
         operation_id = req.operation_id or uuid.uuid4().hex
         if req.operation_id is None:
             while operation_is_registered(

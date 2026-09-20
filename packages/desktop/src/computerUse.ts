@@ -10,6 +10,7 @@ export interface ComputerUseCapabilities {
   input_available: boolean;
   platform: string;
   displays: Array<{ id: string; name: string; x: number; y: number; width: number; height: number; primary: boolean }>;
+  supported_modes: Array<"background_app" | "foreground_desktop">;
   reason?: string | null;
 }
 
@@ -41,6 +42,7 @@ export interface ComputerUseLogEntry {
 export interface ComputerUseState {
   hostId: string;
   enabled: boolean;
+  mode: "background_app" | "foreground_desktop";
   status: ComputerUseStatus;
   capabilities: ComputerUseCapabilities | null;
   latestFrame: ComputerUseFrame | null;
@@ -69,6 +71,7 @@ export function initialComputerUseState(hostId: string, enabled: boolean): Compu
   return {
     hostId,
     enabled,
+    mode: "background_app",
     status: enabled ? "connecting" : "disabled",
     capabilities: null,
     latestFrame: null,
@@ -154,6 +157,7 @@ export class ComputerUseChannel {
         input_available: false,
         platform: "browser",
         displays: [],
+        supported_modes: [],
         reason: "Computer Use 需要 Crab Desktop 原生应用",
       };
     } else {
@@ -165,6 +169,7 @@ export class ComputerUseChannel {
           input_available: false,
           platform: navigator.platform || "unknown",
           displays: [],
+          supported_modes: [],
           reason: error instanceof Error ? error.message : String(error),
         };
       }
@@ -279,9 +284,11 @@ export class ComputerUseChannel {
       ? message.action as Record<string, unknown>
       : {};
     const actionName = String(action.action || "unknown");
+    const mode = message.mode === "foreground_desktop" ? "foreground_desktop" : "background_app";
     const logId = requestId || randomUuid();
     this.publish({
       status: "busy",
+      mode,
       error: null,
       logs: [...this.state.logs, {
         id: logId,
@@ -296,7 +303,7 @@ export class ComputerUseChannel {
     let result: HostResult;
     try {
       if (!this.enabled || !this.capabilities?.gui_available) throw new Error("Computer Use 已关闭或图形界面不可用");
-      result = await invoke<HostResult>("computer_use_execute", { request: { action } });
+      result = await invoke<HostResult>("computer_use_execute", { request: { mode, action } });
     } catch (error) {
       result = { ok: false, action: actionName, error: error instanceof Error ? error.message : String(error) };
     }

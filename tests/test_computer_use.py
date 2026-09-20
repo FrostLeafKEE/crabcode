@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from crabcode_core.api.base import StreamChunk
 from crabcode_core.query.loop import QueryParams, query_loop
 from crabcode_core.tools.computer_use import ComputerUseTool
-from crabcode_core.types.config import ApiConfig, ToolLoadingSettings
+from crabcode_core.types.config import ApiConfig, CrabCodeSettings, ToolLoadingSettings
 from crabcode_core.types.message import create_user_message
 from crabcode_core.types.tool import ToolContext
 from crabcode_gateway.computer_use import ComputerUseBroker
@@ -17,7 +17,7 @@ class FakeBackend:
         self.available = available
         self.calls = []
 
-    def is_available(self, host_id):
+    def is_available(self, host_id, mode=None):
         return self.available and host_id == "desktop-test"
 
     async def execute(self, host_id, **kwargs):
@@ -39,6 +39,7 @@ class SessionBinding:
         self.computer_use_backend = backend
         self.computer_use_host_id = "desktop-test"
         self.computer_use_enabled = True
+        self.computer_use_mode = "foreground_desktop"
 
 
 class RecordingAdapter:
@@ -95,6 +96,20 @@ def test_disabled_or_missing_gui_omits_schema_and_prompt_from_model_context():
     assert not disabled_tool.is_available(disabled_context)
 
 
+def test_computer_use_mode_defaults_to_background_and_rejects_unknown_values():
+    assert CrabCodeSettings().computer_use.mode == "background_app"
+    assert (
+        CrabCodeSettings(computer_use={"mode": "foreground_desktop"}).computer_use.mode
+        == "foreground_desktop"
+    )
+    try:
+        CrabCodeSettings(computer_use={"mode": "automatic"})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown Computer Use modes must be rejected")
+
+
 def test_available_host_exposes_schema_and_returns_screenshot_attachment():
     backend = FakeBackend(available=True)
     tool, context = prepared_tool(backend)
@@ -108,6 +123,22 @@ def test_available_host_exposes_schema_and_returns_screenshot_attachment():
     }]
     assert base64.b64encode(b"png-data").decode() not in result.result_for_model
     assert backend.calls[0][0] == "desktop-test"
+    assert backend.calls[0][1]["mode"] == "foreground_desktop"
+
+
+def test_background_mode_requires_window_and_never_accepts_desktop_actions():
+    backend = FakeBackend(available=True)
+    tool, context = prepared_tool(backend)
+    context.session.computer_use_mode = "background_app"
+    assert asyncio.run(tool.validate_input({"action": "observe"})) == (
+        "window_id is required in background_app mode; call list_windows first"
+    )
+    assert "unavailable in background_app mode" in asyncio.run(
+        tool.validate_input({"action": "list_displays"})
+    )
+    assert asyncio.run(
+        tool.validate_input({"action": "observe", "window_id": "42"})
+    ) is None
 
 
 class FakeSocket:
@@ -127,9 +158,13 @@ def test_gateway_broker_tracks_host_state_and_routes_result():
             socket,
             enabled=True,
             gui_available=True,
-            capabilities={"platform": "test"},
+            capabilities={
+                "platform": "test",
+                "supported_modes": ["background_app", "foreground_desktop"],
+            },
         )
         assert broker.is_available("desktop-test")
+        assert broker.is_available("desktop-test", "background_app")
         pending = asyncio.create_task(broker.execute(
             "desktop-test",
             session_id="session-test",
@@ -139,6 +174,7 @@ def test_gateway_broker_tracks_host_state_and_routes_result():
         await asyncio.sleep(0)
         request = socket.messages[0]
         assert request["session_id"] == "session-test"
+        assert request["mode"] == "background_app"
         assert broker.resolve("desktop-test", request["request_id"], {"ok": True})
         assert await pending == {"ok": True}
         assert broker.update_state(

@@ -276,7 +276,7 @@ Use HTTPS/WSS whenever the gateway is exposed beyond the local machine.
 `delete_model`, `upsert_group`, `delete_group`, `set_default_model`, and
 `clear_default_model`. Mutations target `userSettings`, `projectSettings`, or
 `localSettings`; project layers require a `cwd` within the Gateway workspace.
-`POST /config/runtime-settings` accepts `set_snapshot`, `add_extra_tool`, and
+`POST /config/runtime-settings` accepts `set_snapshot`, `set_computer_use_mode`, `add_extra_tool`, and
 `remove_extra_tool`, using the same configuration layers. Disabling snapshots
 skips only the file-system copy; conversation checkpoints are still persisted.
 
@@ -978,6 +978,25 @@ Default permission behavior:
 - `screenshot` is allowed by default inside the working directory and asks when writing outside it
 
 `headless` in `tool_settings.Browser` is the session default. The tool input can override it per session when calling `create_session`.
+
+### Computer Use modes
+
+After a Crab Desktop Computer Use host is connected, agents can inspect and operate desktop applications. Background application mode is the default:
+
+```json
+{
+  "computer_use": {
+    "mode": "background_app"
+  }
+}
+```
+
+Exactly two modes are supported:
+
+- `background_app`: on macOS, captures and sends input directly to a selected application window without moving the real pointer. Call `list_windows` first and pass `window_id`; full-desktop capture, display selection, and system UI are unavailable. It never falls back automatically.
+- `foreground_desktop`: captures and controls the complete desktop through the real pointer and keyboard, so it can interrupt the current user.
+
+Crab Desktop can write this setting from **Settings → Runtime & Tools → Computer Use** at the user, project, or project-local layer. VS Code can explicitly override it for sessions it creates or resumes with `crabcode.computerUseMode`; without an explicit VS Code value, the Gateway configuration applies. Unsupported background actions or hosts return an error instead of switching modes.
 
 ### Diff Display
 

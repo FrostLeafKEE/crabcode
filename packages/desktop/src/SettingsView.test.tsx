@@ -474,6 +474,7 @@ describe("SettingsView", () => {
       cwd: "/work/crabcode",
       snapshot_enabled: true,
       snapshot_max_size_mb: 1024,
+      computer_use_mode: "background_app",
       extra_tools: ["pkg.UserTool"],
       extra_tools_by_source: { userSettings: ["pkg.UserTool"] },
       sources: ["/Users/test/.crabcode/settings.json"],
@@ -498,6 +499,8 @@ describe("SettingsView", () => {
       />,
     ));
 
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Computer Use 操作模式"] button'))
+      .find((button) => button.textContent === "前台桌面")!.click());
     act(() => container.querySelector<HTMLButtonElement>('[aria-label="启用文件快照"]')!.click());
     const size = container.querySelector<HTMLInputElement>('[aria-label="快照最大大小（MiB）"]')!;
     act(() => changeInput(size, "2048"));
@@ -508,6 +511,7 @@ describe("SettingsView", () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="移除额外工具 pkg.UserTool"]')!.click());
 
     expect(handlers.onMutateRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({ action: "set_snapshot", snapshot_enabled: false, source: "projectSettings" }));
+    expect(handlers.onMutateRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({ action: "set_computer_use_mode", computer_use_mode: "foreground_desktop", source: "projectSettings" }));
     expect(handlers.onMutateRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({ action: "set_snapshot", snapshot_max_size_mb: 2048, source: "projectSettings" }));
     expect(handlers.onMutateRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({ action: "add_extra_tool", tool_path: "pkg.ProjectTool", source: "projectSettings" }));
     expect(handlers.onMutateRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({ action: "remove_extra_tool", tool_path: "pkg.UserTool", source: "userSettings" }));

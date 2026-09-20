@@ -268,7 +268,7 @@ challenge 60 秒失效且只能使用一次；密码连续失败 5 次会限流 
 `userSettings`、`projectSettings` 或 `localSettings`；项目层配置必须提供位于
 Gateway 允许工作区内的 `cwd`。
 `POST /config/runtime-settings` 的 `action` 支持 `set_snapshot`、
-`add_extra_tool` 和 `remove_extra_tool`，使用相同的配置层。关闭文件快照只会
+`set_computer_use_mode`、`add_extra_tool` 和 `remove_extra_tool`，使用相同的配置层。关闭文件快照只会
 跳过文件系统副本，对话 checkpoint 仍会保存。
 
 **WebSocket `/ws`** 覆盖完整交互命令链路：会话新建/恢复（`new_session`、`resume_session`）、消息与 steering、中断、权限/选择回复、工作区上下文、模型/模式/权限切换和计划操作。`new_session` 与 `resume_session` 接受和 HTTP 生命周期端点相同的五个 API 覆盖字段；目标会话已经加载时会拒绝覆盖，避免一个客户端静默替换另一个客户端正在使用的 runtime。一个连接会持续订阅它显式选择过的所有 session，因此界面切换后仍能收到旧 session 的后台事件，同时不会暴露未选择的其他 session。前台与计划命令携带 `operation_id`；steering 和 interrupt 应回传该 ID，避免误投到更新的轮次。命令校验失败使用有类型、非终止性的 error envelope；每个已受理 operation 最终只以一个 `turn_complete` 结束。完整客户端还必须消费结构化会话历史，以及带 session 标识的 `agent_state`、`agent_output`、`team_message`、`team_state`、`task_update`、`schedule_run`、`compact`、权限/选择回复、文件变更、snapshot 和 revert 事件。Schedule 的增删改查使用上面的 HTTP 端点，客户端无需轮询执行结果。
@@ -954,6 +954,25 @@ CrabCode 集成了 **Language Server Protocol (LSP)** 服务器，为 AI agent �
 - `screenshot` 在工作目录内默认允许；写到工作目录外时会请求确认
 
 `tool_settings.Browser.headless` 是默认值；调用 `create_session` 时可以通过输入参数 `headless` 按会话覆盖。
+
+### Computer Use 操作模式
+
+连接 Crab Desktop 的 Computer Use 宿主后，Agent 可以查看和操作桌面应用。默认使用后台应用模式：
+
+```json
+{
+  "computer_use": {
+    "mode": "background_app"
+  }
+}
+```
+
+仅支持两个模式：
+
+- `background_app`：macOS 上定向截图并操作指定应用窗口，不移动真实鼠标，也不会自动回退到前台桌面。必须先通过 `list_windows` 取得 `window_id`；完整桌面、显示器选择和系统级界面不可用。
+- `foreground_desktop`：截图并操作完整桌面，使用真实鼠标和键盘，会影响当前用户的前台工作。
+
+可在 Crab Desktop 的“设置 → 运行与工具 → Computer Use”中写入用户、项目或项目本地配置。VS Code 可通过 `crabcode.computerUseMode` 为其创建或恢复的会话显式覆盖；没有显式设置时使用 Gateway 配置。后台模式在当前宿主或动作不受支持时会返回错误，不会自动切换到前台模式。
 
 ### Diff 显示
 
