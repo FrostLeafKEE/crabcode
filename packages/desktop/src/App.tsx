@@ -737,6 +737,7 @@ function App() {
   const [monitorError, setMonitorError] = useState<string | null>(null);
   const [pluginError, setPluginError] = useState<string | null>(null);
   const [deletingSessionIds, setDeletingSessionIds] = useState<Set<string>>(new Set());
+  const [forkingSessionIds, setForkingSessionIds] = useState<Set<string>>(new Set());
   const [modelSelections, setModelSelections] = useState<Record<string, string>>({});
   const [permissionSelections, setPermissionSelections] = useState<Record<string, PermissionMode>>({});
   const [runClock, setRunClock] = useState(() => Date.now());
@@ -1612,6 +1613,33 @@ function App() {
       setGlobalError(error instanceof Error ? error.message : String(error));
     }
   }, [activeConnection, activeProject, activeSession, openSession, refreshProjectSessions]);
+
+  const forkSessionFromLatestReply = useCallback(async (info: SessionInfo) => {
+    if (!activeConnection || !activeProject || info.session_id.startsWith("new-")) return;
+    const api = apiRef.current.get(activeConnection.id);
+    if (!api) {
+      setGlobalError("Gateway 尚未连接");
+      return;
+    }
+    const key = sessionKey(activeConnection.id, info.session_id);
+    if (forkingSessionIds.has(key)) return;
+    setForkingSessionIds((current) => new Set(current).add(key));
+    try {
+      const forked = await api.forkSessionFromLatestReply(info.session_id);
+      openSession(activeConnection, activeProject, forked);
+      void refreshProjectSessions(activeConnection.id, activeProject.path).catch((error) => {
+        setGlobalError(error instanceof Error ? error.message : String(error));
+      });
+    } catch (error) {
+      setGlobalError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setForkingSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+    }
+  }, [activeConnection, activeProject, forkingSessionIds, openSession, refreshProjectSessions]);
 
   const connectGateway = useCallback(async (connection: ConnectionPreset, pythonPath: string | null) => {
     const attempt = Symbol();
@@ -3507,6 +3535,7 @@ function App() {
                       const isActive = activeSessionKey === key;
                       const favorite = favoriteSessionIds.has(info.session_id);
                       const deleting = deletingSessionIds.has(key);
+                      const forking = forkingSessionIds.has(key);
                       const pending = view?.items.some((item) => item.status === "pending" && (
                         item.kind === "permission" || item.kind === "choice"
                       ));
@@ -3530,6 +3559,8 @@ function App() {
                             status={view?.status ?? null}
                             favorite={favorite}
                             deleting={deleting}
+                            forking={forking}
+                            onFork={() => void forkSessionFromLatestReply(info)}
                             onToggleFavorite={() => {
                               if (activeProject) toggleFavoriteSession(activeProject.id, info.session_id);
                             }}
@@ -5239,6 +5270,8 @@ export function SessionActionsMenu({
   status,
   favorite = false,
   deleting = false,
+  forking = false,
+  onFork,
   onToggleFavorite,
   onDelete,
 }: {
@@ -5246,6 +5279,8 @@ export function SessionActionsMenu({
   status: SessionViewState["status"];
   favorite?: boolean;
   deleting?: boolean;
+  forking?: boolean;
+  onFork?: () => void;
   onToggleFavorite: () => void;
   onDelete: () => void;
 }) {
@@ -5263,7 +5298,7 @@ export function SessionActionsMenu({
     const viewportPadding = 8;
     const gap = 8;
     const menuWidth = 208;
-    const menuHeight = 148;
+    const menuHeight = onFork ? 192 : 148;
     const fitsRight = rect.right + gap + menuWidth <= window.innerWidth - viewportPadding;
     setPosition({
       top: Math.min(
@@ -5335,6 +5370,10 @@ export function SessionActionsMenu({
               <Star fill={favorite ? "currentColor" : "none"} />
               <span>{favorite ? "取消收藏会话" : "收藏会话"}</span>
             </button>
+            {onFork && <button type="button" role="menuitem" disabled={forking || deleting} onClick={() => choose(onFork)}>
+              {forking ? <LoaderCircle className="spin" /> : <GitBranch />}
+              <span>{forking ? "正在分叉会话" : "分叉会话"}</span>
+            </button>}
             <button className="danger" type="button" role="menuitem" disabled={deleting} onClick={() => choose(onDelete)}>
               {deleting ? <LoaderCircle className="spin" /> : <Trash2 />}
               <span>{deleting ? "正在删除会话" : "删除会话"}</span>

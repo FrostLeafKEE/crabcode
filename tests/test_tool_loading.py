@@ -195,6 +195,11 @@ def test_session_storage_restore_fork_and_fresh_session(tmp_path, monkeypatch):
     assert restored.meta["loaded_tools"] == ["ToolSearch", "Memory"]
     fork = SessionStorage.fork_from(str(tmp_path), old_id, reply.uuid)
     assert fork.meta["loaded_tools"] == ["ToolSearch", "Memory"]
+    latest_reply = create_assistant_message("latest")
+    storage.append_message(latest_reply)
+    latest_fork = SessionStorage.fork_from(str(tmp_path), old_id)
+    assert latest_fork.meta["forked_from_message_uuid"] == latest_reply.uuid
+    assert latest_fork.load_messages()[-1]["uuid"] == latest_reply.uuid
     assert asyncio.run(session.resume(old_id))
     assert session._tool_loading_state.names == ["ToolSearch", "Memory"]
     session._tool_loading_state.names = ["Memory"]

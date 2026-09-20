@@ -1205,13 +1205,19 @@ class SessionStorage:
         cls,
         source_cwd: str,
         source_session_id: str,
-        message_uuid: str,
+        message_uuid: str | None = None,
         *,
         title: str | None = None,
     ) -> "SessionStorage":
-        """Atomically clone durable conversation state up to an assistant reply."""
+        """Atomically clone durable state up to an assistant reply.
+
+        When ``message_uuid`` is omitted, use the latest assistant reply in the
+        active transcript.  This supports a whole-conversation fork without
+        forcing callers to load the transcript merely to discover that UUID.
+        """
         source = cls(os.path.abspath(source_cwd), source_session_id)
-        _validate_component(message_uuid, "message uuid")
+        if message_uuid is not None:
+            _validate_component(message_uuid, "message uuid")
         with _session_lifecycle_lock(source.cwd, source.session_id, exclusive=True):
             if not source._transcript_path.exists():
                 raise ValueError(f"Session {source.session_id} not found")
@@ -1220,17 +1226,27 @@ class SessionStorage:
             messages = source.load_messages(_transcript_text=transcript)
             if source.meta.get("is_archived"):
                 raise ValueError(f"Session {source.session_id} is archived")
-            target_index = next(
-                (
-                    index for index, item in enumerate(messages)
-                    if item.get("uuid") == message_uuid
-                    and item.get("type") == "assistant"
-                ),
-                -1,
-            )
+            if message_uuid is None:
+                target_index = next(
+                    (
+                        index for index in range(len(messages) - 1, -1, -1)
+                        if messages[index].get("type") == "assistant"
+                    ),
+                    -1,
+                )
+            else:
+                target_index = next(
+                    (
+                        index for index, item in enumerate(messages)
+                        if item.get("uuid") == message_uuid
+                        and item.get("type") == "assistant"
+                    ),
+                    -1,
+                )
             if target_index < 0:
                 raise ValueError("Assistant message not found in active session history")
             cloned_messages = messages[: target_index + 1]
+            forked_from_message_uuid = str(cloned_messages[-1].get("uuid") or "")
             source_meta = dict(source.meta)
 
         new_id = generate_session_id()
@@ -1256,7 +1272,7 @@ class SessionStorage:
                 "title": fork_title,
                 "updated_at": now.isoformat(),
                 "forked_from_session_id": source.session_id,
-                "forked_from_message_uuid": message_uuid,
+                "forked_from_message_uuid": forked_from_message_uuid,
                 "forked_from_title": source_title,
                 "message_count": len(cloned_messages),
             }

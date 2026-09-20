@@ -597,7 +597,7 @@ async def session_messages(
 
 @router.post("/fork", response_model=SessionInfo)
 async def fork_session(req: ForkSessionRequest, request: Request) -> SessionInfo:
-    """Fork a durable session from any completed assistant reply."""
+    """Fork a durable session from a selected, or the latest, assistant reply."""
     if getattr(request.app.state, "gateway_closing", False):
         raise HTTPException(status_code=503, detail="Gateway is shutting down")
     from crabcode_core.session.storage import SessionStorage

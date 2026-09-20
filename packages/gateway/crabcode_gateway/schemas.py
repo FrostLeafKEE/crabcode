@@ -101,7 +101,7 @@ class ResumeSessionRequest(BaseModel):
 
 class ForkSessionRequest(BaseModel):
     session_id: str
-    message_uuid: str = Field(min_length=1)
+    message_uuid: str | None = Field(default=None, min_length=1)
     title: str | None = Field(default=None, max_length=200)
 
 

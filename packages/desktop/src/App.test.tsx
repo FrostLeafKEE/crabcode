@@ -658,6 +658,26 @@ describe("SessionActionsMenu", () => {
     container.remove();
   });
 
+  it("offers a whole-conversation fork action when it is available", () => {
+    const onFork = vi.fn();
+    act(() => root.render(
+      <SessionActionsMenu
+        info={info}
+        status={status}
+        onFork={onFork}
+        onToggleFavorite={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    ));
+
+    act(() => container.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!.click());
+    const actions = Array.from(document.querySelectorAll<HTMLButtonElement>('.session-action-menu [role="menuitem"]'));
+    expect(actions.map((button) => button.textContent)).toEqual(["收藏会话", "分叉会话", "删除会话", "会话详情"]);
+    act(() => actions[1].click());
+    expect(onFork).toHaveBeenCalledOnce();
+    expect(document.querySelector('.session-action-menu')).toBeNull();
+  });
+
   it("keeps the overflow menu compact and opens live session details in a dialog", () => {
     const onToggleFavorite = vi.fn();
     const onDelete = vi.fn();
