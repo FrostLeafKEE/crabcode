@@ -718,6 +718,7 @@ class CoreSession:
             ai_reviewer=self._ai_reviewer,
             schedule_manager=self._schedule_manager,
             event_stream_token_provider=_event_stream_token_provider,
+            computer_use_release=self._release_computer_use_agent,
         )
 
         # Initialize TeamManager
@@ -1313,6 +1314,38 @@ class CoreSession:
         previous.set()
         return self._lifecycle_generation
 
+    async def _release_computer_use(
+        self,
+        agent_id: str | None = None,
+        *,
+        all_agents: bool = False,
+        session_id: str | None = None,
+    ) -> None:
+        """Release retained Desktop previews at an actual turn boundary."""
+        backend = self.computer_use_backend
+        host_id = self.computer_use_host_id
+        release = getattr(backend, "release", None)
+        release_session_id = session_id or self.session_id
+        if not callable(release) or not host_id or not release_session_id:
+            return
+        try:
+            await release(
+                host_id,
+                session_id=release_session_id,
+                agent_id=agent_id,
+                all_agents=all_agents,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to release Computer Use preview session=%s agent=%s",
+                release_session_id,
+                agent_id,
+                exc_info=True,
+            )
+
+    async def _release_computer_use_agent(self, session_id: str, agent_id: str) -> None:
+        await self._release_computer_use(agent_id, session_id=session_id)
+
     async def _dispatch_agent_completions(self) -> None:
         try:
             while not self._closed:
@@ -1627,6 +1660,8 @@ class CoreSession:
                     )
             except Exception:
                 logger.exception("Automatic managed-agent continuation failed")
+            finally:
+                await self._release_computer_use()
 
             assistant_reply = self._assistant_reply(self.messages, message_id)
             if (
@@ -2560,6 +2595,8 @@ class CoreSession:
                 except Exception:
                     logger.warning("Failed to close agent manager", exc_info=True)
 
+            await self._release_computer_use(all_agents=True)
+
             await self._drain_team_cleanup_tasks()
 
             if self._team_manager is not None:
@@ -2720,6 +2757,7 @@ class CoreSession:
                 finally:
                     self._active_event_stream_token = None
                     self._foreground_turn_active = False
+                    await self._release_computer_use()
 
     async def steer_message(
         self,

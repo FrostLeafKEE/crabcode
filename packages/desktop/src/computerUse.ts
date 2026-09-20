@@ -4,7 +4,7 @@ import { isDesktopShell } from "./native";
 import { randomUuid } from "./uuid";
 
 export type ComputerUseStatus = "disabled" | "unavailable" | "connecting" | "ready" | "busy" | "error";
-export const COMPUTER_USE_IDLE_RELEASE_MS = 15_000;
+export const COMPUTER_USE_RELEASE_RETENTION_MS = 15_000;
 
 export interface ComputerUseCapabilities {
   gui_available: boolean;
@@ -105,7 +105,8 @@ export class ComputerUseChannel {
   private reconnectTimer: number | null = null;
   private attempts = 0;
   private capabilityGeneration = 0;
-  private idleReleaseTimers = new Map<string, number>();
+  private releaseTimers = new Map<string, number>();
+  private releaseDeadlines = new Map<string, number>();
   private disposed = false;
   private enabled: boolean;
   private capabilities: ComputerUseCapabilities | null = null;
@@ -220,7 +221,7 @@ export class ComputerUseChannel {
       ...(!enabled ? { active: false, previews: [] } : {}),
       error: enabled ? this.capabilities?.reason ?? null : null,
     });
-    if (!enabled) this.cancelAllIdleReleases();
+    if (!enabled) this.cancelAllReleases();
     this.send({
       type: "computer_use_host_state",
       enabled,
@@ -247,7 +248,7 @@ export class ComputerUseChannel {
     this.disposed = true;
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
-    this.cancelAllIdleReleases();
+    this.cancelAllReleases();
     this.socket?.close();
     this.socket = null;
   }
@@ -279,26 +280,35 @@ export class ComputerUseChannel {
     return `session:${sessionId || "unknown"}:agent:${agentId || "main"}`;
   }
 
-  private cancelIdleRelease(key: string): void {
-    const timer = this.idleReleaseTimers.get(key);
+  private cancelRelease(key: string): void {
+    const timer = this.releaseTimers.get(key);
     if (timer !== undefined) window.clearTimeout(timer);
-    this.idleReleaseTimers.delete(key);
+    this.releaseTimers.delete(key);
+    this.releaseDeadlines.delete(key);
   }
 
-  private cancelAllIdleReleases(): void {
-    for (const timer of this.idleReleaseTimers.values()) window.clearTimeout(timer);
-    this.idleReleaseTimers.clear();
+  private cancelAllReleases(): void {
+    for (const timer of this.releaseTimers.values()) window.clearTimeout(timer);
+    this.releaseTimers.clear();
+    this.releaseDeadlines.clear();
   }
 
-  private scheduleIdleRelease(key: string): void {
-    this.cancelIdleRelease(key);
+  private scheduleRelease(
+    key: string,
+    deadline = Date.now() + COMPUTER_USE_RELEASE_RETENTION_MS,
+  ): void {
+    const previousTimer = this.releaseTimers.get(key);
+    if (previousTimer !== undefined) window.clearTimeout(previousTimer);
+    this.releaseDeadlines.set(key, deadline);
     const timer = window.setTimeout(() => {
-      this.idleReleaseTimers.delete(key);
+      this.releaseTimers.delete(key);
       if (this.disposed) return;
+      if (this.state.previews.find((preview) => preview.key === key)?.status === "busy") return;
+      this.releaseDeadlines.delete(key);
       const previews = this.state.previews.filter((preview) => preview.key !== key);
       this.publish({ active: previews.length > 0, previews });
-    }, COMPUTER_USE_IDLE_RELEASE_MS);
-    this.idleReleaseTimers.set(key, timer);
+    }, Math.max(0, deadline - Date.now()));
+    this.releaseTimers.set(key, timer);
   }
 
   private async handleMessage(raw: string): Promise<void> {
@@ -321,6 +331,20 @@ export class ComputerUseChannel {
       this.publish({ status: "error", error: String(message.error || "Computer Use Host 错误") });
       return;
     }
+    if (message.type === "computer_use_release") {
+      const sessionId = typeof message.session_id === "string" ? message.session_id : undefined;
+      if (!sessionId) return;
+      const agentId = typeof message.agent_id === "string" ? message.agent_id : undefined;
+      const keys = message.all_agents === true
+        ? this.state.previews
+          .filter((preview) => preview.sessionId === sessionId)
+          .map((preview) => preview.key)
+        : [this.previewKey(sessionId, agentId)];
+      for (const key of keys) {
+        if (this.state.previews.some((preview) => preview.key === key)) this.scheduleRelease(key);
+      }
+      return;
+    }
     if (message.type !== "computer_use_request") return;
 
     const requestId = String(message.request_id || "");
@@ -333,7 +357,7 @@ export class ComputerUseChannel {
     const sessionId = typeof message.session_id === "string" ? message.session_id : undefined;
     const agentId = typeof message.agent_id === "string" ? message.agent_id : undefined;
     const previewKey = this.previewKey(sessionId, agentId);
-    this.cancelIdleRelease(previewKey);
+    this.cancelRelease(previewKey);
     const previousPreview = this.state.previews.find((preview) => preview.key === previewKey);
     const busyPreview: ComputerUsePreview = {
       key: previewKey,
@@ -414,8 +438,11 @@ export class ComputerUseChannel {
         ? String(result.error || "Computer Use action failed")
         : this.capabilities?.reason ?? null,
     });
-    if (this.enabled) this.scheduleIdleRelease(previewKey);
-    else this.cancelAllIdleReleases();
+    const releaseDeadline = this.releaseDeadlines.get(previewKey);
+    if (releaseDeadline !== undefined && !this.releaseTimers.has(previewKey)) {
+      this.scheduleRelease(previewKey, releaseDeadline);
+    }
+    if (!this.enabled) this.cancelAllReleases();
     this.send({ type: "computer_use_result", request_id: requestId, result });
   }
 }

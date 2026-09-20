@@ -6,9 +6,11 @@ from types import SimpleNamespace
 import pytest
 
 from crabcode_core.api.base import StreamChunk
+from crabcode_core.events import CoreSession
 from crabcode_core.query.loop import QueryParams, query_loop
 from crabcode_core.tools.computer_use import ComputerUseTool
 from crabcode_core.types.config import ApiConfig, CrabCodeSettings, ToolLoadingSettings
+from crabcode_core.types.event import TurnCompleteEvent
 from crabcode_core.types.message import create_user_message
 from crabcode_core.types.tool import ToolContext
 from crabcode_gateway.computer_use import ComputerUseBroker
@@ -223,6 +225,41 @@ def test_gateway_broker_tracks_host_state_and_routes_result():
         assert request["mode"] == "background_app"
         assert broker.resolve("desktop-test", request["request_id"], {"ok": True})
         assert await pending == {"ok": True}
+        assert await broker.release(
+            "desktop-test",
+            session_id="session-test",
+            agent_id="agent-test",
+        )
+        assert socket.messages[-1] == {
+            "type": "computer_use_release",
+            "session_id": "session-test",
+            "agent_id": "agent-test",
+        }
+        assert not await broker.release(
+            "desktop-test",
+            session_id="session-test",
+            agent_id="agent-test",
+        )
+        pending = asyncio.create_task(broker.execute(
+            "desktop-test",
+            session_id="session-test",
+            agent_id=None,
+            action={"action": "observe"},
+        ))
+        await asyncio.sleep(0)
+        request = socket.messages[-1]
+        assert broker.resolve("desktop-test", request["request_id"], {"ok": True})
+        assert await pending == {"ok": True}
+        assert await broker.release(
+            "desktop-test",
+            session_id="session-test",
+            all_agents=True,
+        )
+        assert socket.messages[-1] == {
+            "type": "computer_use_release",
+            "session_id": "session-test",
+            "all_agents": True,
+        }
         assert broker.update_state(
             "desktop-test",
             socket,
@@ -230,6 +267,44 @@ def test_gateway_broker_tracks_host_state_and_routes_result():
             gui_available=True,
         )
         assert not broker.is_available("desktop-test")
+
+    asyncio.run(scenario())
+
+
+def test_core_session_releases_computer_use_at_the_real_turn_boundary():
+    class ReleaseBackend:
+        def __init__(self):
+            self.calls = []
+
+        async def release(self, host_id, **kwargs):
+            self.calls.append((host_id, kwargs))
+            return True
+
+    async def scenario():
+        backend = ReleaseBackend()
+        session = CoreSession(tools=[])
+        session.session_id = "session-test"
+        session.computer_use_backend = backend
+        session.computer_use_host_id = "desktop-test"
+
+        async def initialize():
+            return None
+
+        async def send_message_impl(*_args, **_kwargs):
+            yield TurnCompleteEvent()
+
+        session.initialize = initialize
+        session._send_message_impl = send_message_impl
+        events = [event async for event in session.send_message("done")]
+        assert isinstance(events[-1], TurnCompleteEvent)
+        assert backend.calls == [(
+            "desktop-test",
+            {
+                "session_id": "session-test",
+                "agent_id": None,
+                "all_agents": False,
+            },
+        )]
 
     asyncio.run(scenario())
 

@@ -231,6 +231,7 @@ class AgentManager:
         ai_reviewer: Any = None,
         schedule_manager: Any = None,
         event_stream_token_provider: Callable[[], object | None] | None = None,
+        computer_use_release: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
         self._settings = settings
         self._agent_settings = agent_settings
@@ -253,6 +254,7 @@ class AgentManager:
         self._ai_reviewer = ai_reviewer
         self._schedule_manager = schedule_manager
         self._event_stream_token_provider = event_stream_token_provider
+        self._computer_use_release = computer_use_release
         self._team_manager: Any = None  # Set by CoreSession after construction
         self._runs: dict[str, _AgentRun] = {}
         # Runs disappear from _runs when a different session projection is
@@ -1568,8 +1570,21 @@ class AgentManager:
                         run=run,
                     )
             finally:
-                run.done_event.set()
-                await self._emit_completion(run)
+                try:
+                    if self._computer_use_release is not None:
+                        await self._computer_use_release(
+                            run.snapshot.session_id,
+                            run.snapshot.agent_id,
+                        )
+                except Exception:
+                    logger.warning(
+                        "Failed to release Computer Use for agent %s",
+                        run.snapshot.agent_id,
+                        exc_info=True,
+                    )
+                finally:
+                    run.done_event.set()
+                    await self._emit_completion(run)
 
     async def _handle_agent_event(self, run: _AgentRun, event: CoreEvent) -> None:
         # Cancellation and session switches can race with a provider that is

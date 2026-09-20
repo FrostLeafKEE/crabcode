@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { COMPUTER_USE_IDLE_RELEASE_MS, ComputerUseChannel } from "./computerUse";
+import { COMPUTER_USE_RELEASE_RETENTION_MS, ComputerUseChannel } from "./computerUse";
 import type { ComputerUseState } from "./computerUse";
 import type { GatewayApi } from "./gateway";
 
@@ -92,7 +92,7 @@ describe("ComputerUseChannel", () => {
     channel.dispose();
   });
 
-  it("releases the retained frame and cursor after Computer Use becomes idle", async () => {
+  it("retains the preview while idle and releases it 15 seconds after the session releases Computer Use", async () => {
     vi.useFakeTimers();
     try {
       invokeMock
@@ -131,6 +131,7 @@ describe("ComputerUseChannel", () => {
         data: JSON.stringify({
           type: "computer_use_request",
           request_id: "request-idle",
+          session_id: "session-idle",
           mode: "background_app",
           action: { action: "observe", window_id: "42" },
         }),
@@ -139,7 +140,15 @@ describe("ComputerUseChannel", () => {
 
       expect(states.at(-1)).toMatchObject({ active: true, status: "ready" });
       expect(states.at(-1)?.previews[0]?.frame?.frame_id).toBe("frame-1");
-      await vi.advanceTimersByTimeAsync(COMPUTER_USE_IDLE_RELEASE_MS);
+      await vi.advanceTimersByTimeAsync(COMPUTER_USE_RELEASE_RETENTION_MS * 2);
+      expect(states.at(-1)).toMatchObject({ active: true });
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "computer_use_release",
+          session_id: "session-idle",
+        }),
+      });
+      await vi.advanceTimersByTimeAsync(COMPUTER_USE_RELEASE_RETENTION_MS);
       expect(states.at(-1)).toMatchObject({ active: false, previews: [] });
       expect(states.at(-1)?.logs).toHaveLength(1);
       channel.dispose();
@@ -190,9 +199,67 @@ describe("ComputerUseChannel", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(states.at(-1)?.previews.map((preview) => preview.frame?.frame_id)).toEqual(["frame-one", "frame-two"]);
+      await vi.advanceTimersByTimeAsync(COMPUTER_USE_RELEASE_RETENTION_MS * 2);
+      expect(states.at(-1)?.previews.map((preview) => preview.frame?.frame_id)).toEqual(["frame-one", "frame-two"]);
+      socket.emit("message", {
+        data: JSON.stringify({ type: "computer_use_release", session_id: "session-one" }),
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      socket.emit("message", {
+        data: JSON.stringify({ type: "computer_use_release", session_id: "session-two" }),
+      });
       await vi.advanceTimersByTimeAsync(10_000);
       expect(states.at(-1)?.previews.map((preview) => preview.frame?.frame_id)).toEqual(["frame-two"]);
       await vi.advanceTimersByTimeAsync(5_000);
+      expect(states.at(-1)).toMatchObject({ active: false, previews: [] });
+      channel.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("honors a release that arrives while the final native action is still completing", async () => {
+    vi.useFakeTimers();
+    try {
+      let finishAction!: (result: object) => void;
+      invokeMock
+        .mockResolvedValueOnce({
+          gui_available: true,
+          input_available: true,
+          platform: "macos",
+          displays: [],
+          supported_modes: ["background_app", "foreground_desktop"],
+        })
+        .mockReturnValueOnce(new Promise((resolve) => { finishAction = resolve; }));
+      const states: ComputerUseState[] = [];
+      const api = {
+        authenticate: vi.fn().mockResolvedValue(undefined),
+        computerUseWebSocketUrl: () => "ws://localhost/computer-use/ws",
+      } as unknown as GatewayApi;
+      const channel = new ComputerUseChannel(api, "desktop-test", true, (state) => states.push(state));
+
+      await channel.connect();
+      const socket = FakeWebSocket.instances[0];
+      socket.emit("open");
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "computer_use_request",
+          request_id: "request-slow",
+          session_id: "session-slow",
+          action: { action: "observe" },
+        }),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(states.at(-1)?.previews[0]?.status).toBe("busy");
+
+      socket.emit("message", {
+        data: JSON.stringify({ type: "computer_use_release", session_id: "session-slow" }),
+      });
+      await vi.advanceTimersByTimeAsync(COMPUTER_USE_RELEASE_RETENTION_MS);
+      expect(states.at(-1)?.previews[0]?.status).toBe("busy");
+
+      finishAction({ ok: true, action: "observe" });
+      await vi.advanceTimersByTimeAsync(0);
       expect(states.at(-1)).toMatchObject({ active: false, previews: [] });
       channel.dispose();
     } finally {
