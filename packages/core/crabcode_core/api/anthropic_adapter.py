@@ -19,7 +19,6 @@ from crabcode_core.logging_utils import get_logger
 from crabcode_core.types.config import ApiConfig
 from crabcode_core.utf8_sanitize import safe_utf8_json_tree, safe_utf8_str
 from crabcode_core.types.message import (
-    ContentBlock,
     ImageBlock,
     Message,
     MessageRole,
@@ -447,11 +446,47 @@ class AnthropicAdapter(APIAdapter):
         use_httpx_stream = transport == "httpx" or (
             transport == "auto" and bool(self.config.base_url)
         )
-        if use_httpx_stream:
-            async for chunk in self._stream_message_httpx(params):
+        stream = (
+            self._stream_message_httpx(params) if use_httpx_stream
+            else self._stream_message_sdk(params)
+        )
+        stop_reason = ""
+        completed_tools = 0
+        pending_tool = False
+        try:
+            async for chunk in stream:
+                if chunk.stop_reason:
+                    stop_reason = chunk.stop_reason
+                if chunk.type == "tool_use_start":
+                    pending_tool = True
+                elif chunk.type == "tool_use_end":
+                    pending_tool = False
+                    completed_tools += 1
+                elif chunk.type == "message_stop":
+                    if pending_tool or (stop_reason == "tool_use" and not completed_tools):
+                        yield StreamChunk(
+                            type="error", retryable=True,
+                            error="Anthropic stream ended without a complete declared tool call",
+                        )
+                        return
+                    yield chunk
+                    return
                 yield chunk
-            return
+                if chunk.type == "error":
+                    return
+            # HTTP EOF (even HTTP 200 or [DONE]) is not the Messages protocol's
+            # message_stop. Let the query loop checkpoint completed items and
+            # consume its bounded reconnect budget instead of declaring success.
+            yield StreamChunk(
+                type="error", retryable=True,
+                error="Anthropic stream ended before message_stop (incomplete response)",
+            )
+        finally:
+            await stream.aclose()
 
+    async def _stream_message_sdk(
+        self, params: dict[str, Any],
+    ) -> AsyncGenerator[StreamChunk, None]:
         current_tool_id = ""
         current_tool_name = ""
         tool_input_buffer = ""

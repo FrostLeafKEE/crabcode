@@ -9,9 +9,15 @@ from typing import Any, Literal
 
 from crabcode_core.api.base import ModelConfig, usage_int_field
 from crabcode_core.compact.compact import estimate_token_count
+from crabcode_core.logging_utils import get_logger
 from crabcode_core.types.message import Message
 
 TokenSource = Literal["server", "calibrated", "estimated"]
+logger = get_logger(__name__)
+
+# Version 1 accepted any positive usage, including proxy placeholders. Do not
+# restore those unchecked anchors after upgrading the accounting policy.
+CONTEXT_BASELINE_VERSION = 2
 
 
 def _digest(value: Any) -> str:
@@ -80,6 +86,26 @@ class ContextTokenTracker:
         # Zero input for a nonempty request is commonly a proxy placeholder.
         if not valid or count <= 0:
             return False
+        baseline = self.baseline
+        if (baseline is not None and snapshot.identity == baseline.identity
+                and snapshot.messages[:len(baseline.messages)] == baseline.messages):
+            # An unchanged input prefix cannot suddenly cost almost nothing.
+            # Permit modest provider/tokenizer variation, and account for
+            # removed system/tool overhead without flooring counts to a local
+            # estimate (which can legitimately exceed server counts by a lot).
+            removed_overhead = (
+                max(0, baseline.overhead_tokens - snapshot.overhead_tokens)
+                if snapshot.overhead != baseline.overhead else 0
+            )
+            expected_minimum = max(0, self.input_tokens - removed_overhead)
+            tolerance = max(1024, expected_minimum // 4)
+            if expected_minimum - count > tolerance:
+                logger.warning(
+                    "Rejected regressed context usage: reported=%d, previous=%d, "
+                    "removed_overhead=%d, messages=%d; retaining calibrated prefix",
+                    count, self.input_tokens, removed_overhead, len(snapshot.messages),
+                )
+                return False
         self.baseline = snapshot
         self.input_tokens = count
         return True
@@ -116,14 +142,14 @@ class ContextTokenTracker:
         if self.baseline is None:
             return None
         return {
-            "version": 1, "identity": self.baseline.identity,
+            "version": CONTEXT_BASELINE_VERSION, "identity": self.baseline.identity,
             "messages": list(self.baseline.messages), "input_tokens": self.input_tokens,
             "overhead": self.baseline.overhead, "overhead_tokens": self.baseline.overhead_tokens,
         }
 
     def restore(self, value: Any) -> None:
         self.reset()
-        if not isinstance(value, dict) or value.get("version") != 1:
+        if not isinstance(value, dict) or value.get("version") != CONTEXT_BASELINE_VERSION:
             return
         identity, messages = value.get("identity"), value.get("messages")
 

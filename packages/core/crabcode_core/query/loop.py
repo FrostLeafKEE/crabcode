@@ -1499,6 +1499,12 @@ async def query_loop(
                 ),
                 None,
             )
+            logger.warning(
+                "Query turn completed: session=%s, model=%s, reason=%s, "
+                "context_tokens=%d, context_source=%s",
+                params.tool_context.session_id, effective_model, reason,
+                context_used, measurement.source,
+            )
             return TurnCompleteEvent(
                 reason=reason,
                 turn_count=turn_count,
@@ -1526,6 +1532,9 @@ async def query_loop(
         _retry_after_compact = False
         _retry_after_api_error = False
         _retry_after_completed_items = False
+        provider_stop_reason = ""
+        received_message_stop = False
+        response_outcome = "interrupted"
 
         def _flush_thinking_block() -> None:
             nonlocal current_thinking
@@ -1566,16 +1575,21 @@ async def query_loop(
 
         yield StreamModeEvent(mode="requesting")
 
+        stream = None
         try:
             # Wrap stream with timeout to avoid hanging indefinitely
             async def _stream_with_timeout():
-                async for chunk in params.api_adapter.stream_message(
+                source = params.api_adapter.stream_message(
                     messages=messages_for_api,
                     system=full_system,
                     tools=tool_schemas,
                     config=model_config,
-                ):
-                    yield chunk
+                )
+                try:
+                    async for chunk in source:
+                        yield chunk
+                finally:
+                    await source.aclose()
 
             stream = _stream_with_timeout()
             chunk = None
@@ -1586,8 +1600,10 @@ async def query_loop(
                         timeout=model_config.timeout,
                     )
                 except StopAsyncIteration:
+                    response_outcome = "exhausted"
                     break
                 except asyncio.TimeoutError:
+                    response_outcome = "timeout"
                     error_message = (
                         f"API request timed out after {model_config.timeout}s"
                     )
@@ -1611,6 +1627,8 @@ async def query_loop(
                         error_type="network",
                     )
                     return
+                if chunk.stop_reason:
+                    provider_stop_reason = chunk.stop_reason
                 if chunk.type == "text":
                     _flush_thinking_block()
                     if emitted_mode != "responding":
@@ -1702,6 +1720,7 @@ async def query_loop(
                         _set_request_usage(chunk.usage)
 
                 elif chunk.type == "message_stop":
+                    received_message_stop = True
                     if chunk.usage:
                         _set_request_usage(chunk.usage)
                     _flush_thinking_block()
@@ -1723,6 +1742,7 @@ async def query_loop(
                         )
 
                 elif chunk.type == "error":
+                    response_outcome = "error"
                     if _is_request_size_error(chunk.error):
                         yield _request_size_error_event(chunk.error)
                         return
@@ -1795,6 +1815,7 @@ async def query_loop(
                     return
 
         except Exception as e:
+            response_outcome = "exception"
             error_str = _format_exception_message(e)
             if _is_request_size_error(e):
                 yield _request_size_error_event(error_str)
@@ -1858,6 +1879,22 @@ async def query_loop(
                     error_type="network" if is_network_error else "",
                 )
                 return
+        finally:
+            if stream is not None:
+                await stream.aclose()
+            # Metadata only: never log prompt text, tool arguments, images,
+            # endpoint credentials or response contents.
+            logger.warning(
+                "API response finished: session=%s, model=%s, outcome=%s, "
+                "stop_reason=%r, terminal_received=%s, completed_blocks=%d, "
+                "tool_calls=%d, retry=%s, input_tokens=%s",
+                params.tool_context.session_id, effective_model, response_outcome,
+                provider_stop_reason, received_message_stop, completed_content_count,
+                len(tool_use_blocks), pending_stream_retry is not None,
+                last_request_usage.get("total_input_tokens")
+                if "total_input_tokens" in reported_usage_keys
+                else last_request_usage.get("input_tokens"),
+            )
 
         if _retry_after_api_error:
             continue
@@ -1877,6 +1914,16 @@ async def query_loop(
             isinstance(block, (TextBlock, ToolUseBlock))
             for block in assistant_content
         )
+        response_limit_error = None
+        if provider_stop_reason in {"max_tokens", "length", "model_context_window_exceeded"}:
+            response_limit_error = ErrorEvent(
+                message=f"Model response was cut short ({provider_stop_reason}); it did not finish the task.",
+                recoverable=True,
+                error_type=(
+                    "context_overflow" if provider_stop_reason == "model_context_window_exceeded"
+                    else "output_limit"
+                ),
+            )
 
         if has_visible_or_actionable_output:
             assistant_usage = {
@@ -1910,6 +1957,11 @@ async def query_loop(
                 params.messages[:] = messages
                 turn_count -= 1
                 continue
+            if response_limit_error is not None:
+                yield response_limit_error
+                yield _turn_complete_event(provider_stop_reason, messages)
+                params.messages[:] = messages
+                return
             logger.warning("Empty response, ending turn (awaiting_resume=%s)", _awaiting_compact_resume)
             if _awaiting_compact_resume:
                 yield ErrorEvent(
@@ -1934,6 +1986,11 @@ async def query_loop(
                 continue
             if _retry_after_completed_items:
                 continue
+            if response_limit_error is not None:
+                yield response_limit_error
+                yield _turn_complete_event(provider_stop_reason, messages)
+                params.messages[:] = messages
+                return
             yield _turn_complete_event("end_turn", messages)
             params.messages[:] = messages
             return

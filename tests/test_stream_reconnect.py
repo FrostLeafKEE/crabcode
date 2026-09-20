@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import pytest
 
-from crabcode_core.api.base import StreamChunk
+from crabcode_core.api.anthropic_adapter import AnthropicAdapter
+from crabcode_core.api.base import ModelConfig, StreamChunk
 from crabcode_core.api.codex_adapter import CodexAdapter, _responses_error_chunk
 from crabcode_core.query.loop import QueryParams, query_loop
 from crabcode_core.query.retry import ResponsesStreamRetryState, request_retry_backoff
 from crabcode_core.types.config import ApiConfig
-from crabcode_core.types.event import ErrorEvent, StreamRetryEvent, StreamTextEvent
+from crabcode_core.types.event import ErrorEvent, StreamRetryEvent, StreamTextEvent, TurnCompleteEvent
 from crabcode_core.types.message import AssistantMessage, ToolResultBlock, create_user_message
 from crabcode_core.types.tool import Tool, ToolContext, ToolResult
 from crabcode_gateway.schemas import core_event_to_payload
@@ -353,3 +357,217 @@ def test_stream_retry_wire_payload_is_non_terminal():
     assert payload.type == "stream_retry"
     assert payload.retry_count == 1
     assert payload.error == "drop"
+
+
+def anthropic_text_events(text="continue working", *, stop_reason="end_turn"):
+    return [
+        {"type": "message_start", "message": {"usage": {"input_tokens": 9000}}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": stop_reason}, "usage": {"output_tokens": 20}},
+        {"type": "message_stop"},
+    ]
+
+
+def anthropic_tool_events():
+    return [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "tool_use", "id": "call-1", "name": "Count", "input": {}}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "input_json_delta", "partial_json": "{}"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+        {"type": "message_stop"},
+    ]
+
+
+def scripted_anthropic(monkeypatch, responses, transport):
+    """Exercise the real parsers without network calls or credentials."""
+    adapter = object.__new__(AnthropicAdapter)
+    adapter.config = ApiConfig(
+        model="test", base_url="https://provider.invalid", thinking_enabled=False,
+        anthropic_stream_transport=transport, max_retries=2,
+        unbounded_connection_retries=True,
+    )
+    adapter._api_key = None
+    adapter.count_input_tokens = AsyncMock(return_value=None)
+    requests = []
+
+    def next_events(params):
+        requests.append(params)
+        return responses[min(len(requests) - 1, len(responses) - 1)]
+
+    if transport == "httpx":
+        client_class = httpx.AsyncClient
+
+        def handle(request):
+            events = next_events(json.loads(request.content))
+            body = "".join("data: " + json.dumps(event) + "\n\n" for event in events)
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
+
+        monkeypatch.setattr(
+            "crabcode_core.api.anthropic_adapter.httpx.AsyncClient",
+            lambda **kwargs: client_class(transport=httpx.MockTransport(handle), **kwargs),
+        )
+    else:
+        class SDKStream:
+            def __init__(self, **params):
+                self.events = next_events(params)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def __aiter__(self):
+                for event in self.events:
+                    yield json.loads(json.dumps(event), object_hook=lambda value: SimpleNamespace(**value))
+
+        adapter.client = SimpleNamespace(messages=SimpleNamespace(stream=SDKStream))
+    return adapter, requests
+
+
+@pytest.mark.parametrize("transport", ["httpx", "sdk"])
+@pytest.mark.parametrize("event_count", [0, 3, 4, 5, 6])
+def test_anthropic_requires_terminal_event_on_both_transports(monkeypatch, transport, event_count):
+    adapter, _ = scripted_anthropic(monkeypatch, [anthropic_text_events()[:event_count]], transport)
+
+    async def collect():
+        return [chunk async for chunk in adapter.stream_message([], [], [], ModelConfig(model="test"))]
+
+    chunks = asyncio.run(collect())
+    if event_count == 6:
+        assert chunks[-1].type == "message_stop"
+        assert not any(chunk.type == "error" for chunk in chunks)
+    else:
+        assert chunks[-1].type == "error"
+        assert chunks[-1].retryable is True
+        assert chunks[-1].connection_failed is False
+        assert "before message_stop" in chunks[-1].error
+
+
+@pytest.mark.parametrize("transport", ["httpx", "sdk"])
+def test_anthropic_silent_eof_recovers_from_completed_text(monkeypatch, transport):
+    adapter, requests = scripted_anthropic(monkeypatch, [
+        anthropic_text_events("checkpoint")[:-1], anthropic_text_events("finished"),
+    ], transport)
+    events, messages = run(adapter)
+    assert len(requests) == 2
+    assert len([event for event in events if isinstance(event, StreamRetryEvent)]) == 1
+    assert [message.text_content for message in messages if isinstance(message, AssistantMessage)] == [
+        "checkpoint", "finished",
+    ]
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+    assert events[-1].reason == "end_turn"
+
+
+def test_anthropic_silent_eof_exhausts_bounded_budget_even_with_connection_retries(monkeypatch):
+    adapter, requests = scripted_anthropic(monkeypatch, [anthropic_text_events()[:3]], "httpx")
+    events, messages = run(adapter)
+    assert len(requests) == 3
+    assert len([event for event in events if isinstance(event, StreamRetryEvent)]) == 2
+    assert len([event for event in events if isinstance(event, ErrorEvent)]) == 1
+    assert not any(isinstance(event, TurnCompleteEvent) for event in events)
+    assert not any(isinstance(message, AssistantMessage) for message in messages)
+
+
+def test_anthropic_eof_after_tool_call_does_not_repeat_its_effect(monkeypatch):
+    adapter, requests = scripted_anthropic(monkeypatch, [
+        anthropic_tool_events()[:-1], anthropic_tool_events(), anthropic_text_events("done"),
+    ], "httpx")
+    tool = CountingTool()
+    events, messages = run(adapter, tools=[tool])
+    assert tool.calls == 1
+    assert len(requests) == 3
+    assert messages[-1].text_content == "done"
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+
+
+@pytest.mark.parametrize("transport", ["httpx", "sdk"])
+def test_anthropic_missing_declared_tool_is_retried(monkeypatch, transport):
+    adapter, requests = scripted_anthropic(monkeypatch, [
+        anthropic_text_events(stop_reason="tool_use"),
+        anthropic_tool_events(), anthropic_text_events("done"),
+    ], transport)
+    tool = CountingTool()
+    events, _ = run(adapter, tools=[tool])
+    assert tool.calls == 1
+    assert len(requests) == 3
+    assert any(isinstance(event, StreamRetryEvent) for event in events)
+
+
+def test_anthropic_terminal_with_unfinished_tool_never_executes_partial_input(monkeypatch):
+    adapter, _ = scripted_anthropic(monkeypatch, [
+        [*anthropic_tool_events()[:2], {"type": "message_stop"}],
+        anthropic_text_events("recovered"),
+    ], "httpx")
+    tool = CountingTool()
+    events, _ = run(adapter, tools=[tool])
+    assert tool.calls == 0
+    assert any(isinstance(event, StreamRetryEvent) for event in events)
+
+
+def test_anthropic_explicit_error_is_not_followed_by_an_eof_error(monkeypatch):
+    adapter, _ = scripted_anthropic(monkeypatch, [[
+        {"type": "error", "error": {"message": "invalid request"}},
+    ]], "httpx")
+
+    async def collect():
+        return [chunk async for chunk in adapter.stream_message([], [], [], ModelConfig(model="test"))]
+
+    chunks = asyncio.run(collect())
+    assert len(chunks) == 1
+    assert chunks[0].type == "error"
+    assert chunks[0].error == "invalid request"
+
+
+def test_explicit_end_turn_is_not_replayed_based_on_text_and_is_logged(monkeypatch, caplog):
+    adapter, requests = scripted_anthropic(monkeypatch, [anthropic_text_events("继续往上翻")], "httpx")
+    events, _ = run(adapter)
+    assert len(requests) == 1
+    assert events[-1].reason == "end_turn"
+    assert "stop_reason='end_turn'" in caplog.text
+    assert "terminal_received=True" in caplog.text
+    assert "tool_calls=0" in caplog.text
+    assert "继续往上翻" not in caplog.text
+
+
+def test_output_limit_is_not_reported_as_success(monkeypatch):
+    adapter, requests = scripted_anthropic(monkeypatch, [anthropic_text_events(stop_reason="max_tokens")], "httpx")
+    events, messages = run(adapter)
+    assert len(requests) == 1
+    assert events[-1].reason == "max_tokens"
+    assert any(isinstance(event, ErrorEvent) and event.error_type == "output_limit" for event in events)
+    assert messages[-1].text_content == "continue working"
+
+
+def test_output_limit_without_visible_output_is_also_reported(monkeypatch):
+    events = anthropic_text_events(stop_reason="max_tokens")
+    adapter, requests = scripted_anthropic(monkeypatch, [[events[0], *events[-2:]]], "httpx")
+    result, _ = run(adapter)
+    assert len(requests) == 1
+    assert result[-1].reason == "max_tokens"
+    assert any(isinstance(event, ErrorEvent) and event.error_type == "output_limit" for event in result)
+
+
+def test_retry_closes_failed_stream_before_starting_next_request():
+    class ClosingAdapter(ScriptedAdapter):
+        closed = 0
+
+        async def stream_message(self, *args, **kwargs):
+            assert self.closed == len(self.requests)
+            try:
+                async for chunk in super().stream_message(*args, **kwargs):
+                    yield chunk
+            finally:
+                self.closed += 1
+
+    adapter = ClosingAdapter([
+        [StreamChunk(type="error", error="incomplete response", retryable=True)],
+        [*completed_text("done"), StreamChunk(type="message_stop")],
+    ])
+    events, _ = run(adapter)
+    assert adapter.closed == 2
+    assert not any(isinstance(event, ErrorEvent) for event in events)

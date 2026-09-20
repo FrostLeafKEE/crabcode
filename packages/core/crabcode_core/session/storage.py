@@ -1027,6 +1027,15 @@ class SessionStorage:
                         self.last_context_window_tokens = int(entry.get("window_tokens", 0))
                     except (TypeError, ValueError, OverflowError):
                         pass
+                    # Old anchors trusted every positive provider count. They
+                    # can contain a tiny proxy placeholder for a large request.
+                    # Invalidate the display together with the anchor, leaving
+                    # the original transcript/billing usage intact for audit.
+                    baseline = self.last_context_token_baseline
+                    if isinstance(baseline, dict) and baseline.get("version") == 1:
+                        self.last_context_used_tokens = 0
+                        self.last_context_token_source = "estimated"
+                        self.last_context_token_baseline = None
                     continue
 
                 if entry.get("type") in {"compact_boundary", "projection_boundary"}:

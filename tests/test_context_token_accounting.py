@@ -101,6 +101,69 @@ def test_latest_usage_replaces_anchor_across_turns_and_restore():
     assert 2300 < second[-1].context_used_tokens < 2350
 
 
+def test_regressed_usage_keeps_previous_prefix_but_preserves_reported_billing(caplog):
+    adapter = Adapter([response(31_236), response(586), response(33_000)])
+    tracker = ContextTokenTracker()
+    _, messages = run(adapter, tracker=tracker, context_window=500_000)
+    messages.append(create_user_message("follow-up with more context"))
+    second, messages = run(adapter, messages, tracker, context_window=500_000)
+    assert second[-1].usage["input_tokens"] == 586
+    assert second[-1].context_used_tokens > 31_236
+    assert second[-1].context_token_source == "calibrated"
+    assert tracker.input_tokens == 31_236
+    assert "Rejected regressed context usage" in caplog.text
+    third, _ = run(adapter, messages, tracker, context_window=500_000)
+    assert 33_000 < third[-1].context_used_tokens < 33_100
+
+
+@pytest.mark.parametrize("change", ["model", "edit", "prune", "overhead", "reset"])
+def test_real_input_reduction_can_establish_a_smaller_baseline(change):
+    tracker = ContextTokenTracker()
+    snapshot = RequestSnapshot("a" * 64, ("b" * 64, "c" * 64), "d" * 64, 31_000)
+    tracker.calibrate(snapshot, 31_236)
+    if change == "model":
+        snapshot = replace(snapshot, identity="e" * 64)
+    elif change == "edit":
+        snapshot = replace(snapshot, messages=("e" * 64, "c" * 64))
+    elif change == "prune":
+        snapshot = replace(snapshot, messages=("c" * 64,))
+    elif change == "overhead":
+        snapshot = replace(snapshot, overhead="e" * 64, overhead_tokens=100)
+    else:
+        tracker.reset()
+    assert tracker.calibrate(snapshot, 586)
+    assert tracker.input_tokens == 586
+
+
+def test_same_request_usage_regression_is_rejected_but_small_variation_is_allowed():
+    tracker = ContextTokenTracker()
+    snapshot = RequestSnapshot("a" * 64, ("b" * 64,), "c" * 64, 10914)
+    assert tracker.observe_usage(snapshot, {"total_input_tokens": 31_236})
+    assert not tracker.observe_usage(snapshot, {"input_tokens": 458, "total_input_tokens": 586})
+    assert tracker.input_tokens == 31_236
+    assert tracker.calibrate(snapshot, 31_200)
+
+
+def test_legacy_unchecked_context_baseline_is_not_restored_or_displayed(tmp_path):
+    tracker = ContextTokenTracker()
+    snapshot = RequestSnapshot("a" * 64, ("b" * 64,), "c" * 64, 10914)
+    tracker.calibrate(snapshot, 586)
+    legacy = {**tracker.dump(), "version": 1}
+    restored = ContextTokenTracker()
+    restored.restore(legacy)
+    assert restored.dump() is None
+    storage = SessionStorage(str(tmp_path), "legacy-context")
+    transcript = json.dumps({
+        "type": "context_usage", "used_tokens": 682, "window_tokens": 500_000,
+        "source": "calibrated", "baseline": legacy,
+    })
+    storage.load_messages(_transcript_text=transcript)
+    assert storage.last_context_used_tokens == 0  # status falls back to a local estimate
+    assert storage.last_context_token_source == "estimated"
+    assert storage.last_context_token_baseline is None
+    assert storage.last_context_window_tokens == 500_000
+
+
 def test_tool_results_are_included_and_near_limit_is_verified():
     tool_response = [
         StreamChunk(type="tool_use_start", tool_name="ReadExample", tool_use_id="read-1"),
