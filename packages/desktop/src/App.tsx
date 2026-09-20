@@ -2254,7 +2254,7 @@ function App() {
             },
             items: [
               ...current[activeSessionKey].items,
-              { id: randomUuid(), kind: "user", text: `引导：${attachmentLine}${attachmentLine && text ? "\n\n" : ""}${text}`, status: "complete", startedAt: now, completedAt: now, durationMs: 0 },
+              { id: randomUuid(), kind: "user", text: `${attachmentLine}${attachmentLine && text ? "\n\n" : ""}${text}`, status: "complete", startedAt: now, completedAt: now, durationMs: 0 },
             ],
           },
         }));
