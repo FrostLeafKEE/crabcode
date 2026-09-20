@@ -552,15 +552,120 @@ fn mac_target_pointer_event(event: &CGEvent, target: WindowTarget) -> Result<(),
     Ok(())
 }
 
+// AppKit can order a background window front even when CGEventPostToPid
+// leaves the WindowServer front process unchanged. A target-only activation
+// record lets it handle an ordinary click without that implicit ordering.
+// Never send a defocus record to the user's app or call SetFrontProcess.
 #[cfg(target_os = "macos")]
-fn mac_post_mouse(
+struct MacPointerDispatch {
+    psn: [u32; 2],
+    window_id: u32,
+    restore_inactive: bool,
+    post: unsafe extern "C" fn(*const u32, *const u8) -> i32,
+    front: unsafe extern "C" fn(*mut u32) -> i32,
+}
+
+#[cfg(target_os = "macos")]
+impl MacPointerDispatch {
+    fn begin(target: WindowTarget) -> Result<Self, String> {
+        type GetProcess = unsafe extern "C" fn(i32, *mut u32) -> i32;
+        type Post = unsafe extern "C" fn(*const u32, *const u8) -> i32;
+        type Front = unsafe extern "C" fn(*mut u32) -> i32;
+        static API: std::sync::OnceLock<Option<(GetProcess, Post, Front)>> =
+            std::sync::OnceLock::new();
+        let api = API.get_or_init(|| unsafe {
+            let get = libc::dlsym(libc::RTLD_DEFAULT, c"GetProcessForPID".as_ptr());
+            let post = libc::dlsym(libc::RTLD_DEFAULT, c"SLPSPostEventRecordTo".as_ptr());
+            let front = libc::dlsym(libc::RTLD_DEFAULT, c"_SLPSGetFrontProcess".as_ptr());
+            if get.is_null() || post.is_null() || front.is_null() {
+                return None;
+            }
+            // SAFETY: resolved system functions have the C ABIs declared above;
+            // their frameworks remain loaded for the life of the process.
+            Some((
+                std::mem::transmute::<*mut libc::c_void, GetProcess>(get),
+                std::mem::transmute::<*mut libc::c_void, Post>(post),
+                std::mem::transmute::<*mut libc::c_void, Front>(front),
+            ))
+        });
+        let &(get, post, front) = api.as_ref().ok_or_else(|| {
+            "Background clicks without window raising are unavailable on this macOS version; choose foreground_desktop explicitly".to_string()
+        })?;
+        let mut psn = [0u32; 2];
+        let mut foreground = [0u32; 2];
+        // SAFETY: both output buffers contain the two UInt32s of a ProcessSerialNumber.
+        if unsafe { get(target.pid, psn.as_mut_ptr()) } != 0
+            || unsafe { front(foreground.as_mut_ptr()) } != 0
+        {
+            return Err("Unable to resolve macOS background input processes".to_string());
+        }
+        let dispatch = Self {
+            psn,
+            window_id: target.window_id,
+            restore_inactive: psn != foreground,
+            post,
+            front,
+        };
+        dispatch.send_activation(true)?;
+        // Allow the target's event loop to process the record before mouse-down.
+        thread::sleep(Duration::from_millis(50));
+        Ok(dispatch)
+    }
+
+    fn send_activation(&self, active: bool) -> Result<(), String> {
+        // SkyLight's process-local activation record, also used by background
+        // input drivers. This changes AppKit state, not global keyboard focus.
+        let mut record = [0u8; 0xf8];
+        record[4] = 0xf8;
+        record[8] = 0x0d;
+        record[0x3c..0x40].copy_from_slice(&self.window_id.to_le_bytes());
+        record[0x8a] = if active { 1 } else { 2 };
+        // SAFETY: the PSN and fixed-size event record live through the call.
+        let status = unsafe { (self.post)(self.psn.as_ptr(), record.as_ptr()) };
+        if status != 0 {
+            return Err(format!("Unable to update background input state: {status}"));
+        }
+        Ok(())
+    }
+
+    fn restore(&mut self) -> Result<(), String> {
+        if self.restore_inactive {
+            // Do not deactivate the target if the user switched to it during
+            // the gesture. Consult WindowServer, not cached NSRunningApplication state.
+            let mut foreground = [0u32; 2];
+            if unsafe { (self.front)(foreground.as_mut_ptr()) } != 0 {
+                return Err("Unable to check foreground process after background input".to_string());
+            }
+            if foreground != self.psn {
+                self.send_activation(false)?;
+            }
+            self.restore_inactive = false;
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<(), String> {
+        thread::sleep(Duration::from_millis(50));
+        self.restore()
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for MacPointerDispatch {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn mac_mouse_event(
     target: WindowTarget,
     event_type: CGEventType,
     button: CGMouseButton,
     x: i32,
     y: i32,
     click_count: i64,
-) -> Result<(), String> {
+) -> Result<CGEvent, String> {
     let event = CGEvent::new_mouse_event(
         mac_event_source()?,
         event_type,
@@ -570,8 +675,37 @@ fn mac_post_mouse(
     .map_err(|_| "Unable to create a macOS mouse event".to_string())?;
     event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, click_count);
     mac_target_pointer_event(&event, target)?;
-    event.post_to_pid(target.pid);
+    Ok(event)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_post_mouse(
+    target: WindowTarget,
+    event_type: CGEventType,
+    button: CGMouseButton,
+    x: i32,
+    y: i32,
+    click_count: i64,
+) -> Result<(), String> {
+    mac_mouse_event(target, event_type, button, x, y, click_count)?.post_to_pid(target.pid);
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_post_prepared_mouse(event: &CGEvent, pid: i32) {
+    unsafe extern "C" {
+        fn CGEventSetTimestamp(event: core_graphics::sys::CGEventRef, timestamp: u64);
+        fn clock_gettime_nsec_np(clock_id: libc::clockid_t) -> u64;
+    }
+    // Prepared drag/double-click events must reflect dispatch time, not their
+    // shared construction time. Quartz timestamps use uptime in nanoseconds.
+    unsafe {
+        CGEventSetTimestamp(
+            event.as_ptr(),
+            clock_gettime_nsec_np(libc::CLOCK_UPTIME_RAW),
+        );
+    }
+    event.post_to_pid(pid);
 }
 
 #[cfg(target_os = "macos")]
@@ -584,14 +718,25 @@ fn mac_click(
 ) -> Result<(), String> {
     let button = mac_mouse_button(button_name)?;
     let (down, up, _) = mac_mouse_event_types(button);
-    for count in 1..=click_count {
-        mac_post_mouse(target, down, button, x, y, count)?;
-        mac_post_mouse(target, up, button, x, y, count)?;
-        if count < click_count {
+    // Construct every event before changing target state or sending mouse-down.
+    let events = (1..=click_count)
+        .map(|count| {
+            Ok((
+                mac_mouse_event(target, down, button, x, y, count)?,
+                mac_mouse_event(target, up, button, x, y, count)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let dispatch = MacPointerDispatch::begin(target)?;
+    for (index, (down, up)) in events.iter().enumerate() {
+        mac_post_prepared_mouse(down, target.pid);
+        thread::sleep(Duration::from_millis(20));
+        mac_post_prepared_mouse(up, target.pid);
+        if index + 1 < events.len() {
             thread::sleep(Duration::from_millis(80));
         }
     }
-    Ok(())
+    dispatch.finish()
 }
 
 #[cfg(target_os = "macos")]
@@ -604,15 +749,24 @@ fn mac_drag(
 ) -> Result<(), String> {
     let button = mac_mouse_button(button_name)?;
     let (down, up, dragged) = mac_mouse_event_types(button);
-    mac_post_mouse(target, down, button, start.0, start.1, 1)?;
+    let down = mac_mouse_event(target, down, button, start.0, start.1, 1)?;
+    let up = mac_mouse_event(target, up, button, end.0, end.1, 1)?;
     let steps = 20i32;
-    for step in 1..=steps {
-        let x = start.0 + (end.0 - start.0) * step / steps;
-        let y = start.1 + (end.1 - start.1) * step / steps;
-        mac_post_mouse(target, dragged, button, x, y, 1)?;
+    let motion = (1..=steps)
+        .map(|step| {
+            let x = start.0 + (end.0 - start.0) * step / steps;
+            let y = start.1 + (end.1 - start.1) * step / steps;
+            mac_mouse_event(target, dragged, button, x, y, 1)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let dispatch = MacPointerDispatch::begin(target)?;
+    mac_post_prepared_mouse(&down, target.pid);
+    for event in motion {
+        mac_post_prepared_mouse(&event, target.pid);
         thread::sleep(Duration::from_millis(duration_ms / steps as u64));
     }
-    mac_post_mouse(target, up, button, end.0, end.1, 1)
+    mac_post_prepared_mouse(&up, target.pid);
+    dispatch.finish()
 }
 
 fn scroll_delta(action: &ComputerAction) -> Result<(i32, i32), String> {
@@ -1405,7 +1559,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "requires macOS Accessibility permission and launches isolated overlapping test windows"]
-    fn macos_background_scroll_targets_one_of_two_windows_without_focus() {
+    fn macos_background_pointer_targets_one_of_two_windows_without_focus() {
         use std::fs;
         use std::process::{Child, Stdio};
 
@@ -1469,8 +1623,84 @@ mod tests {
         assert_eq!(after["decoy_offset"], initial["decoy_offset"]);
         assert_eq!(after["decoy_events"], 0);
         assert_eq!(after["active"], false);
-        assert_eq!(after["frontmost_pid"], initial["frontmost_pid"]);
-        assert_eq!(after["cursor"], initial["cursor"]);
+        let assert_desktop_preserved = |after: &Value| {
+            assert_eq!(
+                after["active"], false,
+                "target state was not restored: {after}"
+            );
+            assert_eq!(
+                after["ever_frontmost"], false,
+                "target stole foreground: {after}"
+            );
+            assert_eq!(
+                after["ever_raised"], false,
+                "target window was raised: {after}"
+            );
+            // Keep strict cursor/focus checks for idle desktop runs, while also
+            // allowing this regression to run alongside real user activity.
+            if std::env::var_os("CRABCODE_TEST_ALLOW_USER_INPUT").is_none() {
+                assert_eq!(after["cursor"], initial["cursor"]);
+                assert_eq!(after["frontmost_pid"], initial["frontmost_pid"]);
+            }
+        };
+        assert_desktop_preserved(&after);
+
+        mac_click(target, point.0, point.1, Some("left"), 1).unwrap();
+        thread::sleep(Duration::from_millis(500));
+        let after = read_state().unwrap();
+        assert_eq!(
+            after["target_clicks"], 1,
+            "click did not reach target: {after}"
+        );
+        assert_eq!(after["decoy_clicks"], 0);
+        assert_eq!(after["modifiers"], json!([0]));
+        assert_desktop_preserved(&after);
+
+        mac_click(target, point.0, point.1, Some("left"), 2).unwrap();
+        mac_click(target, point.0, point.1, Some("right"), 1).unwrap();
+        mac_click(target, point.0, point.1, Some("middle"), 1).unwrap();
+        mac_drag(
+            target,
+            point,
+            (point.0 + 40, point.1 + 20),
+            Some("left"),
+            100,
+        )
+        .unwrap();
+        thread::sleep(Duration::from_millis(500));
+        let after = read_state().unwrap();
+        assert_eq!(after["target_clicks"], 4, "missing clicks: {after}");
+        assert_eq!(after["click_counts"], json!([1, 1, 2, 1]));
+        let click_times = after["click_times"].as_array().unwrap();
+        assert!(click_times[2].as_f64().unwrap() - click_times[1].as_f64().unwrap() >= 0.08);
+        assert_eq!(after["target_other_clicks"], 2);
+        assert!(after["target_drags"].as_u64().unwrap() > 0);
+        assert_eq!(after["modifiers"], json!([0, 0, 0, 0]));
+        for field in ["decoy_clicks", "decoy_other_clicks", "decoy_drags"] {
+            assert_eq!(after[field], 0, "input reached decoy: {after}");
+        }
+        assert_desktop_preserved(&after);
+
+        mac_click(
+            target,
+            initial["button_x"].as_i64().unwrap() as i32,
+            initial["button_y"].as_i64().unwrap() as i32,
+            Some("left"),
+            1,
+        )
+        .unwrap();
+        thread::sleep(Duration::from_millis(500));
+        let after = read_state().unwrap();
+        assert_eq!(
+            after["button_presses"], 1,
+            "native button did not activate: {after}"
+        );
+        assert_desktop_preserved(&after);
+
+        // Early returns/unwinding must also restore the target's AppKit state.
+        drop(MacPointerDispatch::begin(target).unwrap());
+        thread::sleep(Duration::from_millis(200));
+        assert_desktop_preserved(&read_state().unwrap());
     }
 
     #[test]
