@@ -3467,6 +3467,20 @@ function App() {
                 <span className="section-label-actions">
                   <span className="section-count">{filteredSessions.length}</span>
                   <button
+                    className="icon-button tiny"
+                    type="button"
+                    title="新建会话"
+                    aria-label="新建会话"
+                    disabled={!activeConnection || !activeProject?.directories.length || activeGateway?.status !== "online"}
+                    onClick={() => {
+                      if (!activeConnection || !activeProject) return;
+                      setSearch("");
+                      openSession(activeConnection, activeProject);
+                    }}
+                  >
+                    <Plus />
+                  </button>
+                  <button
                     className="icon-button tiny section-collapse"
                     title={sessionsCollapsed ? "展开会话" : "折叠会话"}
                     aria-expanded={!sessionsCollapsed}

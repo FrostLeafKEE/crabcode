@@ -252,7 +252,7 @@ export function RuntimeSettingsPanel({
               <div className="settings-row-copy">
                 <strong>操作模式</strong>
                 <span>
-                  后台应用模式只操作指定应用窗口，不会自动回退；前台桌面模式会控制真实鼠标和键盘。
+                  后台应用模式只操作指定应用窗口；前台桌面模式会控制真实鼠标和键盘。
                 </span>
               </div>
               <div className="settings-segmented" aria-label="Computer Use 操作模式">
