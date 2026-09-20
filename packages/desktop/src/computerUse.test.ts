@@ -100,6 +100,59 @@ describe("ComputerUseChannel", () => {
     channel.dispose();
   });
 
+  it.each([true, false])("uses dispatch status for an unverified click (dispatched: %s)", async (dispatched) => {
+    invokeMock
+      .mockResolvedValueOnce({
+        gui_available: true,
+        input_available: true,
+        platform: "macos",
+        displays: [],
+        supported_modes: ["background_app", "foreground_desktop"],
+      })
+      .mockResolvedValueOnce({
+        ok: dispatched,
+        action: "click",
+        summary: dispatched ? "点击已发送" : "点击派发状态未确认",
+        dispatch_succeeded: dispatched,
+        effect_verified: false,
+        verification_warning: "Click effect is unverified; observe again",
+        ...(!dispatched ? { error: "Dispatch was not acknowledged" } : {}),
+      });
+    const states: ComputerUseState[] = [];
+    const api = {
+      authenticate: vi.fn().mockResolvedValue(undefined),
+      computerUseWebSocketUrl: () => "ws://localhost/computer-use/ws",
+    } as unknown as GatewayApi;
+    const channel = new ComputerUseChannel(api, "desktop-test", true, (state) => states.push(state));
+    try {
+      await channel.connect();
+      const socket = FakeWebSocket.instances[0];
+      socket.emit("open");
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "computer_use_request",
+          request_id: "click-unverified",
+          session_id: "session-click",
+          mode: "background_app",
+          action: { action: "click", window_id: "42", x: 100, y: 100 },
+        }),
+      });
+      const summary = dispatched ? "点击已发送" : "点击派发状态未确认";
+      await vi.waitFor(() => expect(states.at(-1)?.logs.at(-1)?.summary).toBe(summary));
+      expect(states.at(-1)).toMatchObject({
+        status: dispatched ? "ready" : "error",
+        error: dispatched ? null : "Dispatch was not acknowledged",
+      });
+      expect(states.at(-1)?.previews[0]).toMatchObject({
+        status: dispatched ? "ready" : "error",
+        summary,
+      });
+      expect(states.at(-1)?.logs.at(-1)?.ok).toBe(dispatched);
+    } finally {
+      channel.dispose();
+    }
+  });
+
   it("retains the preview while idle and releases it 15 seconds after the session releases Computer Use", async () => {
     vi.useFakeTimers();
     try {

@@ -147,6 +147,10 @@ def test_background_mode_allows_focus_changes_but_keeps_window_coordinates():
     assert "background_click_foreground_violation" not in prompt
     assert "fall back to window-targeted mouse events" in prompt
     assert "focus changes are allowed" in prompt
+    assert "verification_warning is informational, not a dispatch failure" in prompt
+    assert "observe again and judge whether the intended action took effect" in prompt
+    assert "background_click_dispatch_unverified" in prompt
+    assert "A click succeeds when ok and effect_verified are true" not in prompt
     assert asyncio.run(tool.validate_input({"action": "observe"})) == (
         "window_id is required in background_app mode; call list_windows first"
     )
@@ -164,15 +168,18 @@ def test_background_mode_allows_focus_changes_but_keeps_window_coordinates():
     )
 
 
-def test_allowed_foreground_activation_is_not_projected_as_click_failure():
+@pytest.mark.parametrize("effect_verified", [True, False])
+def test_dispatched_click_is_success_independent_of_effect_and_foreground(effect_verified):
     class ClickBackend(FakeBackend):
         async def execute(self, host_id, **kwargs):
             return {
                 "ok": True,
-                "summary": "Application click changed the target window",
+                "summary": "点击已发送",
                 "dispatch_succeeded": True,
-                "effect_verified": True,
+                "effect_verified": effect_verified,
                 "foreground_activated": True,
+                **({"verification_warning": "Click effect is unverified; observe again"}
+                   if not effect_verified else {}),
             }
 
     tool, context = prepared_tool(ClickBackend())
@@ -181,9 +188,14 @@ def test_allowed_foreground_activation_is_not_projected_as_click_failure():
         {"action": "click", "window_id": "42", "x": 100, "y": 100}, context,
     ))
     assert not result.is_error
+    assert result.result_for_display == "点击已发送"
     projected = json.loads(result.result_for_model)
     assert projected["foreground_activated"] is True
-    assert projected["effect_verified"] is True
+    assert projected["dispatch_succeeded"] is True
+    assert projected["effect_verified"] is effect_verified
+    assert "error_code" not in projected
+    if not effect_verified:
+        assert "observe again" in projected["verification_warning"]
 
 
 @pytest.mark.parametrize("mode", ["background_app", "foreground_desktop"])
@@ -237,7 +249,7 @@ def test_failed_background_click_receipt_is_not_projected_as_success():
                 "ok": False,
                 "summary": "Background click is unsupported by the target application",
                 "error_code": "background_click_unsupported",
-                "dispatch_succeeded": True,
+                "dispatch_succeeded": False,
                 "effect_verified": False,
                 "visual_change_detected": False,
                 "foreground_activated": False,
@@ -252,7 +264,7 @@ def test_failed_background_click_receipt_is_not_projected_as_success():
     projected = json.loads(result.result_for_model)
     assert result.is_error
     assert projected["error_code"] == "background_click_unsupported"
-    assert projected["dispatch_succeeded"] is True
+    assert projected["dispatch_succeeded"] is False
     assert projected["effect_verified"] is False
     assert projected["foreground_activated"] is False
     assert projected["real_cursor_moved"] is False

@@ -2280,6 +2280,32 @@ fn record_click_foreground_change(result: &mut Value, verification: Result<bool,
 }
 
 #[cfg(target_os = "macos")]
+fn record_click_outcome(result: &mut Value, dispatched: bool, changed: bool) {
+    // Dispatch is the execution result. Pixel changes are only evidence for
+    // the model to interpret, not a prerequisite for a successful tool call.
+    result["ok"] = json!(dispatched);
+    result["dispatch_succeeded"] = json!(dispatched);
+    result["effect_verified"] = json!(changed);
+    result["visual_change_detected"] = json!(changed);
+    result["summary"] = json!(if dispatched {
+        "点击已发送"
+    } else {
+        "点击派发状态未确认"
+    });
+    if !changed {
+        result["verification_warning"] = json!(
+            "Click effect is unverified. Inspect the returned screenshot or observe again to judge the result; do not repeat the click solely because no visual change was detected."
+        );
+    }
+    if !dispatched {
+        result["error_code"] = json!("background_click_dispatch_unverified");
+        result["error"] = json!(
+            "The accessibility action may have arrived but dispatch was not acknowledged; observe before deciding whether another action is needed"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn execute_background_click(action: &ComputerAction) -> Result<Value, String> {
     let target = background_target(action)?;
     let point = background_local_point(action, target)?;
@@ -2344,43 +2370,33 @@ fn execute_background_click(action: &ComputerAction) -> Result<Value, String> {
     }
     let changed = visual_change.map(|change| change.detected).unwrap_or(false);
     let mut result = json!({
-        "ok": changed,
         "mode": "background_app",
         "action": action.action,
-        "summary": if changed {
-            "Application click changed the target window"
-        } else {
-            "Application click could not be verified"
-        },
         "cursor": { "x": point.0, "y": point.1 },
         "coordinate_space": "window",
         "window_origin": { "x": target.x, "y": target.y },
         "dispatch_window_id": event_target.window_id.to_string(),
-        "dispatch_succeeded": uses_mouse || matches!(dispatch, MacAxPressOutcome::Performed { .. }),
-        "effect_verified": changed,
-        "visual_change_detected": changed,
         "visual_changed_pixels": visual_change.map(|change| change.changed_pixels),
         "visual_sampled_pixels": visual_change.map(|change| change.sampled_pixels),
         "input_method": if uses_mouse { "quartz_event" } else { "accessibility_action" },
         "verification_method": "screenshot_difference",
         "real_cursor_moved": false,
     });
+    record_click_outcome(
+        &mut result,
+        uses_mouse || matches!(dispatch, MacAxPressOutcome::Performed { .. }),
+        changed,
+    );
     match dispatch {
         MacAxPressOutcome::Performed { action: ax_action } => {
             result["accessibility_action"] = json!(ax_action);
         }
         MacAxPressOutcome::Uncertain { reason } => {
-            result["verification_warning"] = json!(reason);
+            result["dispatch_warning"] = json!(reason);
         }
         MacAxPressOutcome::Unsupported { reason } => {
             result["fallback_reason"] = json!(reason);
         }
-    }
-    if !changed {
-        result["error_code"] = json!("background_click_unverified");
-        result["error"] = json!(
-            "The click may have arrived but no target-area change was verified; observe instead of repeating the click"
-        );
     }
     let mut result = finish_background_click(action, result, after);
     record_click_foreground_change(
@@ -2665,31 +2681,29 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn background_click_focus_diagnostics_preserve_action_result() {
+    fn background_click_receipt_separates_dispatch_effect_and_focus() {
         for verification in [
             Ok(false),
             Ok(true),
             Err("foreground probe failed".to_string()),
         ] {
-            for succeeded in [true, false] {
-                let mut result = json!({
-                    "ok": succeeded,
-                    "effect_verified": succeeded,
-                    "visual_change_detected": succeeded,
-                    "dispatch_succeeded": true,
-                });
-                if !succeeded {
-                    result["error_code"] = json!("background_click_unverified");
-                }
+            for (dispatched, changed) in
+                [(true, true), (true, false), (false, true), (false, false)]
+            {
+                let mut result = json!({});
+                record_click_outcome(&mut result, dispatched, changed);
                 record_click_foreground_change(&mut result, verification.clone());
-                assert_eq!(result["ok"], succeeded);
-                assert_eq!(result["effect_verified"], succeeded);
-                assert_eq!(result["visual_change_detected"], succeeded);
-                assert_eq!(result["dispatch_succeeded"], true);
-                if succeeded {
+                assert_eq!(result["ok"], dispatched);
+                assert_eq!(result["effect_verified"], changed);
+                assert_eq!(result["visual_change_detected"], changed);
+                assert_eq!(result["dispatch_succeeded"], dispatched);
+                assert_eq!(result["verification_warning"].is_string(), !changed);
+                if dispatched {
+                    assert_eq!(result["summary"], "点击已发送");
                     assert!(result["error_code"].is_null());
+                    assert!(result["error"].is_null());
                 } else {
-                    assert_eq!(result["error_code"], "background_click_unverified");
+                    assert_eq!(result["error_code"], "background_click_dispatch_unverified");
                 }
                 match &verification {
                     Ok(activated) => assert_eq!(result["foreground_activated"], *activated),
@@ -3230,14 +3244,14 @@ mod tests {
         );
         // An occluded AppKit window can retain stale screenshot pixels. The
         // fixture's action counter independently verifies delivery; the host
-        // must still report unverified if those pixels have not changed.
+        // reports successful dispatch with a warning if pixels have not changed.
         assert_eq!(result["dispatch_succeeded"], true, "{result}");
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(result["summary"], "点击已发送", "{result}");
+        assert!(result["error_code"].is_null(), "{result}");
         if result["visual_change_detected"] == false {
-            assert_eq!(result["ok"], false, "{result}");
-            assert_eq!(
-                result["error_code"], "background_click_unverified",
-                "{result}"
-            );
+            assert_eq!(result["effect_verified"], false, "{result}");
+            assert!(result["verification_warning"].is_string(), "{result}");
         }
         assert_eq!(result["foreground_activated"], false, "{result}");
         assert_desktop_preserved(&after_click);
@@ -3263,11 +3277,8 @@ mod tests {
             result["foreground_activated"], true,
             "{result}; {after_activation}"
         );
-        assert_eq!(result["ok"], result["effect_verified"], "{result}");
-        assert!(
-            result["error_code"].is_null() || result["error_code"] == "background_click_unverified",
-            "{result}"
-        );
+        assert_eq!(result["ok"], true, "{result}");
+        assert!(result["error_code"].is_null(), "{result}");
         assert_eq!(
             after_activation["activating_button_presses"], 1,
             "{after_activation}"
@@ -3301,6 +3312,8 @@ mod tests {
             .unwrap();
             assert_eq!(result["dispatch_succeeded"], true, "{result}");
             assert_eq!(result["input_method"], "quartz_event", "{result}");
+            assert_eq!(result["ok"], true, "{result}");
+            assert!(result["error_code"].is_null(), "{result}");
             let after = read_state().unwrap();
             assert_eq!(after["decoy_clicks"], clicks, "{result}; {after}");
             assert_eq!(
