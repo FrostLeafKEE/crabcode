@@ -138,10 +138,62 @@ describe("ComputerUseChannel", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(states.at(-1)).toMatchObject({ active: true, status: "ready" });
-      expect(states.at(-1)?.latestFrame?.frame_id).toBe("frame-1");
+      expect(states.at(-1)?.previews[0]?.frame?.frame_id).toBe("frame-1");
       await vi.advanceTimersByTimeAsync(COMPUTER_USE_IDLE_RELEASE_MS);
-      expect(states.at(-1)).toMatchObject({ active: false, latestFrame: null, cursor: null });
+      expect(states.at(-1)).toMatchObject({ active: false, previews: [] });
       expect(states.at(-1)?.logs).toHaveLength(1);
+      channel.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps simultaneous sessions in independent preview slots and releases them independently", async () => {
+    vi.useFakeTimers();
+    try {
+      invokeMock
+        .mockResolvedValueOnce({
+          gui_available: true,
+          input_available: true,
+          platform: "macos",
+          displays: [],
+          supported_modes: ["background_app", "foreground_desktop"],
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          action: "observe",
+          screenshot: { data: "MQ==", media_type: "image/png", width: 10, height: 10, origin_x: 0, origin_y: 0, frame_id: "frame-one" },
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          action: "observe",
+          screenshot: { data: "Mg==", media_type: "image/png", width: 10, height: 10, origin_x: 0, origin_y: 0, frame_id: "frame-two" },
+        });
+      const states: ComputerUseState[] = [];
+      const api = {
+        authenticate: vi.fn().mockResolvedValue(undefined),
+        computerUseWebSocketUrl: () => "ws://localhost/computer-use/ws",
+      } as unknown as GatewayApi;
+      const channel = new ComputerUseChannel(api, "desktop-test", true, (state) => states.push(state));
+
+      await channel.connect();
+      const socket = FakeWebSocket.instances[0];
+      socket.emit("open");
+      socket.emit("message", {
+        data: JSON.stringify({ type: "computer_use_request", request_id: "one", session_id: "session-one", action: { action: "observe" } }),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      socket.emit("message", {
+        data: JSON.stringify({ type: "computer_use_request", request_id: "two", session_id: "session-two", action: { action: "observe" } }),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(states.at(-1)?.previews.map((preview) => preview.frame?.frame_id)).toEqual(["frame-one", "frame-two"]);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(states.at(-1)?.previews.map((preview) => preview.frame?.frame_id)).toEqual(["frame-two"]);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(states.at(-1)).toMatchObject({ active: false, previews: [] });
       channel.dispose();
     } finally {
       vi.useRealTimers();

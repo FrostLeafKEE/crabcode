@@ -95,16 +95,25 @@ describe("desktop status bar", () => {
         supported_modes: ["background_app", "foreground_desktop"],
         reason: "Desktop input permission is unavailable",
       },
-      latestFrame: {
-        data: "cG5n",
-        media_type: "image/png",
-        width: 100,
-        height: 50,
-        origin_x: 10,
-        origin_y: 20,
-        frame_id: "frame-1",
-      },
-      cursor: { x: 60, y: 45 },
+      previews: [{
+        key: "session:session-one:agent:main",
+        sessionId: "session-one",
+        mode: "background_app",
+        status: "ready",
+        action: "click",
+        summary: "Clicked",
+        frame: {
+          data: "cG5n",
+          media_type: "image/png",
+          width: 100,
+          height: 50,
+          origin_x: 10,
+          origin_y: 20,
+          frame_id: "frame-1",
+        },
+        cursor: { x: 60, y: 45 },
+        updatedAt: Date.now(),
+      }],
       logs: [{ id: "action-1", time: Date.now(), action: "click", summary: "Clicked", ok: true }],
       error: null,
     };
@@ -132,12 +141,60 @@ describe("desktop status bar", () => {
     expect(onEnabledChange).toHaveBeenCalledWith(false);
     act(() => root.render(
       <StatusBar
-        computerUse={{ ...computerUse, active: false, latestFrame: null, cursor: null }}
+        computerUse={{ ...computerUse, active: false, previews: [] }}
         onComputerUseEnabledChange={onEnabledChange}
         onComputerUseOpenInputSettings={onOpenInputSettings}
         onComputerUseRefresh={onRefresh}
       />,
     ));
     expect(container.querySelector(".computer-use-console")).toBeNull();
+  });
+
+  it("renders simultaneous Computer Use sessions as separate previews", () => {
+    const preview = (sessionId: string, frameId: string) => ({
+      key: `session:${sessionId}:agent:main`,
+      sessionId,
+      mode: "background_app" as const,
+      status: "ready" as const,
+      action: "observe",
+      summary: "Observed application window",
+      frame: { data: "cG5n", media_type: "image/png", width: 100, height: 50, origin_x: 0, origin_y: 0, frame_id: frameId },
+      cursor: null,
+      updatedAt: Date.now(),
+    });
+    const computerUse: ComputerUseState = {
+      hostId: "desktop-test",
+      enabled: true,
+      active: true,
+      mode: "background_app",
+      status: "ready",
+      capabilities: null,
+      previews: [preview("session-one", "frame-one"), preview("session-two", "frame-two")],
+      logs: [
+        { id: "one", time: Date.now(), action: "observe", summary: "first session", ok: true, sessionId: "session-one" },
+        { id: "two", time: Date.now(), action: "click", summary: "second session", ok: true, sessionId: "session-two" },
+      ],
+      error: null,
+    };
+
+    act(() => root.render(<StatusBar computerUse={computerUse} />));
+    act(() => container.querySelector<HTMLButtonElement>(".status-computer-use")!.click());
+    expect(container.querySelectorAll(".computer-use-preview-card")).toHaveLength(2);
+    expect(container.querySelector(".computer-use-console")?.textContent).toContain("2 个活动预览");
+    expect(container.querySelectorAll<HTMLImageElement>(".computer-use-frame img")[0].alt).toContain("session-o");
+    expect(container.querySelectorAll<HTMLImageElement>(".computer-use-frame img")[1].alt).toContain("session-t");
+
+    const firstPreview = container.querySelectorAll<HTMLButtonElement>(".computer-use-preview-content")[0];
+    act(() => firstPreview.click());
+    const detail = document.body.querySelector<HTMLElement>('[role="dialog"][aria-label*="Computer Use 详情"]')!;
+    expect(detail.textContent).toContain("session-one");
+    expect(detail.textContent).toContain("first session");
+    expect(detail.textContent).not.toContain("second session");
+    expect(detail.querySelector<HTMLImageElement>(".computer-use-detail-frame img")?.alt).toContain("session-one");
+    expect(document.activeElement).toBe(detail.querySelector('[aria-label="关闭 Computer Use 详情"]'));
+    act(() => detail.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(document.body.querySelector(".computer-use-detail-backdrop")).toBeNull();
+    expect(container.querySelector(".computer-use-console")).not.toBeNull();
+    expect(document.activeElement).toBe(firstPreview);
   });
 });

@@ -30,6 +30,19 @@ export interface ComputerUseCursor {
   y: number;
 }
 
+export interface ComputerUsePreview {
+  key: string;
+  sessionId?: string;
+  agentId?: string;
+  mode: "background_app" | "foreground_desktop";
+  status: "busy" | "ready" | "error";
+  action: string;
+  summary: string;
+  frame: ComputerUseFrame | null;
+  cursor: ComputerUseCursor | null;
+  updatedAt: number;
+}
+
 export interface ComputerUseLogEntry {
   id: string;
   time: number;
@@ -47,8 +60,7 @@ export interface ComputerUseState {
   mode: "background_app" | "foreground_desktop";
   status: ComputerUseStatus;
   capabilities: ComputerUseCapabilities | null;
-  latestFrame: ComputerUseFrame | null;
-  cursor: ComputerUseCursor | null;
+  previews: ComputerUsePreview[];
   logs: ComputerUseLogEntry[];
   error: string | null;
 }
@@ -77,8 +89,7 @@ export function initialComputerUseState(hostId: string, enabled: boolean): Compu
     mode: "background_app",
     status: enabled ? "connecting" : "disabled",
     capabilities: null,
-    latestFrame: null,
-    cursor: null,
+    previews: [],
     logs: [],
     error: null,
   };
@@ -94,7 +105,7 @@ export class ComputerUseChannel {
   private reconnectTimer: number | null = null;
   private attempts = 0;
   private capabilityGeneration = 0;
-  private idleReleaseTimer: number | null = null;
+  private idleReleaseTimers = new Map<string, number>();
   private disposed = false;
   private enabled: boolean;
   private capabilities: ComputerUseCapabilities | null = null;
@@ -206,10 +217,10 @@ export class ComputerUseChannel {
     }
     this.publish({
       status: !enabled ? "disabled" : this.capabilities?.gui_available ? (this.socket?.readyState === WebSocket.OPEN ? "ready" : "connecting") : "unavailable",
-      ...(!enabled ? { active: false, latestFrame: null, cursor: null } : {}),
+      ...(!enabled ? { active: false, previews: [] } : {}),
       error: enabled ? this.capabilities?.reason ?? null : null,
     });
-    if (!enabled) this.cancelIdleRelease();
+    if (!enabled) this.cancelAllIdleReleases();
     this.send({
       type: "computer_use_host_state",
       enabled,
@@ -236,7 +247,7 @@ export class ComputerUseChannel {
     this.disposed = true;
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
-    this.cancelIdleRelease();
+    this.cancelAllIdleReleases();
     this.socket?.close();
     this.socket = null;
   }
@@ -264,18 +275,30 @@ export class ComputerUseChannel {
     }, delay);
   }
 
-  private cancelIdleRelease(): void {
-    if (this.idleReleaseTimer !== null) window.clearTimeout(this.idleReleaseTimer);
-    this.idleReleaseTimer = null;
+  private previewKey(sessionId?: string, agentId?: string): string {
+    return `session:${sessionId || "unknown"}:agent:${agentId || "main"}`;
   }
 
-  private scheduleIdleRelease(): void {
-    this.cancelIdleRelease();
-    this.idleReleaseTimer = window.setTimeout(() => {
-      this.idleReleaseTimer = null;
-      if (this.disposed || this.state.status === "busy") return;
-      this.publish({ active: false, latestFrame: null, cursor: null });
+  private cancelIdleRelease(key: string): void {
+    const timer = this.idleReleaseTimers.get(key);
+    if (timer !== undefined) window.clearTimeout(timer);
+    this.idleReleaseTimers.delete(key);
+  }
+
+  private cancelAllIdleReleases(): void {
+    for (const timer of this.idleReleaseTimers.values()) window.clearTimeout(timer);
+    this.idleReleaseTimers.clear();
+  }
+
+  private scheduleIdleRelease(key: string): void {
+    this.cancelIdleRelease(key);
+    const timer = window.setTimeout(() => {
+      this.idleReleaseTimers.delete(key);
+      if (this.disposed) return;
+      const previews = this.state.previews.filter((preview) => preview.key !== key);
+      this.publish({ active: previews.length > 0, previews });
     }, COMPUTER_USE_IDLE_RELEASE_MS);
+    this.idleReleaseTimers.set(key, timer);
   }
 
   private async handleMessage(raw: string): Promise<void> {
@@ -307,20 +330,37 @@ export class ComputerUseChannel {
     const actionName = String(action.action || "unknown");
     const mode = message.mode === "foreground_desktop" ? "foreground_desktop" : "background_app";
     const logId = requestId || randomUuid();
-    this.cancelIdleRelease();
+    const sessionId = typeof message.session_id === "string" ? message.session_id : undefined;
+    const agentId = typeof message.agent_id === "string" ? message.agent_id : undefined;
+    const previewKey = this.previewKey(sessionId, agentId);
+    this.cancelIdleRelease(previewKey);
+    const previousPreview = this.state.previews.find((preview) => preview.key === previewKey);
+    const busyPreview: ComputerUsePreview = {
+      key: previewKey,
+      sessionId,
+      agentId,
+      mode,
+      status: "busy",
+      action: actionName,
+      summary: "正在执行…",
+      frame: previousPreview?.frame ?? null,
+      cursor: previousPreview?.cursor ?? null,
+      updatedAt: Date.now(),
+    };
     this.publish({
       status: "busy",
       active: true,
       mode,
       error: null,
+      previews: [...this.state.previews.filter((preview) => preview.key !== previewKey), busyPreview],
       logs: [...this.state.logs, {
         id: logId,
         time: Date.now(),
         action: actionName,
         summary: "正在执行…",
         ok: true,
-        sessionId: typeof message.session_id === "string" ? message.session_id : undefined,
-        agentId: typeof message.agent_id === "string" ? message.agent_id : undefined,
+        sessionId,
+        agentId,
       }].slice(-100),
     });
     let result: HostResult;
@@ -337,24 +377,45 @@ export class ComputerUseChannel {
       action: String(result.action || actionName),
       summary: String(result.summary || result.error || actionName),
       ok: result.ok !== false,
-      sessionId: typeof message.session_id === "string" ? message.session_id : undefined,
-      agentId: typeof message.agent_id === "string" ? message.agent_id : undefined,
+      sessionId,
+      agentId,
     };
+    const currentPreview = this.state.previews.find((preview) => preview.key === previewKey);
+    const completedPreview: ComputerUsePreview = {
+      key: previewKey,
+      sessionId,
+      agentId,
+      mode,
+      status: result.ok === false ? "error" : "ready",
+      action: String(result.action || actionName),
+      summary: String(result.summary || result.error || actionName),
+      frame: result.screenshot ?? currentPreview?.frame ?? null,
+      cursor: result.cursor ?? currentPreview?.cursor ?? null,
+      updatedAt: Date.now(),
+    };
+    const previews = this.enabled
+      ? [...this.state.previews.filter((preview) => preview.key !== previewKey), completedPreview]
+      : [];
+    const anotherPreviewIsBusy = previews.some(
+      (preview) => preview.key !== previewKey && preview.status === "busy",
+    );
     this.publish({
       status: !this.enabled
         ? "disabled"
+        : anotherPreviewIsBusy
+          ? "busy"
         : result.ok === false
           ? "error"
           : this.capabilities?.gui_available ? "ready" : "unavailable",
-      latestFrame: this.enabled ? result.screenshot ?? this.state.latestFrame : null,
-      cursor: this.enabled ? result.cursor ?? this.state.cursor : null,
+      active: previews.length > 0,
+      previews,
       logs: [...this.state.logs.filter((item) => item.id !== logId), entry].slice(-100),
       error: result.ok === false
         ? String(result.error || "Computer Use action failed")
         : this.capabilities?.reason ?? null,
     });
-    if (this.enabled) this.scheduleIdleRelease();
-    else this.cancelIdleRelease();
+    if (this.enabled) this.scheduleIdleRelease(previewKey);
+    else this.cancelAllIdleReleases();
     this.send({ type: "computer_use_result", request_id: requestId, result });
   }
 }
