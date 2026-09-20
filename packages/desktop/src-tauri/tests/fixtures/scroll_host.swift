@@ -5,6 +5,10 @@ import AppKit
 let stateURL = URL(fileURLWithPath: CommandLine.arguments[1])
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
+// The test launches this bundle with open -g, so finishing launch initializes
+// accessibility without requesting the user's foreground application slot.
+app.finishLaunching()
+app.deactivate()
 var receivedWheelEvents = 0
 var receivedWindow = -1
 var receivedPoint = NSPoint.zero
@@ -60,7 +64,20 @@ final class ScrollArea: NSScrollView {
 
 final class ButtonCounter: NSObject {
     var presses = 0
-    @objc func press(_ sender: Any?) { presses += 1 }
+    var activateOnPress = false
+    @objc func press(_ sender: Any?) {
+        presses += 1
+        (sender as? NSButton)?.title = "Pressed \(presses)"
+        if activateOnPress {
+            // LaunchServices explicitly activates this background-launched
+            // fixture; AppKit's activate() can be declined on recent macOS.
+            let activation = Process()
+            activation.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            activation.arguments = ["-a", Bundle.main.bundlePath]
+            try! activation.run()
+            (sender as? NSButton)?.window?.makeKeyAndOrderFront(nil)
+        }
+    }
 }
 
 func makeWindow(_ title: String) -> (NSWindow, ScrollArea) {
@@ -83,12 +100,24 @@ let buttonCounter = ButtonCounter()
 let button = NSButton(title: "Test click", target: buttonCounter, action: #selector(ButtonCounter.press(_:)))
 button.frame = NSRect(x: 20, y: 20, width: 140, height: 32)
 targetScroll.addSubview(button)
+let decoyButtonCounter = ButtonCounter()
+let decoyButton = NSButton(title: "AX click", target: decoyButtonCounter, action: #selector(ButtonCounter.press(_:)))
+decoyButton.frame = NSRect(x: 20, y: 20, width: 140, height: 32)
+decoyScroll.addSubview(decoyButton)
+let activatingButtonCounter = ButtonCounter()
+activatingButtonCounter.activateOnPress = true
+let activatingButton = NSButton(title: "Activate", target: activatingButtonCounter,
+                                action: #selector(ButtonCounter.press(_:)))
+activatingButton.frame = NSRect(x: 200, y: 20, width: 140, height: 32)
+decoyScroll.addSubview(activatingButton)
 target.orderBack(nil)
 decoy.order(.above, relativeTo: target.windowNumber)
 
 func recordState() {
     let rect = target.convertToScreen(targetScroll.convert(targetScroll.bounds, to: nil))
     let buttonRect = target.convertToScreen(button.convert(button.bounds, to: nil))
+    let decoyButtonRect = decoy.convertToScreen(decoyButton.convert(decoyButton.bounds, to: nil))
+    let activatingButtonRect = decoy.convertToScreen(activatingButton.convert(activatingButton.bounds, to: nil))
     let top = NSScreen.screens[0].frame.maxY
     let cursor = CGEvent(source: nil)!.location
     let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
@@ -106,6 +135,11 @@ func recordState() {
         "x": Int(rect.midX), "y": Int(top - rect.midY),
         "button_x": Int(buttonRect.midX), "button_y": Int(top - buttonRect.midY),
         "button_presses": buttonCounter.presses,
+        "decoy_button_x": Int(decoyButtonRect.midX), "decoy_button_y": Int(top - decoyButtonRect.midY),
+        "decoy_button_presses": decoyButtonCounter.presses,
+        "activating_button_x": Int(activatingButtonRect.midX),
+        "activating_button_y": Int(top - activatingButtonRect.midY),
+        "activating_button_presses": activatingButtonCounter.presses,
         "origin_x": Int(target.frame.minX), "origin_y": Int(top - target.frame.maxY),
         "target_offset": targetScroll.contentView.bounds.origin.y,
         "decoy_offset": decoyScroll.contentView.bounds.origin.y,
@@ -140,5 +174,13 @@ while true {
                                  inMode: .default, dequeue: true) {
         app.sendEvent(event)
     }
+    // Accessibility requests arrive over the application's main run loop,
+    // not as NSEvents. Pump it without using NSApplication.run(), whose launch
+    // activation would invalidate this background-only fixture.
+    _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+    // NSApplication.run normally services window updates after each event.
+    // Flush our manual pump so AX-triggered label changes reach screenshots.
+    target.displayIfNeeded()
+    decoy.displayIfNeeded()
     recordState()
 }

@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { COMPUTER_USE_RELEASE_RETENTION_MS, ComputerUseChannel } from "./computerUse";
+import { COMPUTER_USE_RELEASE_RETENTION_MS, ComputerUseChannel, computerUseHostId } from "./computerUse";
 import type { ComputerUseState } from "./computerUse";
 import type { GatewayApi } from "./gateway";
 
@@ -34,6 +34,14 @@ describe("ComputerUseChannel", () => {
     invokeMock.mockReset();
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);
+    window.sessionStorage.clear();
+  });
+
+  it("keeps one host id in the current webview across reloads", () => {
+    const first = computerUseHostId();
+    const second = computerUseHostId();
+    expect(second).toBe(first);
+    expect(first).toMatch(/^desktop-/);
   });
 
   it("does not inspect the GUI while disabled and detects it when enabled", async () => {
@@ -218,7 +226,55 @@ describe("ComputerUseChannel", () => {
     }
   });
 
-  it("honors a release that arrives while the final native action is still completing", async () => {
+  it("restores an active preview after reconnect and preserves its release deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      invokeMock.mockResolvedValueOnce({
+        gui_available: true,
+        input_available: true,
+        platform: "macos",
+        displays: [],
+        supported_modes: ["background_app", "foreground_desktop"],
+      });
+      const states: ComputerUseState[] = [];
+      const api = {
+        authenticate: vi.fn().mockResolvedValue(undefined),
+        computerUseWebSocketUrl: () => "ws://localhost/computer-use/ws",
+      } as unknown as GatewayApi;
+      const channel = new ComputerUseChannel(api, "desktop-test", true, (state) => states.push(state));
+
+      await channel.connect();
+      const socket = FakeWebSocket.instances[0];
+      socket.emit("open");
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "computer_use_host_registered",
+          available: true,
+          previews: [{
+            session_id: "session-restored",
+            mode: "background_app",
+            status: "ready",
+            action: "observe",
+            summary: "Observed window",
+            frame: { data: "MQ==", media_type: "image/png", width: 10, height: 10, origin_x: 0, origin_y: 0, frame_id: "restored-frame" },
+            release_deadline_ms: Date.now() + COMPUTER_USE_RELEASE_RETENTION_MS,
+          }],
+        }),
+      });
+
+      expect(states.at(-1)).toMatchObject({ active: true });
+      expect(states.at(-1)?.previews[0]?.frame?.frame_id).toBe("restored-frame");
+      await vi.advanceTimersByTimeAsync(COMPUTER_USE_RELEASE_RETENTION_MS - 1);
+      expect(states.at(-1)).toMatchObject({ active: true });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(states.at(-1)).toMatchObject({ active: false, previews: [] });
+      channel.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("expires a released busy preview after 15 seconds and ignores its late native result", async () => {
     vi.useFakeTimers();
     try {
       let finishAction!: (result: object) => void;
@@ -256,7 +312,7 @@ describe("ComputerUseChannel", () => {
         data: JSON.stringify({ type: "computer_use_release", session_id: "session-slow" }),
       });
       await vi.advanceTimersByTimeAsync(COMPUTER_USE_RELEASE_RETENTION_MS);
-      expect(states.at(-1)?.previews[0]?.status).toBe("busy");
+      expect(states.at(-1)).toMatchObject({ active: false, previews: [] });
 
       finishAction({ ok: true, action: "observe" });
       await vi.advanceTimersByTimeAsync(0);

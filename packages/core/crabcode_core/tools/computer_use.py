@@ -56,10 +56,22 @@ class ComputerUseTool(Tool):
                 "enum": sorted(_ACTIONS),
                 "description": "Desktop action to perform.",
             },
-            "x": {"type": "integer", "description": "Absolute desktop X coordinate."},
-            "y": {"type": "integer", "description": "Absolute desktop Y coordinate."},
-            "to_x": {"type": "integer", "description": "Drag destination X coordinate."},
-            "to_y": {"type": "integer", "description": "Drag destination Y coordinate."},
+            "x": {
+                "type": "integer",
+                "description": "X coordinate: window-local screenshot coordinate in background_app; absolute desktop coordinate in foreground_desktop.",
+            },
+            "y": {
+                "type": "integer",
+                "description": "Y coordinate: window-local screenshot coordinate in background_app; absolute desktop coordinate in foreground_desktop.",
+            },
+            "to_x": {
+                "type": "integer",
+                "description": "Drag destination X in the active mode's coordinate space.",
+            },
+            "to_y": {
+                "type": "integer",
+                "description": "Drag destination Y in the active mode's coordinate space.",
+            },
             "button": {
                 "type": "string",
                 "enum": ["left", "middle", "right"],
@@ -140,12 +152,25 @@ class ComputerUseTool(Tool):
         )
         if mode == "background_app":
             return (
-                "Use ComputerUse in background_app mode to inspect and operate one macOS application window without "
-                "taking over the user's foreground desktop. Start with list_windows, then pass window_id to observe "
-                "and every pointer or keyboard action. Coordinates are absolute desktop coordinates derived from the "
-                "window screenshot origin. Full-desktop capture, display selection, focus_window, and automatic "
-                "foreground fallback are unavailable in this mode. Prefer one deliberate action per call and observe "
-                "again after navigation or any action whose result is uncertain."
+                "Use ComputerUse in background_app mode to inspect and operate one macOS application window. "
+                "The target application is allowed to become foreground; this mode does not guarantee focus isolation. "
+                "Start with list_windows, then pass window_id to observe, focus_window, "
+                "and every pointer or keyboard action. Pointer coordinates are window-local screenshot coordinates: "
+                "the image top-left is (0,0), and you must not add origin_x/origin_y. Full-desktop capture, display "
+                "selection, and automatic switching to foreground_desktop are unavailable in this mode. "
+                "Use focus_window when the target needs activation, then observe again before further input. "
+                "Single left clicks prefer accessibility actions and fall back to window-targeted mouse events when "
+                "unsupported. Double-click, right-click, and middle-click also use window-targeted mouse events. "
+                "A click succeeds when ok and effect_verified are true. foreground_activated is diagnostic only: "
+                "focus changes are allowed and are not a reason to stop using ComputerUse. "
+                "background_click_unsupported means no supported background action was dispatched, and "
+                "background_click_unverified means the action may have arrived but must not be duplicated. A hidden "
+                "auxiliary window is not clicked from stale pixels; use focus_window and observe again. Prefer one "
+                "deliberate action per call and observe again after navigation or any uncertain action. The host "
+                "composites AX-confirmed same-process auxiliary windows over the selected root window; stale hidden "
+                "backing stores are ignored. If an observation reports "
+                "background_observation_limited, the app ordered an auxiliary window off-screen while backgrounded; "
+                "do not infer or click content that is absent from its retained pixels."
             ) + scroll_guidance
         return (
             "Use ComputerUse in foreground_desktop mode to inspect and operate the graphical desktop when a task "
@@ -191,13 +216,13 @@ class ComputerUseTool(Tool):
                 return "x and y must be provided together for scroll"
         _backend, _host_id, _enabled, mode = self._binding()
         if mode == "background_app":
-            if action in {"list_displays", "focus_window"}:
+            if action == "list_displays":
                 return (
-                    f"{action} is unavailable in background_app mode; "
-                    "switch explicitly to foreground_desktop"
+                    f"{action} is unavailable in background_app mode; use list_windows"
                 )
             if action in {
                 "observe",
+                "focus_window",
                 "move",
                 "click",
                 "double_click",

@@ -51,6 +51,7 @@ async def computer_use_socket(websocket: WebSocket) -> None:
                     "type": "computer_use_host_registered",
                     "host_id": host_id,
                     "available": available,
+                    "previews": broker.restorable_previews(host_id),
                 })
                 continue
 

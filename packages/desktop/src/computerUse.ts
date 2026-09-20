@@ -5,6 +5,7 @@ import { randomUuid } from "./uuid";
 
 export type ComputerUseStatus = "disabled" | "unavailable" | "connecting" | "ready" | "busy" | "error";
 export const COMPUTER_USE_RELEASE_RETENTION_MS = 15_000;
+const COMPUTER_USE_HOST_ID_STORAGE_KEY = "crabcode.computer-use-host-id";
 
 export interface ComputerUseCapabilities {
   gui_available: boolean;
@@ -76,9 +77,18 @@ interface HostResult {
 }
 
 export function computerUseHostId(): string {
-  // A runtime-scoped id keeps simultaneous Desktop instances isolated. Any
-  // resumed session is rebound through its SessionChannel handshake.
-  return `desktop-${randomUuid()}`;
+  // sessionStorage survives a webview reload but remains isolated per Desktop
+  // window.  Reusing the id lets the Gateway replay leases owned before the
+  // reload without merging independent app instances.
+  try {
+    const stored = window.sessionStorage.getItem(COMPUTER_USE_HOST_ID_STORAGE_KEY);
+    if (stored && /^desktop-[A-Za-z0-9-]{1,180}$/.test(stored)) return stored;
+    const created = `desktop-${randomUuid()}`;
+    window.sessionStorage.setItem(COMPUTER_USE_HOST_ID_STORAGE_KEY, created);
+    return created;
+  } catch {
+    return `desktop-${randomUuid()}`;
+  }
 }
 
 export function initialComputerUseState(hostId: string, enabled: boolean): ComputerUseState {
@@ -107,6 +117,7 @@ export class ComputerUseChannel {
   private capabilityGeneration = 0;
   private releaseTimers = new Map<string, number>();
   private releaseDeadlines = new Map<string, number>();
+  private latestRequestIds = new Map<string, string>();
   private disposed = false;
   private enabled: boolean;
   private capabilities: ComputerUseCapabilities | null = null;
@@ -249,6 +260,7 @@ export class ComputerUseChannel {
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     this.cancelAllReleases();
+    this.latestRequestIds.clear();
     this.socket?.close();
     this.socket = null;
   }
@@ -303,12 +315,66 @@ export class ComputerUseChannel {
     const timer = window.setTimeout(() => {
       this.releaseTimers.delete(key);
       if (this.disposed) return;
-      if (this.state.previews.find((preview) => preview.key === key)?.status === "busy") return;
       this.releaseDeadlines.delete(key);
       const previews = this.state.previews.filter((preview) => preview.key !== key);
-      this.publish({ active: previews.length > 0, previews });
+      const status = previews.some((preview) => preview.status === "busy")
+        ? "busy"
+        : previews.some((preview) => preview.status === "error")
+          ? "error"
+        : this.enabled && this.capabilities?.gui_available
+          ? "ready"
+          : this.state.status;
+      this.publish({ active: previews.length > 0, previews, status });
     }, Math.max(0, deadline - Date.now()));
     this.releaseTimers.set(key, timer);
+  }
+
+  private restorePreviews(raw: unknown): void {
+    if (!this.enabled || !Array.isArray(raw)) return;
+    const restored: ComputerUsePreview[] = [];
+    const deadlines = new Map<string, number>();
+    for (const value of raw) {
+      if (!value || typeof value !== "object") continue;
+      const item = value as Record<string, unknown>;
+      const sessionId = typeof item.session_id === "string" ? item.session_id : undefined;
+      if (!sessionId) continue;
+      const agentId = typeof item.agent_id === "string" ? item.agent_id : undefined;
+      const key = this.previewKey(sessionId, agentId);
+      const status = item.status === "busy" || item.status === "error" ? item.status : "ready";
+      const deadline = typeof item.release_deadline_ms === "number"
+        ? item.release_deadline_ms
+        : undefined;
+      if (deadline !== undefined && deadline <= Date.now()) continue;
+      restored.push({
+        key,
+        sessionId,
+        agentId,
+        mode: item.mode === "foreground_desktop" ? "foreground_desktop" : "background_app",
+        status,
+        action: String(item.action || "unknown"),
+        summary: String(item.summary || (status === "busy" ? "正在执行…" : item.action || "Computer Use")),
+        frame: item.frame && typeof item.frame === "object" ? item.frame as ComputerUseFrame : null,
+        cursor: item.cursor && typeof item.cursor === "object" ? item.cursor as ComputerUseCursor : null,
+        updatedAt: typeof item.updated_at_ms === "number" ? item.updated_at_ms : Date.now(),
+      });
+      if (deadline !== undefined) deadlines.set(key, deadline);
+    }
+    if (restored.length === 0) return;
+    const keys = new Set(restored.map((preview) => preview.key));
+    const previews = [
+      ...this.state.previews.filter((preview) => !keys.has(preview.key)),
+      ...restored,
+    ];
+    this.publish({
+      active: true,
+      previews,
+      status: previews.some((preview) => preview.status === "busy")
+        ? "busy"
+        : previews.some((preview) => preview.status === "error")
+          ? "error"
+          : this.state.status,
+    });
+    for (const [key, deadline] of deadlines) this.scheduleRelease(key, deadline);
   }
 
   private async handleMessage(raw: string): Promise<void> {
@@ -325,6 +391,7 @@ export class ComputerUseChannel {
         status: !this.enabled ? "disabled" : available ? "ready" : "unavailable",
         error: this.capabilities?.reason ?? null,
       });
+      if (message.type === "computer_use_host_registered") this.restorePreviews(message.previews);
       return;
     }
     if (message.type === "computer_use_error") {
@@ -340,8 +407,11 @@ export class ComputerUseChannel {
           .filter((preview) => preview.sessionId === sessionId)
           .map((preview) => preview.key)
         : [this.previewKey(sessionId, agentId)];
+      const deadline = typeof message.release_deadline_ms === "number"
+        ? message.release_deadline_ms
+        : Date.now() + COMPUTER_USE_RELEASE_RETENTION_MS;
       for (const key of keys) {
-        if (this.state.previews.some((preview) => preview.key === key)) this.scheduleRelease(key);
+        if (this.state.previews.some((preview) => preview.key === key)) this.scheduleRelease(key, deadline);
       }
       return;
     }
@@ -357,6 +427,8 @@ export class ComputerUseChannel {
     const sessionId = typeof message.session_id === "string" ? message.session_id : undefined;
     const agentId = typeof message.agent_id === "string" ? message.agent_id : undefined;
     const previewKey = this.previewKey(sessionId, agentId);
+    const requestToken = requestId || logId;
+    this.latestRequestIds.set(previewKey, requestToken);
     this.cancelRelease(previewKey);
     const previousPreview = this.state.previews.find((preview) => preview.key === previewKey);
     const busyPreview: ComputerUsePreview = {
@@ -404,7 +476,10 @@ export class ComputerUseChannel {
       sessionId,
       agentId,
     };
+    const requestIsCurrent = this.latestRequestIds.get(previewKey) === requestToken;
+    if (requestIsCurrent) this.latestRequestIds.delete(previewKey);
     const currentPreview = this.state.previews.find((preview) => preview.key === previewKey);
+    const shouldPublishCompletion = requestIsCurrent && currentPreview !== undefined;
     const completedPreview: ComputerUsePreview = {
       key: previewKey,
       sessionId,
@@ -417,24 +492,24 @@ export class ComputerUseChannel {
       cursor: result.cursor ?? currentPreview?.cursor ?? null,
       updatedAt: Date.now(),
     };
-    const previews = this.enabled
-      ? [...this.state.previews.filter((preview) => preview.key !== previewKey), completedPreview]
-      : [];
-    const anotherPreviewIsBusy = previews.some(
-      (preview) => preview.key !== previewKey && preview.status === "busy",
-    );
+    const previews = !this.enabled
+      ? []
+      : shouldPublishCompletion
+        ? [...this.state.previews.filter((preview) => preview.key !== previewKey), completedPreview]
+        : this.state.previews;
+    const anyPreviewIsBusy = previews.some((preview) => preview.status === "busy");
     this.publish({
       status: !this.enabled
         ? "disabled"
-        : anotherPreviewIsBusy
+        : anyPreviewIsBusy
           ? "busy"
-        : result.ok === false
+        : shouldPublishCompletion && result.ok === false
           ? "error"
           : this.capabilities?.gui_available ? "ready" : "unavailable",
       active: previews.length > 0,
       previews,
       logs: [...this.state.logs.filter((item) => item.id !== logId), entry].slice(-100),
-      error: result.ok === false
+      error: shouldPublishCompletion && result.ok === false
         ? String(result.error || "Computer Use action failed")
         : this.capabilities?.reason ?? null,
     });

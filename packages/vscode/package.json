@@ -168,7 +168,7 @@
             "foreground_desktop"
           ],
           "enumDescriptions": [
-            "后台应用模式：只操作指定应用窗口，不自动回退到前台桌面（当前仅支持 macOS）",
+            "后台应用模式：按指定应用窗口操作，允许应用切到前台（当前仅支持 macOS）",
             "前台桌面模式：控制完整桌面、真实鼠标和键盘，会影响当前用户操作"
           ],
           "default": "background_app",

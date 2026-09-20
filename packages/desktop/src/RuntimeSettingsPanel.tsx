@@ -244,7 +244,7 @@ export function RuntimeSettingsPanel({
             <div className="settings-subsection-heading">
               <div>
                 <h3 id="computer-use-settings-title">Computer Use</h3>
-                <p>选择 Agent 操作桌面应用时使用的隔离方式；修改对新会话生效。</p>
+                <p>选择 Agent 操作桌面应用的方式；修改对新会话生效。</p>
               </div>
               <MonitorUp aria-hidden="true" />
             </div>
@@ -252,7 +252,7 @@ export function RuntimeSettingsPanel({
               <div className="settings-row-copy">
                 <strong>操作模式</strong>
                 <span>
-                  后台应用模式只操作指定应用窗口；前台桌面模式会控制真实鼠标和键盘。
+                  后台应用模式按指定窗口操作，允许应用切到前台；前台桌面模式会控制真实鼠标和键盘。
                 </span>
               </div>
               <div className="settings-segmented" aria-label="Computer Use 操作模式">

@@ -77,7 +77,9 @@ Open **Settings** and search for `CrabCode`, or add settings such as:
 `crabcode.computerUseMode` accepts `background_app` and
 `foreground_desktop`. A value explicitly saved in VS Code overrides the
 Gateway's `computer_use.mode` for sessions created or resumed by the extension.
-Background mode never falls back automatically to foreground control.
+Background mode targets an application window and allows it to become foreground,
+including through `focus_window`. Coordinates remain window-local; it does not
+automatically switch to full-desktop control.
 
 Installing a suite provides its Python package and dependencies. Search and
 Debugger remain disabled until their import paths are added to the Gateway's

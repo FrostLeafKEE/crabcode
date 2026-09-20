@@ -131,10 +131,22 @@ def test_available_host_exposes_schema_and_returns_screenshot_attachment():
     assert backend.calls[0][1]["mode"] == "foreground_desktop"
 
 
-def test_background_mode_requires_window_and_never_accepts_desktop_actions():
+def test_background_mode_allows_focus_changes_but_keeps_window_coordinates():
     backend = FakeBackend(available=True)
     tool, context = prepared_tool(backend)
     context.session.computer_use_mode = "background_app"
+    prompt = asyncio.run(tool.get_prompt())
+    assert "allowed to become foreground" in prompt
+    assert "background_click_unsupported" in prompt
+    assert "window-local screenshot coordinates" in prompt
+    assert "must not add origin_x/origin_y" in prompt
+    assert "composites AX-confirmed same-process auxiliary windows" in prompt
+    assert "stale hidden backing stores are ignored" in prompt
+    assert "background_observation_limited" in prompt
+    assert "auxiliary window is not clicked from stale pixels" in prompt
+    assert "background_click_foreground_violation" not in prompt
+    assert "fall back to window-targeted mouse events" in prompt
+    assert "focus changes are allowed" in prompt
     assert asyncio.run(tool.validate_input({"action": "observe"})) == (
         "window_id is required in background_app mode; call list_windows first"
     )
@@ -144,6 +156,34 @@ def test_background_mode_requires_window_and_never_accepts_desktop_actions():
     assert asyncio.run(
         tool.validate_input({"action": "observe", "window_id": "42"})
     ) is None
+    assert asyncio.run(
+        tool.validate_input({"action": "focus_window", "window_id": "42"})
+    ) is None
+    assert "window_id is required" in asyncio.run(
+        tool.validate_input({"action": "focus_window", "text": "Lark"})
+    )
+
+
+def test_allowed_foreground_activation_is_not_projected_as_click_failure():
+    class ClickBackend(FakeBackend):
+        async def execute(self, host_id, **kwargs):
+            return {
+                "ok": True,
+                "summary": "Application click changed the target window",
+                "dispatch_succeeded": True,
+                "effect_verified": True,
+                "foreground_activated": True,
+            }
+
+    tool, context = prepared_tool(ClickBackend())
+    context.session.computer_use_mode = "background_app"
+    result = asyncio.run(tool.call(
+        {"action": "click", "window_id": "42", "x": 100, "y": 100}, context,
+    ))
+    assert not result.is_error
+    projected = json.loads(result.result_for_model)
+    assert projected["foreground_activated"] is True
+    assert projected["effect_verified"] is True
 
 
 @pytest.mark.parametrize("mode", ["background_app", "foreground_desktop"])
@@ -189,6 +229,35 @@ def test_unverified_scroll_receipt_survives_gateway_tool_projection():
     assert backend.calls[0][1]["action"] == request
 
 
+def test_failed_background_click_receipt_is_not_projected_as_success():
+    class ClickBackend(FakeBackend):
+        async def execute(self, host_id, **kwargs):
+            self.calls.append((host_id, kwargs))
+            return {
+                "ok": False,
+                "summary": "Background click is unsupported by the target application",
+                "error_code": "background_click_unsupported",
+                "dispatch_succeeded": True,
+                "effect_verified": False,
+                "visual_change_detected": False,
+                "foreground_activated": False,
+                "real_cursor_moved": False,
+            }
+
+    backend = ClickBackend()
+    tool, context = prepared_tool(backend)
+    context.session.computer_use_mode = "background_app"
+    request = {"action": "click", "window_id": "14461", "x": 300, "y": 790}
+    result = asyncio.run(tool.call(request, context))
+    projected = json.loads(result.result_for_model)
+    assert result.is_error
+    assert projected["error_code"] == "background_click_unsupported"
+    assert projected["dispatch_succeeded"] is True
+    assert projected["effect_verified"] is False
+    assert projected["foreground_activated"] is False
+    assert projected["real_cursor_moved"] is False
+
+
 class FakeSocket:
     def __init__(self):
         self.messages = []
@@ -223,18 +292,47 @@ def test_gateway_broker_tracks_host_state_and_routes_result():
         request = socket.messages[0]
         assert request["session_id"] == "session-test"
         assert request["mode"] == "background_app"
-        assert broker.resolve("desktop-test", request["request_id"], {"ok": True})
-        assert await pending == {"ok": True}
+        first_result = {
+            "ok": True,
+            "action": "observe",
+            "screenshot": {"frame_id": "frame-before-reload", "data": "cG5n"},
+        }
+        assert broker.resolve("desktop-test", request["request_id"], first_result)
+        assert await pending == first_result
+        restored = broker.restorable_previews("desktop-test")
+        assert len(restored) == 1
+        assert restored[0]["session_id"] == "session-test"
+        assert restored[0]["status"] == "ready"
+        assert restored[0]["frame"]["frame_id"] == "frame-before-reload"
+
+        broker.unregister("desktop-test", socket)
+        reconnected_socket = FakeSocket()
+        broker.register(
+            "desktop-test",
+            reconnected_socket,
+            enabled=True,
+            gui_available=True,
+            capabilities={
+                "platform": "test",
+                "supported_modes": ["background_app", "foreground_desktop"],
+            },
+        )
+        assert broker.restorable_previews("desktop-test") == restored
         assert await broker.release(
             "desktop-test",
             session_id="session-test",
             agent_id="agent-test",
         )
-        assert socket.messages[-1] == {
+        release_message = reconnected_socket.messages[-1]
+        release_deadline = release_message.pop("release_deadline_ms")
+        assert release_deadline > 0
+        assert release_message == {
             "type": "computer_use_release",
             "session_id": "session-test",
             "agent_id": "agent-test",
         }
+        retained = broker.restorable_previews("desktop-test")
+        assert retained[0]["release_deadline_ms"] == release_deadline
         assert not await broker.release(
             "desktop-test",
             session_id="session-test",
@@ -247,7 +345,7 @@ def test_gateway_broker_tracks_host_state_and_routes_result():
             action={"action": "observe"},
         ))
         await asyncio.sleep(0)
-        request = socket.messages[-1]
+        request = reconnected_socket.messages[-1]
         assert broker.resolve("desktop-test", request["request_id"], {"ok": True})
         assert await pending == {"ok": True}
         assert await broker.release(
@@ -255,18 +353,70 @@ def test_gateway_broker_tracks_host_state_and_routes_result():
             session_id="session-test",
             all_agents=True,
         )
-        assert socket.messages[-1] == {
+        release_message = reconnected_socket.messages[-1]
+        assert release_message.pop("release_deadline_ms") > 0
+        assert release_message == {
             "type": "computer_use_release",
             "session_id": "session-test",
             "all_agents": True,
         }
         assert broker.update_state(
             "desktop-test",
-            socket,
+            reconnected_socket,
             enabled=False,
             gui_available=True,
         )
         assert not broker.is_available("desktop-test")
+
+    asyncio.run(scenario())
+
+
+def test_gateway_broker_retains_release_during_desktop_reload_gap():
+    async def scenario():
+        broker = ComputerUseBroker(timeout_seconds=1)
+        socket = FakeSocket()
+        broker.register(
+            "desktop-reload",
+            socket,
+            enabled=True,
+            gui_available=True,
+            capabilities={"supported_modes": ["background_app"]},
+        )
+        pending = asyncio.create_task(broker.execute(
+            "desktop-reload",
+            session_id="session-reload",
+            agent_id=None,
+            action={"action": "observe"},
+        ))
+        await asyncio.sleep(0)
+        request = socket.messages[-1]
+        result = {
+            "ok": True,
+            "action": "observe",
+            "screenshot": {"frame_id": "reload-frame", "data": "cG5n"},
+        }
+        assert broker.resolve("desktop-reload", request["request_id"], result)
+        assert await pending == result
+
+        broker.unregister("desktop-reload", socket)
+        assert await broker.release(
+            "desktop-reload",
+            session_id="session-reload",
+        )
+        retained = broker.restorable_previews("desktop-reload")
+        assert len(retained) == 1
+        assert retained[0]["frame"]["frame_id"] == "reload-frame"
+        assert retained[0]["release_deadline_ms"] > 0
+
+        reconnected_socket = FakeSocket()
+        broker.register(
+            "desktop-reload",
+            reconnected_socket,
+            enabled=True,
+            gui_available=True,
+            capabilities={"supported_modes": ["background_app"]},
+        )
+        assert broker.restorable_previews("desktop-reload") == retained
 
     asyncio.run(scenario())
 
