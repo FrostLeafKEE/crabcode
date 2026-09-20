@@ -84,6 +84,7 @@ describe("desktop status bar", () => {
     const computerUse: ComputerUseState = {
       hostId: "desktop-test",
       enabled: true,
+      active: true,
       mode: "background_app",
       status: "ready",
       capabilities: {
@@ -129,5 +130,14 @@ describe("desktop status bar", () => {
     expect(cursor.style.top).toBe("50%");
     act(() => container.querySelector<HTMLButtonElement>(".computer-use-power")!.click());
     expect(onEnabledChange).toHaveBeenCalledWith(false);
+    act(() => root.render(
+      <StatusBar
+        computerUse={{ ...computerUse, active: false, latestFrame: null, cursor: null }}
+        onComputerUseEnabledChange={onEnabledChange}
+        onComputerUseOpenInputSettings={onOpenInputSettings}
+        onComputerUseRefresh={onRefresh}
+      />,
+    ));
+    expect(container.querySelector(".computer-use-console")).toBeNull();
   });
 });

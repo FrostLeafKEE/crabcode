@@ -4,6 +4,7 @@ import { isDesktopShell } from "./native";
 import { randomUuid } from "./uuid";
 
 export type ComputerUseStatus = "disabled" | "unavailable" | "connecting" | "ready" | "busy" | "error";
+export const COMPUTER_USE_IDLE_RELEASE_MS = 15_000;
 
 export interface ComputerUseCapabilities {
   gui_available: boolean;
@@ -42,6 +43,7 @@ export interface ComputerUseLogEntry {
 export interface ComputerUseState {
   hostId: string;
   enabled: boolean;
+  active: boolean;
   mode: "background_app" | "foreground_desktop";
   status: ComputerUseStatus;
   capabilities: ComputerUseCapabilities | null;
@@ -71,6 +73,7 @@ export function initialComputerUseState(hostId: string, enabled: boolean): Compu
   return {
     hostId,
     enabled,
+    active: false,
     mode: "background_app",
     status: enabled ? "connecting" : "disabled",
     capabilities: null,
@@ -91,6 +94,7 @@ export class ComputerUseChannel {
   private reconnectTimer: number | null = null;
   private attempts = 0;
   private capabilityGeneration = 0;
+  private idleReleaseTimer: number | null = null;
   private disposed = false;
   private enabled: boolean;
   private capabilities: ComputerUseCapabilities | null = null;
@@ -202,8 +206,10 @@ export class ComputerUseChannel {
     }
     this.publish({
       status: !enabled ? "disabled" : this.capabilities?.gui_available ? (this.socket?.readyState === WebSocket.OPEN ? "ready" : "connecting") : "unavailable",
+      ...(!enabled ? { active: false, latestFrame: null, cursor: null } : {}),
       error: enabled ? this.capabilities?.reason ?? null : null,
     });
+    if (!enabled) this.cancelIdleRelease();
     this.send({
       type: "computer_use_host_state",
       enabled,
@@ -230,6 +236,7 @@ export class ComputerUseChannel {
     this.disposed = true;
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    this.cancelIdleRelease();
     this.socket?.close();
     this.socket = null;
   }
@@ -255,6 +262,20 @@ export class ComputerUseChannel {
       this.reconnectTimer = null;
       void this.connect();
     }, delay);
+  }
+
+  private cancelIdleRelease(): void {
+    if (this.idleReleaseTimer !== null) window.clearTimeout(this.idleReleaseTimer);
+    this.idleReleaseTimer = null;
+  }
+
+  private scheduleIdleRelease(): void {
+    this.cancelIdleRelease();
+    this.idleReleaseTimer = window.setTimeout(() => {
+      this.idleReleaseTimer = null;
+      if (this.disposed || this.state.status === "busy") return;
+      this.publish({ active: false, latestFrame: null, cursor: null });
+    }, COMPUTER_USE_IDLE_RELEASE_MS);
   }
 
   private async handleMessage(raw: string): Promise<void> {
@@ -286,8 +307,10 @@ export class ComputerUseChannel {
     const actionName = String(action.action || "unknown");
     const mode = message.mode === "foreground_desktop" ? "foreground_desktop" : "background_app";
     const logId = requestId || randomUuid();
+    this.cancelIdleRelease();
     this.publish({
       status: "busy",
+      active: true,
       mode,
       error: null,
       logs: [...this.state.logs, {
@@ -323,13 +346,15 @@ export class ComputerUseChannel {
         : result.ok === false
           ? "error"
           : this.capabilities?.gui_available ? "ready" : "unavailable",
-      latestFrame: result.screenshot ?? this.state.latestFrame,
-      cursor: result.cursor ?? this.state.cursor,
+      latestFrame: this.enabled ? result.screenshot ?? this.state.latestFrame : null,
+      cursor: this.enabled ? result.cursor ?? this.state.cursor : null,
       logs: [...this.state.logs.filter((item) => item.id !== logId), entry].slice(-100),
       error: result.ok === false
         ? String(result.error || "Computer Use action failed")
         : this.capabilities?.reason ?? null,
     });
+    if (this.enabled) this.scheduleIdleRelease();
+    else this.cancelIdleRelease();
     this.send({ type: "computer_use_result", request_id: requestId, result });
   }
 }

@@ -28,6 +28,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
   const logRef = useRef<HTMLDivElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const computerToggleRef = useRef<HTMLButtonElement>(null);
+  const computerWasActiveRef = useRef(computerUse?.active === true);
   const failed = Boolean(error || gateway?.status === "error");
   const busy = !failed && Boolean(loading || activity || (connection && (!gateway || gateway.status === "connecting")));
   const status = failed ? "error" : busy ? "busy" : gateway?.status === "online" ? "online" : "offline";
@@ -47,6 +48,13 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
   useEffect(() => {
     if (expanded && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [expanded, startup?.history, activity]);
+
+  useEffect(() => {
+    const wasActive = computerWasActiveRef.current;
+    const isActive = computerUse?.active === true;
+    computerWasActiveRef.current = isActive;
+    if (wasActive && !isActive) setComputerExpanded(false);
+  }, [computerUse?.active]);
 
   const close = () => {
     setExpanded(false);
