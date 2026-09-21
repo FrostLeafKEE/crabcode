@@ -27,6 +27,18 @@ function previewIdentity(preview: ComputerUsePreview, index: number): string {
   return value ? `${prefix} ${value.length > 16 ? `${value.slice(0, 6)}…${value.slice(-4)}` : value}` : `任务 ${index + 1}`;
 }
 
+function previewCursorPosition(preview: ComputerUsePreview | null): { left: number; top: number } {
+  if (!preview?.frame || !preview.cursor) return { left: -1, top: -1 };
+  const { frame, cursor, mode } = preview;
+  // Background coordinates are already window-local; desktop coordinates are absolute.
+  const originX = mode === "background_app" ? 0 : frame.origin_x;
+  const originY = mode === "background_app" ? 0 : frame.origin_y;
+  return {
+    left: (cursor.x - originX) / frame.width * 100,
+    top: (cursor.y - originY) / frame.height * 100,
+  };
+}
+
 export function StatusBar({ connection, gateway, startup, project, loading, error, activity, onRetry, onConnections, computerUse, onComputerUseEnabledChange, onComputerUseOpenInputSettings, onComputerUseRefresh }: StatusBarProps) {
   const [expanded, setExpanded] = useState(false);
   const [computerExpanded, setComputerExpanded] = useState(false);
@@ -102,12 +114,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
   ) : [];
   const detailFrame = computerDetail?.frame;
   const detailCursor = computerDetail?.cursor;
-  const detailCursorLeft = detailFrame && detailCursor
-    ? (detailCursor.x - detailFrame.origin_x) / detailFrame.width * 100
-    : -1;
-  const detailCursorTop = detailFrame && detailCursor
-    ? (detailCursor.y - detailFrame.origin_y) / detailFrame.height * 100
-    : -1;
+  const { left: detailCursorLeft, top: detailCursorTop } = previewCursorPosition(computerDetail);
 
   return (
     <footer className={`desktop-status-bar ${status}`} aria-label="应用状态栏" onKeyDown={(event) => {
@@ -159,8 +166,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
             {previews.length ? previews.map((preview, index) => {
               const frame = preview.frame;
               const cursor = preview.cursor;
-              const cursorLeft = frame && cursor ? (cursor.x - frame.origin_x) / frame.width * 100 : -1;
-              const cursorTop = frame && cursor ? (cursor.y - frame.origin_y) / frame.height * 100 : -1;
+              const { left: cursorLeft, top: cursorTop } = previewCursorPosition(preview);
               const identity = previewIdentity(preview, index);
               return (
                 <section className={`computer-use-preview-card ${preview.status}`} key={preview.key} aria-label={`${identity} Computer Use 预览`}>

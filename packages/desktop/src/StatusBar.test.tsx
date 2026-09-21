@@ -135,8 +135,8 @@ describe("desktop status bar", () => {
     expect(onRefresh).toHaveBeenCalledOnce();
     expect(container.querySelector(".computer-use-console")?.textContent).toContain("Clicked");
     const cursor = container.querySelector<SVGElement>(".computer-use-cursor")!;
-    expect(cursor.style.left).toBe("50%");
-    expect(cursor.style.top).toBe("50%");
+    expect(cursor.style.left).toBe("60%");
+    expect(cursor.style.top).toBe("90%");
     act(() => container.querySelector<HTMLButtonElement>(".computer-use-power")!.click());
     expect(onEnabledChange).toHaveBeenCalledWith(false);
     act(() => root.render(
@@ -148,6 +148,49 @@ describe("desktop status bar", () => {
       />,
     ));
     expect(container.querySelector(".computer-use-console")).toBeNull();
+  });
+
+  it.each([
+    { label: "background window at a positive screen origin", mode: "background_app", origin: [320, 180], cursor: { x: 25, y: 15 }, expected: ["25%", "30%"] },
+    { label: "background window on a display with a negative origin", mode: "background_app", origin: [-1600, -900], cursor: { x: 25, y: 15 }, expected: ["25%", "30%"] },
+    { label: "foreground desktop at a positive screen origin", mode: "foreground_desktop", origin: [320, 180], cursor: { x: 345, y: 195 }, expected: ["25%", "30%"] },
+    { label: "foreground desktop on a display with a negative origin", mode: "foreground_desktop", origin: [-1600, -900], cursor: { x: -1575, y: -885 }, expected: ["25%", "30%"] },
+  ] as const)("positions the cursor in both preview sizes for a $label", ({ mode, origin, cursor, expected }) => {
+    const computerUse: ComputerUseState = {
+      hostId: "desktop-test",
+      enabled: true,
+      active: true,
+      mode: "background_app",
+      status: "ready",
+      capabilities: null,
+      previews: [{
+        key: "session:cursor-test:agent:main",
+        sessionId: "cursor-test",
+        mode,
+        status: "ready",
+        action: "click",
+        summary: "Clicked",
+        frame: {
+          data: "cG5n", media_type: "image/png", width: 100, height: 50,
+          origin_x: origin[0], origin_y: origin[1], frame_id: "cursor-frame",
+        },
+        cursor,
+        updatedAt: Date.now(),
+      }],
+      logs: [],
+      error: null,
+    };
+
+    act(() => root.render(<StatusBar computerUse={computerUse} />));
+    act(() => container.querySelector<HTMLButtonElement>(".status-computer-use")!.click());
+    const thumbnailCursor = container.querySelector<SVGElement>(".computer-use-frame .computer-use-cursor");
+    expect(thumbnailCursor?.style.left).toBe(expected[0]);
+    expect(thumbnailCursor?.style.top).toBe(expected[1]);
+
+    act(() => container.querySelector<HTMLButtonElement>(".computer-use-preview-content")!.click());
+    const detailCursor = document.body.querySelector<SVGElement>(".computer-use-detail-frame .computer-use-cursor");
+    expect(detailCursor?.style.left).toBe(expected[0]);
+    expect(detailCursor?.style.top).toBe(expected[1]);
   });
 
   it("renders simultaneous Computer Use sessions as separate previews", () => {
