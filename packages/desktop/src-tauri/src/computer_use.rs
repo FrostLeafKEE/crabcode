@@ -887,7 +887,7 @@ fn mac_ax_application_window_ids(pid: i32) -> Result<HashSet<u32>, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn mac_ax_contains_point(element: &CFType, point: CGPoint) -> Option<bool> {
+fn mac_ax_frame(element: &CFType) -> Option<CGRect> {
     let position = mac_ax_copy_attribute(element, "AXPosition").ok()?;
     let size = mac_ax_copy_attribute(element, "AXSize").ok()?;
     let mut origin = CGPoint::new(0.0, 0.0);
@@ -914,14 +914,136 @@ fn mac_ax_contains_point(element: &CFType, point: CGPoint) -> Option<bool> {
     {
         return None;
     }
-    Some(
-        dimensions.width > 0.0
-            && dimensions.height > 0.0
-            && point.x >= origin.x
-            && point.y >= origin.y
-            && point.x < origin.x + dimensions.width
-            && point.y < origin.y + dimensions.height,
-    )
+    if ![origin.x, origin.y, dimensions.width, dimensions.height]
+        .into_iter()
+        .all(f64::is_finite)
+    {
+        return None;
+    }
+    Some(CGRect::new(&origin, &dimensions))
+}
+
+#[cfg(target_os = "macos")]
+fn mac_ax_contains_point(element: &CFType, point: CGPoint) -> Option<bool> {
+    let frame = mac_ax_frame(element)?;
+    Some(frame.size.width > 0.0 && frame.size.height > 0.0 && frame.contains(&point))
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy)]
+struct MacAxCoordinateTransform {
+    desktop_origin: CGPoint,
+    ax_origin: CGPoint,
+    scale_x: f64,
+    scale_y: f64,
+}
+
+#[cfg(target_os = "macos")]
+impl MacAxCoordinateTransform {
+    fn from_window_content(target: WindowTarget, content: CGRect) -> Option<Self> {
+        if target.width == 0 || target.height == 0 {
+            return None;
+        }
+        let scale_x = content.size.width / f64::from(target.width);
+        let scale_y = content.size.height / f64::from(target.height);
+        // Lark's UI zoom scales the Chromium AX subtree, including its global
+        // origin, while AXWindow and screenshots remain in desktop points.
+        // Require a uniformly scaled full-window frame, allowing integer AX
+        // rounding. A normal content view minus a title bar is not a match.
+        if ![scale_x, scale_y, content.origin.x, content.origin.y]
+            .into_iter()
+            .all(f64::is_finite)
+            || scale_x <= 0.0
+            || scale_y <= 0.0
+            || (scale_x - 1.0).abs() < 0.01
+            || (scale_y - 1.0).abs() < 0.01
+            || (content.size.height - f64::from(target.height) * scale_x).abs() > 2.0
+            || (content.size.width - f64::from(target.width) * scale_y).abs() > 2.0
+            || (content.origin.x - f64::from(target.x) * scale_x).abs() > 2.0
+            || (content.origin.y - f64::from(target.y) * scale_y).abs() > 2.0
+        {
+            return None;
+        }
+        Some(Self {
+            desktop_origin: CGPoint::new(f64::from(target.x), f64::from(target.y)),
+            ax_origin: content.origin,
+            scale_x,
+            scale_y,
+        })
+    }
+
+    fn point(self, point: CGPoint) -> CGPoint {
+        CGPoint::new(
+            self.ax_origin.x + (point.x - self.desktop_origin.x) * self.scale_x,
+            self.ax_origin.y + (point.y - self.desktop_origin.y) * self.scale_y,
+        )
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct MacAxScaledContent {
+    root: CFType,
+    transform: MacAxCoordinateTransform,
+}
+
+#[cfg(target_os = "macos")]
+fn mac_ax_string(element: &CFType, attribute: &str) -> Option<String> {
+    mac_ax_copy_attribute(element, attribute)
+        .ok()?
+        .downcast::<CFString>()
+        .map(|value| value.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_ax_children(element: &CFType) -> Vec<CFType> {
+    mac_ax_copy_attribute(element, "AXChildren")
+        .ok()
+        .and_then(|value| value.downcast::<CFArray>())
+        .map(|children| {
+            children
+                .get_all_values()
+                .into_iter()
+                .filter(|child| !child.is_null())
+                .map(|child| unsafe { CFType::wrap_under_get_rule(child.cast()) })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn mac_ax_scaled_content(window: &CFType, target: WindowTarget) -> Option<MacAxScaledContent> {
+    for root in mac_ax_children(window) {
+        if mac_ax_string(&root, "AXRole").as_deref() != Some("AXGroup")
+            || mac_ax_window_id(&root) != Ok(target.window_id)
+        {
+            continue;
+        }
+        let Some(frame) = mac_ax_frame(&root) else {
+            continue;
+        };
+        let Some(transform) = MacAxCoordinateTransform::from_window_content(target, frame) else {
+            continue;
+        };
+        // Recognize Chromium's full-window content container, not arbitrary
+        // scaled panels, images or scroll documents. Native title-bar buttons
+        // are siblings of this root and must keep their desktop coordinates.
+        let contents_view = mac_ax_children(&root).into_iter().any(|child| {
+            mac_ax_string(&child, "AXDescription").as_deref() == Some("ContentsView")
+                && mac_ax_window_id(&child) == Ok(target.window_id)
+                && mac_ax_frame(&child)
+                    .map(|child_frame| {
+                        child_frame.origin.x == frame.origin.x
+                            && child_frame.origin.y == frame.origin.y
+                            && child_frame.size.width == frame.size.width
+                            && child_frame.size.height == frame.size.height
+                    })
+                    .unwrap_or(false)
+        });
+        if contents_view {
+            return Some(MacAxScaledContent { root, transform });
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "macos")]
@@ -931,11 +1053,16 @@ fn mac_ax_pressable_at_point(
     point: CGPoint,
     depth: usize,
     remaining: &mut usize,
+    scaled_content: Option<&MacAxScaledContent>,
 ) -> Option<CFType> {
     if depth > 32 || *remaining == 0 {
         return None;
     }
     *remaining -= 1;
+    let point = match scaled_content.filter(|content| content.root == element) {
+        Some(content) => content.transform.point(point),
+        None => point,
+    };
     for (attribute, unavailable) in [("AXHidden", true), ("AXEnabled", false)] {
         if mac_ax_copy_attribute(&element, attribute)
             .ok()
@@ -950,19 +1077,11 @@ fn mac_ax_pressable_at_point(
     if contains == Some(false) {
         return None;
     }
-    if let Ok(children) = mac_ax_copy_attribute(&element, "AXChildren") {
-        if let Some(children) = children.downcast::<CFArray>() {
-            for child in children.get_all_values().into_iter().rev() {
-                if child.is_null() {
-                    continue;
-                }
-                let child = unsafe { CFType::wrap_under_get_rule(child.cast()) };
-                if let Some(hit) =
-                    mac_ax_pressable_at_point(child, target, point, depth + 1, remaining)
-                {
-                    return Some(hit);
-                }
-            }
+    for child in mac_ax_children(&element).into_iter().rev() {
+        if let Some(hit) =
+            mac_ax_pressable_at_point(child, target, point, depth + 1, remaining, scaled_content)
+        {
+            return Some(hit);
         }
     }
     // Unknown geometry may belong to a container; traverse it but never
@@ -979,12 +1098,7 @@ fn mac_ax_pressable_at_point(
 }
 
 #[cfg(target_os = "macos")]
-fn mac_ax_window_hit(
-    application: &CFType,
-    target: WindowTarget,
-    x: i32,
-    y: i32,
-) -> Result<CFType, String> {
+fn mac_ax_window(application: &CFType, target: WindowTarget) -> Result<CFType, String> {
     let windows = mac_ax_copy_attribute(application, "AXWindows")
         .map_err(|status| mac_ax_error("Reading AXWindows for click", status))?
         .downcast::<CFArray>()
@@ -997,21 +1111,53 @@ fn mac_ax_window_hit(
         if mac_ax_window_id(&window) != Ok(target.window_id) {
             continue;
         }
-        // Application-wide AX hit testing follows window z-order. For example,
-        // Lark's watermark companion obscures the real controls in that API.
-        // Search only the requested window's AX tree; never click the companion
-        // or activate the app to make the global hit test work.
-        let mut remaining = 1024;
-        return mac_ax_pressable_at_point(
-            window,
-            target,
-            CGPoint::new(f64::from(x), f64::from(y)),
-            0,
-            &mut remaining,
-        )
-        .ok_or_else(|| "No background accessibility click action at the target point".to_string());
+        return Ok(window);
     }
     Err("The selected window is absent from the application's accessibility tree".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_ax_click_target(
+    application: &CFType,
+    target: WindowTarget,
+    x: i32,
+    y: i32,
+) -> Result<CFType, String> {
+    let window = mac_ax_window(application, target);
+    let scaled_content = window
+        .as_ref()
+        .ok()
+        .and_then(|window| mac_ax_scaled_content(window, target));
+    if scaled_content.is_none() {
+        let mut hit_ref: CFTypeRef = std::ptr::null();
+        let status = unsafe {
+            AXUIElementCopyElementAtPosition(
+                application.as_CFTypeRef(),
+                x as f32,
+                y as f32,
+                &mut hit_ref,
+            )
+        };
+        if !hit_ref.is_null() {
+            let hit = unsafe { CFType::wrap_under_create_rule(hit_ref) };
+            if status == AX_ERROR_SUCCESS && mac_ax_window_id(&hit) == Ok(target.window_id) {
+                return Ok(hit);
+            }
+        }
+    }
+    // A scaled app-wide hit test can return a plausible but wrong control.
+    // Search the selected window with its measured subtree transform instead.
+    // This also bypasses Lark's overlapping watermark without activating it.
+    let mut remaining = 1024;
+    mac_ax_pressable_at_point(
+        window?,
+        target,
+        CGPoint::new(f64::from(x), f64::from(y)),
+        0,
+        &mut remaining,
+        scaled_content.as_ref(),
+    )
+    .ok_or_else(|| "No background accessibility click action at the target point".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -1040,27 +1186,12 @@ fn mac_ax_press(target: WindowTarget, x: i32, y: i32) -> MacAxPressOutcome {
         thread::sleep(Duration::from_millis(50));
     }
 
-    let mut hit_ref: CFTypeRef = std::ptr::null();
-    let hit_status = unsafe {
-        AXUIElementCopyElementAtPosition(
-            application.as_CFTypeRef(),
-            x as f32,
-            y as f32,
-            &mut hit_ref,
-        )
-    };
     let parent_attribute = CFString::new("AXParent");
     let press_action = CFString::new("AXPress");
     let pick_action = CFString::new("AXPick");
-    let hit = (!hit_ref.is_null()).then(|| unsafe { CFType::wrap_under_create_rule(hit_ref) });
-    let mut current = match hit.filter(|hit| {
-        hit_status == AX_ERROR_SUCCESS && mac_ax_window_id(hit) == Ok(target.window_id)
-    }) {
-        Some(hit) => hit,
-        None => match mac_ax_window_hit(&application, target, x, y) {
-            Ok(hit) => hit,
-            Err(reason) => return MacAxPressOutcome::Unsupported { reason },
-        },
+    let mut current = match mac_ax_click_target(&application, target, x, y) {
+        Ok(hit) => hit,
+        Err(reason) => return MacAxPressOutcome::Unsupported { reason },
     };
     for _ in 0..16 {
         let mut element_pid = 0;
@@ -2623,6 +2754,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     impl MacInputTestHost {
         fn start() -> Self {
+            Self::start_fixture("tests/fixtures/scroll_host.swift", &[])
+        }
+
+        fn start_fixture(source: &str, args: &[&str]) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let bundle = directory.path().join("InputFixture.app");
             let binaries = bundle.join("Contents/MacOS");
@@ -2639,7 +2774,7 @@ mod tests {
             )
             .unwrap();
             let status = Command::new("xcrun")
-                .args(["swiftc", "tests/fixtures/scroll_host.swift", "-o"])
+                .args(["swiftc", source, "-o"])
                 .arg(binaries.join("input-fixture"))
                 .status()
                 .unwrap();
@@ -2653,6 +2788,7 @@ mod tests {
                 .arg(&bundle)
                 .arg("--args")
                 .arg(&state_path)
+                .args(args)
                 .spawn()
                 .unwrap();
             Self {
@@ -2787,6 +2923,193 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn ax_zoom_maps_screenshot_points_into_the_content_tree() {
+        for (x, y) in [(0, 30), (320, 240), (-1600, -900)] {
+            let target = WindowTarget {
+                window_id: 42,
+                pid: 123,
+                x,
+                y,
+                width: 2560,
+                height: 1320,
+            };
+            for zoom in [0.9_f64, 1.1, 1.25] {
+                let content = CGRect::new(
+                    &CGPoint::new((f64::from(x) / zoom).round(), (f64::from(y) / zoom).round()),
+                    &CGSize::new((2560.0 / zoom).round(), (1320.0 / zoom).round()),
+                );
+                let transform = MacAxCoordinateTransform::from_window_content(target, content)
+                    .expect("uniform app zoom should be calibrated");
+                let point =
+                    transform.point(CGPoint::new(f64::from(x) + 300.0, f64::from(y) + 690.0));
+                assert!((point.x - (f64::from(x) + 300.0) / zoom).abs() < 1.0);
+                assert!((point.y - (f64::from(y) + 690.0) / zoom).abs() < 1.0);
+            }
+        }
+        // Measured 90% Lark geometry: the screenshot's Phone tile used to
+        // resolve to the Notes tile above it (AX y=623..739).
+        let target = WindowTarget {
+            window_id: 42,
+            pid: 123,
+            x: 0,
+            y: 30,
+            width: 2560,
+            height: 1318,
+        };
+        let transform = MacAxCoordinateTransform::from_window_content(
+            target,
+            CGRect::new(&CGPoint::new(0.0, 33.0), &CGSize::new(2844.0, 1464.0)),
+        )
+        .unwrap();
+        let point = transform.point(CGPoint::new(300.0, 720.0));
+        let phone = CGRect::new(&CGPoint::new(262.0, 753.0), &CGSize::new(147.0, 116.0));
+        let notes = CGRect::new(&CGPoint::new(262.0, 623.0), &CGSize::new(147.0, 116.0));
+        assert!(phone.contains(&point));
+        assert!(!notes.contains(&point));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ax_zoom_rejects_native_content_insets_and_unrelated_geometry() {
+        let target = WindowTarget {
+            window_id: 42,
+            pid: 123,
+            x: 120,
+            y: 200,
+            width: 640,
+            height: 442,
+        };
+        for (x, y, width, height) in [
+            (120.0, 200.0, 640.0, 442.0),  // No zoom, including Retina screens.
+            (120.0, 222.0, 640.0, 420.0),  // Native content minus title bar.
+            (120.0, 200.0, 700.0, 442.0),  // One dimension changed.
+            (120.0, 200.0, 640.0, 4000.0), // Scroll document.
+            (120.0, 200.0, 320.0, 221.0),  // Smaller panel at unscaled origin.
+            (120.0, 200.0, 0.0, 0.0),
+            (f64::NAN, 200.0, 640.0, 442.0),
+            (120.0, 200.0, f64::INFINITY, 442.0),
+        ] {
+            assert!(MacAxCoordinateTransform::from_window_content(
+                target,
+                CGRect::new(&CGPoint::new(x, y), &CGSize::new(width, height)),
+            )
+            .is_none());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires macOS Accessibility; launches isolated windows at multiple AX zoom factors"]
+    fn macos_scaled_ax_clicks_keep_native_chrome_and_content_separate() {
+        mac_require_input_permission().unwrap();
+        for zoom in ["0.9", "1.0", "1.1"] {
+            let host =
+                MacInputTestHost::start_fixture("tests/fixtures/scaled_ax_host.swift", &[zoom]);
+            let initial = (0..100)
+                .find_map(|_| {
+                    let state = host.state();
+                    if state.is_none() {
+                        thread::sleep(Duration::from_millis(50));
+                    }
+                    state
+                })
+                .expect("AX fixture did not start");
+            let target =
+                window_target(&initial["window_id"].as_u64().unwrap().to_string()).unwrap();
+            let application =
+                unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(target.pid)) };
+            let window = mac_ax_window(&application, target).unwrap();
+            assert_eq!(
+                mac_ax_scaled_content(&window, target).is_some(),
+                zoom != "1.0",
+                "zoom={zoom}"
+            );
+            for (field, expected) in [("upper_point", "Upper"), ("lower_point", "Lower")] {
+                let point = &initial[field];
+                let (x, y) = (
+                    point[0].as_f64().unwrap().round() as i32,
+                    point[1].as_f64().unwrap().round() as i32,
+                );
+                let hit = mac_ax_click_target(&application, target, x, y).unwrap();
+                assert_eq!(
+                    mac_ax_string(&hit, "AXTitle").as_deref(),
+                    Some(expected),
+                    "zoom={zoom}"
+                );
+                assert!(
+                    matches!(
+                        mac_ax_press(target, x, y),
+                        MacAxPressOutcome::Performed { .. }
+                    ),
+                    "zoom={zoom}"
+                );
+            }
+            // Native traffic lights are outside the scaled subtree. Resolve
+            // the close button without pressing it or closing the fixture.
+            let close = &initial["close_point"];
+            let hit = mac_ax_click_target(
+                &application,
+                target,
+                close[0].as_f64().unwrap().round() as i32,
+                close[1].as_f64().unwrap().round() as i32,
+            )
+            .unwrap();
+            assert_eq!(
+                mac_ax_string(&hit, "AXSubrole").as_deref(),
+                Some("AXCloseButton"),
+                "zoom={zoom}"
+            );
+            let after = (0..40)
+                .find_map(|_| {
+                    let state = host.state()?;
+                    if state["upper_presses"] == 1 && state["lower_presses"] == 1 {
+                        Some(state)
+                    } else {
+                        thread::sleep(Duration::from_millis(50));
+                        None
+                    }
+                })
+                .expect("AX clicks did not reach the intended buttons exactly once");
+            assert_eq!(after["upper_presses"], 1);
+            assert_eq!(after["lower_presses"], 1);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "read-only live AX hit test; set CRABCODE_TEST_WINDOW_ID, X, Y and EXPECT_AX_LABEL"]
+    fn macos_ax_click_target_is_read_only() {
+        let window_id = std::env::var("CRABCODE_TEST_WINDOW_ID").unwrap();
+        let x = std::env::var("CRABCODE_TEST_X")
+            .unwrap()
+            .parse::<i32>()
+            .unwrap();
+        let y = std::env::var("CRABCODE_TEST_Y")
+            .unwrap()
+            .parse::<i32>()
+            .unwrap();
+        let expected = std::env::var("CRABCODE_TEST_EXPECT_AX_LABEL").unwrap();
+        let target = window_target(&window_id).unwrap();
+        let application =
+            unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(target.pid)) };
+        let window = mac_ax_window(&application, target).unwrap();
+        eprintln!(
+            "calibrated={}",
+            mac_ax_scaled_content(&window, target).is_some()
+        );
+        let hit = mac_ax_click_target(&application, target, x, y).unwrap();
+        let labels = ["AXTitle", "AXDescription", "AXSubrole"]
+            .map(|attribute| mac_ax_string(&hit, attribute).unwrap_or_default());
+        assert_eq!(mac_ax_window_id(&hit), Ok(target.window_id));
+        assert!(
+            labels.iter().any(|label| label == &expected),
+            "hit {labels:?}, expected {expected}"
+        );
+        eprintln!("hit={labels:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn background_window_group_requires_ax_confirmation_for_hidden_dialogs() {
         let root = WindowTarget {
             window_id: 107,
@@ -2814,7 +3137,7 @@ mod tests {
             info(8676, 0, 33, 1492, 868, "", true),
             info(200, 400, 200, 500, 500, "", true),
             info(153, 0, 482, 64, 64, "", false),
-            info(107, 0, 33, 1492, 868, "昆仑万维", true),
+            info(107, 0, 33, 1492, 868, "", true),
         ];
         let current_ax_windows = HashSet::from([107, 8676]);
         let group = mac_window_group_from_info(root, &windows, &current_ax_windows);
