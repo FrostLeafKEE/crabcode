@@ -56,6 +56,8 @@ export interface ConnectionPreset {
   credential_ref: string | null;
   allow_insecure_remote: boolean;
   last_model_profile?: string | null;
+  /** Non-model composer controls inherited by the next new session. */
+  last_session_preferences?: SessionPreferences;
   document_workspace_root: string | null;
   projects: ProjectPreset[];
   favorite_items?: FavoriteEntry[];

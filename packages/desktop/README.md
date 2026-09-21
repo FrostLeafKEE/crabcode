@@ -61,6 +61,10 @@ For a remote Gateway, prefer HTTPS/WSS. An HTTP remote connection requires
 explicit acknowledgement in the connection dialog. A browser UI hosted away
 from localhost must also be allowed by the Gateway's `--cors` setting.
 
+New conversations inherit the connection's most recently used model, reasoning
+effort, Agent/Plan mode, Ultra setting, and permission mode. Unsent composer
+text and attachments remain in the composer while the new conversation opens.
+
 Tauri writes non-secret UI state to `~/.crabcode/settings_desktop.json`.
 Gateway model and tool settings continue to use the normal `settings.json`.
 The Models settings section queries the active Gateway for raw named-model

@@ -21,6 +21,7 @@ import {
   documentReferencePreview,
   formatDocumentReferenceLocation,
   rememberProjectSession,
+  rememberSessionControls,
   resolveDefaultProjectId,
   resolveRememberedModel,
   SessionActionsMenu,
@@ -1551,6 +1552,28 @@ describe("remembered model selection", () => {
       { last_model_profile: "removed" },
       [{ name: "fast" }, { name: "smart" }],
     )).toBeUndefined();
+  });
+});
+
+describe("new-session control inheritance", () => {
+  it("merges the latest composer controls without dropping earlier selections", () => {
+    const connection = {
+      id: "local",
+      last_session_preferences: {
+        reasoning_effort: "high",
+        mode: "plan",
+      },
+    } as ConnectionPreset;
+
+    expect(rememberSessionControls(connection, {
+      permission_mode: "run_everything",
+      ultra_mode: true,
+    }).last_session_preferences).toEqual({
+      reasoning_effort: "high",
+      mode: "plan",
+      permission_mode: "run_everything",
+      ultra_mode: true,
+    });
   });
 });
 

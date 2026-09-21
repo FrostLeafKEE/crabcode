@@ -104,6 +104,7 @@ const DEFAULT_SETTINGS: DesktopSettings = {
     credential_ref: null,
     allow_insecure_remote: false,
     last_model_profile: null,
+    last_session_preferences: {},
     document_workspace_root: null,
     projects: [],
     favorite_items: [],
@@ -169,25 +170,30 @@ const REASONING_EFFORTS = new Set<ReasoningEffort>([
   "max",
 ]);
 
+function normalizeSessionPreference(raw: unknown): SessionPreferences | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const candidate = raw as Record<string, unknown>;
+  const preference: SessionPreferences = {};
+  if (typeof candidate.model_profile === "string" && candidate.model_profile.trim()) {
+    preference.model_profile = candidate.model_profile;
+  }
+  if (typeof candidate.reasoning_effort === "string" && REASONING_EFFORTS.has(candidate.reasoning_effort as ReasoningEffort)) {
+    preference.reasoning_effort = candidate.reasoning_effort as ReasoningEffort;
+  }
+  if (typeof candidate.ultra_mode === "boolean") preference.ultra_mode = candidate.ultra_mode;
+  if (candidate.mode === "agent" || candidate.mode === "plan") preference.mode = candidate.mode;
+  if (typeof candidate.permission_mode === "string" && candidate.permission_mode.trim()) {
+    preference.permission_mode = candidate.permission_mode;
+  }
+  return Object.keys(preference).length > 0 ? preference : undefined;
+}
+
 function normalizeSessionPreferences(raw: unknown): Record<string, SessionPreferences> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const normalized: Record<string, SessionPreferences> = {};
   for (const [sessionId, value] of Object.entries(raw)) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-    const candidate = value as Record<string, unknown>;
-    const preference: SessionPreferences = {};
-    if (typeof candidate.model_profile === "string" && candidate.model_profile.trim()) {
-      preference.model_profile = candidate.model_profile;
-    }
-    if (typeof candidate.reasoning_effort === "string" && REASONING_EFFORTS.has(candidate.reasoning_effort as ReasoningEffort)) {
-      preference.reasoning_effort = candidate.reasoning_effort as ReasoningEffort;
-    }
-    if (typeof candidate.ultra_mode === "boolean") preference.ultra_mode = candidate.ultra_mode;
-    if (candidate.mode === "agent" || candidate.mode === "plan") preference.mode = candidate.mode;
-    if (typeof candidate.permission_mode === "string" && candidate.permission_mode.trim()) {
-      preference.permission_mode = candidate.permission_mode;
-    }
-    if (Object.keys(preference).length > 0 && sessionId.trim()) normalized[sessionId] = preference;
+    const preference = normalizeSessionPreference(value);
+    if (preference && sessionId.trim()) normalized[sessionId] = preference;
   }
   return normalized;
 }
@@ -361,6 +367,7 @@ export function normalizeSettings(raw: DesktopSettings): DesktopSettings {
           && connection.last_model_profile.trim().length > 0
           ? connection.last_model_profile
           : null,
+        last_session_preferences: normalizeSessionPreference(connection.last_session_preferences) ?? {},
         projects,
         favorite_items: favoriteItems,
         last_project_id: connection.last_project_id

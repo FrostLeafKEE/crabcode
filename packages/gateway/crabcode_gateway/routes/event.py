@@ -2309,7 +2309,11 @@ async def _handle_new_session(ws: WebSocket, msg: dict) -> None:
     """Create a new session and publish its id to connected clients."""
     import os
     from crabcode_core.session import CoreSession
-    from crabcode_gateway.routes.session import _bind_computer_use, _build_session_settings
+    from crabcode_gateway.routes.session import (
+        _apply_new_session_controls,
+        _bind_computer_use,
+        _build_session_settings,
+    )
     from crabcode_gateway.schemas import NewSessionRequest, ServerConnectedPayload
 
     if getattr(ws.app.state, "gateway_closing", False):
@@ -2350,6 +2354,7 @@ async def _handle_new_session(ws: WebSocket, msg: dict) -> None:
     try:
         await session.initialize()
         session.new_session()
+        _apply_new_session_controls(session, req)
 
         async with get_session_lock(ws.app.state):
             if getattr(ws.app.state, "gateway_closing", False):

@@ -475,6 +475,19 @@ export function resolveRememberedModel(
     : undefined;
 }
 
+export function rememberSessionControls(
+  connection: ConnectionPreset,
+  changes: Partial<SessionPreferences>,
+): ConnectionPreset {
+  return {
+    ...connection,
+    last_session_preferences: {
+      ...(connection.last_session_preferences ?? {}),
+      ...changes,
+    },
+  };
+}
+
 export function rememberProjectSession(
   connection: ConnectionPreset,
   projectId: string,
@@ -741,6 +754,8 @@ function App() {
   const [modelSelections, setModelSelections] = useState<Record<string, string>>({});
   const [permissionSelections, setPermissionSelections] = useState<Record<string, PermissionMode>>({});
   const [runClock, setRunClock] = useState(() => Date.now());
+  // Keep the unsent composer payload outside session state so opening a new
+  // conversation carries the draft and its attachments into that conversation.
   const [composer, setComposer] = useState("");
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -1210,22 +1225,33 @@ function App() {
     projectId: string,
     sessionId: string,
     changes: Partial<SessionPreferences>,
+    rememberForNewSession = false,
   ) => {
     if (!sessionId || sessionId.startsWith("new-")) return;
-    updateConnection(connectionId, (connection) => ({
-      ...connection,
-      projects: connection.projects.map((project) => {
-        if (project.id !== projectId) return project;
-        const previous = project.session_preferences?.[sessionId] ?? {};
-        return {
-          ...project,
-          session_preferences: {
-            ...(project.session_preferences ?? {}),
-            [sessionId]: { ...previous, ...changes },
-          },
-        };
-      }),
-    }));
+    updateConnection(connectionId, (connection) => {
+      const next = {
+        ...connection,
+        projects: connection.projects.map((project) => {
+          if (project.id !== projectId) return project;
+          const previous = project.session_preferences?.[sessionId] ?? {};
+          return {
+            ...project,
+            session_preferences: {
+              ...(project.session_preferences ?? {}),
+              [sessionId]: { ...previous, ...changes },
+            },
+          };
+        }),
+      };
+      return rememberForNewSession ? rememberSessionControls(next, changes) : next;
+    });
+  }, [updateConnection]);
+
+  const updateLastSessionPreferences = useCallback((
+    connectionId: string,
+    changes: Partial<SessionPreferences>,
+  ) => {
+    updateConnection(connectionId, (connection) => rememberSessionControls(connection, changes));
   }, [updateConnection]);
 
   const restoreSessionPreferences = useCallback(async (
@@ -1248,6 +1274,15 @@ function App() {
       if (typeof preferences.ultra_mode === "boolean") channel.setUltraMode(preferences.ultra_mode);
       if (preferences.mode) channel.switchMode(preferences.mode);
       if (preferences.permission_mode) channel.setPermissionMode(preferences.permission_mode);
+      const rememberedControls: SessionPreferences = {
+        ...(preferences.reasoning_effort ? { reasoning_effort: preferences.reasoning_effort } : {}),
+        ...(typeof preferences.ultra_mode === "boolean" ? { ultra_mode: preferences.ultra_mode } : {}),
+        ...(preferences.mode ? { mode: preferences.mode } : {}),
+        ...(preferences.permission_mode ? { permission_mode: preferences.permission_mode } : {}),
+      };
+      if (Object.keys(rememberedControls).length > 0) {
+        updateLastSessionPreferences(connectionId, rememberedControls);
+      }
       setModelSelections((current) => model ? { ...current, [key]: model } : current);
       if (preferences.permission_mode) {
         setPermissionSelections((current) => ({
@@ -1276,7 +1311,7 @@ function App() {
     } catch (error) {
       setGlobalError(error instanceof Error ? error.message : String(error));
     }
-  }, [updateSessionStatus]);
+  }, [updateLastSessionPreferences, updateSessionStatus]);
 
   const removeSessionState = useCallback((target: SessionCleanupTarget) => {
     channelRef.current.get(target.key)?.dispose();
@@ -1395,6 +1430,10 @@ function App() {
       setGlobalError("Gateway 尚未连接");
       return;
     }
+    const inheritedPreferences = info ? undefined : connection.last_session_preferences;
+    const rememberedModel = info
+      ? undefined
+      : resolveRememberedModel(connection, gateways[connection.id]?.models ?? []);
     let key = sessionKey(connection.id, info?.session_id ?? `new-${randomUuid()}`);
     const existingChannel = channelRef.current.get(key);
     if (existingChannel && !existingChannel.isDisposed) {
@@ -1446,9 +1485,11 @@ function App() {
       sessionId: info?.session_id,
       cwd: project.path,
       additionalDirectories: project.directories.slice(1),
-      modelProfile: info
-        ? undefined
-        : resolveRememberedModel(connection, gateways[connection.id]?.models ?? []),
+      modelProfile: rememberedModel,
+      reasoningEffort: inheritedPreferences?.reasoning_effort ?? undefined,
+      ultraMode: inheritedPreferences?.ultra_mode,
+      mode: inheritedPreferences?.mode,
+      permissionMode: inheritedPreferences?.permission_mode,
       // Bind every session to this Desktop host. Availability stays dynamic in
       // the Gateway, so turning Computer Use back on works without reopening
       // the session while a disabled host still exposes no model context.
@@ -1476,13 +1517,13 @@ function App() {
           if (channel.sessionId) {
             updateSessionPreferences(connection.id, project.id, channel.sessionId, {
               permission_mode: event.permission_mode,
-            });
+            }, true);
           }
         }
         if (event.type === "mode_change" && event.mode && channel.sessionId) {
           updateSessionPreferences(connection.id, project.id, channel.sessionId, {
             mode: event.mode,
-          });
+          }, true);
         }
         if (
           event.type === "document_selection_translation"
@@ -1549,17 +1590,28 @@ function App() {
         // Remember this project's session without stealing the current focus.
         updateConnection(connection.id, (current) => rememberProjectSession(current, project.id, id));
         void refreshProjectSessions(connection.id, project.path);
-        void restoreSessionPreferences(
-          connection.id,
-          key,
-          channel,
-          id,
-          settingsRef.current?.connections
-            .find((item) => item.id === connection.id)
-            ?.projects.find((item) => item.id === project.id)
-            ?.session_preferences?.[id],
-          gatewaysRef.current[connection.id]?.models ?? [],
-        );
+        if (!info) {
+          const preferences: SessionPreferences = {
+            ...(inheritedPreferences ?? {}),
+            ...(rememberedModel ? { model_profile: rememberedModel } : {}),
+          };
+          if (Object.keys(preferences).length > 0) {
+            updateSessionPreferences(connection.id, project.id, id, preferences);
+          }
+          void updateSessionStatus(connection.id, key, id, true);
+        } else {
+          void restoreSessionPreferences(
+            connection.id,
+            key,
+            channel,
+            id,
+            settingsRef.current?.connections
+              .find((item) => item.id === connection.id)
+              ?.projects.find((item) => item.id === project.id)
+              ?.session_preferences?.[id],
+            gatewaysRef.current[connection.id]?.models ?? [],
+          );
+        }
       },
       onState: (connected, error) => {
         if (!isCurrentChannel()) return;
@@ -1584,6 +1636,7 @@ function App() {
     refreshProjectSessions,
     restoreSessionPreferences,
     updateConnection,
+    updateLastSessionPreferences,
     updateSessionPreferences,
     updateSessionStatus,
   ]);
@@ -2404,7 +2457,7 @@ function App() {
       activeChannel.setReasoningEffort(effort);
       updateSessionPreferences(activeConnection.id, activeProject.id, activeSession.id, {
         reasoning_effort: effort,
-      });
+      }, true);
       setSessions((current) => {
         const session = current[activeSessionKey];
         if (!session?.status) return current;
@@ -2425,7 +2478,7 @@ function App() {
     if (!activeChannel || !activeSessionKey || !activeConnection || !activeProject || !activeSession) return;
     try {
       activeChannel.switchMode(mode);
-      updateSessionPreferences(activeConnection.id, activeProject.id, activeSession.id, { mode });
+      updateSessionPreferences(activeConnection.id, activeProject.id, activeSession.id, { mode }, true);
       setSessions((current) => {
         const session = current[activeSessionKey];
         if (!session?.status) return current;
@@ -2448,7 +2501,7 @@ function App() {
       activeChannel.setUltraMode(enabled);
       updateSessionPreferences(activeConnection.id, activeProject.id, activeSession.id, {
         ultra_mode: enabled,
-      });
+      }, true);
       setSessions((current) => {
         const session = current[activeSessionKey];
         if (!session?.status) return current;
@@ -2495,7 +2548,7 @@ function App() {
       activeChannel.setPermissionMode(mode);
       updateSessionPreferences(activeConnection.id, activeProject.id, activeSession.id, {
         permission_mode: mode,
-      });
+      }, true);
       setPermissionSelections((current) => ({ ...current, [activeSessionKey]: mode }));
       setSessions((current) => {
         const session = current[activeSessionKey];
@@ -6435,6 +6488,7 @@ function ConnectionModal({ settings, activeConnectionId, initialEditingId, onClo
               : editingConnection?.credential_ref ?? null,
             allow_insecure_remote: allowInsecure,
             last_model_profile: editingConnection?.last_model_profile ?? null,
+            last_session_preferences: editingConnection?.last_session_preferences ?? {},
             projects: editingConnection?.projects ?? [],
             favorite_items: editingConnection?.favorite_items ?? [],
             last_project_path: editingConnection?.last_project_path ?? null,

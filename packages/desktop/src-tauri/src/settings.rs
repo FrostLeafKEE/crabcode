@@ -43,6 +43,7 @@ fn default_settings() -> Value {
             "credential_ref": null,
             "allow_insecure_remote": false,
             "last_model_profile": null,
+            "last_session_preferences": {},
             "document_workspace_root": null,
             "projects": [],
             "favorite_items": [],

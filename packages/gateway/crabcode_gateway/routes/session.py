@@ -269,6 +269,18 @@ def _bind_computer_use(
     session.computer_use_host_id = host_id
 
 
+def _apply_new_session_controls(session: Any, req: NewSessionRequest) -> None:
+    """Apply client composer controls before the new session is announced."""
+    if req.reasoning_effort is not None:
+        session.set_reasoning_effort(req.reasoning_effort)
+    if req.ultra_mode is not None:
+        session.set_ultra_mode(req.ultra_mode)
+    if req.permission_mode is not None:
+        session.set_client_permission_mode(req.permission_mode)
+    if req.mode is not None:
+        session.switch_mode(req.mode)
+
+
 @router.post("/new", response_model=SessionInfo)
 async def new_session(req: NewSessionRequest, request: Request) -> SessionInfo:
     """Create a new CrabCode session."""
@@ -296,6 +308,7 @@ async def new_session(req: NewSessionRequest, request: Request) -> SessionInfo:
         _attach_event_bus(session, request.app.state.event_bus)
         await session.initialize()
         session.new_session()
+        _apply_new_session_controls(session, req)
 
         async with get_session_lock(request.app.state):
             if getattr(request.app.state, "gateway_closing", False):

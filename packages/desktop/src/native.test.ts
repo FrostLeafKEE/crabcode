@@ -182,6 +182,37 @@ describe("desktop settings migration", () => {
     expect(normalizeSettings(configured).connections[0].last_model_profile).toBe("fast");
   });
 
+  it("normalizes the control state inherited by new sessions", () => {
+    const configured = {
+      schema_version: 4,
+      active_connection_id: "local",
+      connection_order: ["local"],
+      connections: [{
+        id: "local",
+        name: "Local",
+        base_url: "http://127.0.0.1:4096",
+        credential_ref: null,
+        allow_insecure_remote: false,
+        last_session_preferences: {
+          reasoning_effort: "xhigh",
+          ultra_mode: true,
+          mode: "plan",
+          permission_mode: "ai_review",
+        },
+        projects: [],
+        last_project_path: null,
+        last_project_id: null,
+      }],
+    } as unknown as DesktopSettings;
+
+    expect(normalizeSettings(configured).connections[0].last_session_preferences).toEqual({
+      reasoning_effort: "xhigh",
+      ultra_mode: true,
+      mode: "plan",
+      permission_mode: "ai_review",
+    });
+  });
+
   it("normalizes per-session conversation preferences", () => {
     const configured = {
       schema_version: 4,

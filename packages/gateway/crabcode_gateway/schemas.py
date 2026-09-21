@@ -81,6 +81,17 @@ class NewSessionRequest(BaseModel):
     base_url: str | None = None
     api_format: str | None = None
     model_profile: str | None = None
+    reasoning_effort: ReasoningEffort | None = None
+    ultra_mode: bool | None = None
+    mode: Literal["agent", "plan"] | None = None
+    permission_mode: Literal[
+        "default",
+        "ask",
+        "run_everything",
+        "bypassPermissions",
+        "ai_review",
+        "aiReview",
+    ] | None = None
     computer_use_host_id: str | None = Field(default=None, min_length=1, max_length=200)
     computer_use_enabled: bool | None = None
     computer_use_mode: Literal["background_app", "foreground_desktop"] | None = None

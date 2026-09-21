@@ -518,6 +518,10 @@ interface SessionChannelOptions {
   cwd: string;
   additionalDirectories?: string[];
   modelProfile?: string;
+  reasoningEffort?: ReasoningEffort;
+  ultraMode?: boolean;
+  mode?: "agent" | "plan";
+  permissionMode?: string;
   computerUseHostId?: string;
   computerUseEnabled?: boolean;
   onEvent: (event: GatewayEvent) => void;
@@ -623,6 +627,10 @@ export class SessionChannel {
         cwd: this.options.cwd,
         additional_directories: this.options.additionalDirectories ?? [],
         model_profile: this.options.modelProfile,
+        reasoning_effort: this.options.reasoningEffort,
+        ultra_mode: this.options.ultraMode,
+        mode: this.options.mode,
+        permission_mode: this.options.permissionMode,
         computer_use_host_id: this.options.computerUseHostId,
         computer_use_enabled: this.options.computerUseEnabled,
       });
