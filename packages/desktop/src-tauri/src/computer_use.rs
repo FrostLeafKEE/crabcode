@@ -946,10 +946,6 @@ impl MacAxCoordinateTransform {
         }
         let scale_x = content.size.width / f64::from(target.width);
         let scale_y = content.size.height / f64::from(target.height);
-        // Lark's UI zoom scales the Chromium AX subtree, including its global
-        // origin, while AXWindow and screenshots remain in desktop points.
-        // Require a uniformly scaled full-window frame, allowing integer AX
-        // rounding. A normal content view minus a title bar is not a match.
         if ![scale_x, scale_y, content.origin.x, content.origin.y]
             .into_iter()
             .all(f64::is_finite)
@@ -1145,9 +1141,7 @@ fn mac_ax_click_target(
             }
         }
     }
-    // A scaled app-wide hit test can return a plausible but wrong control.
-    // Search the selected window with its measured subtree transform instead.
-    // This also bypasses Lark's overlapping watermark without activating it.
+    
     let mut remaining = 1024;
     mac_ax_pressable_at_point(
         window?,
@@ -2946,8 +2940,7 @@ mod tests {
                 assert!((point.y - (f64::from(y) + 690.0) / zoom).abs() < 1.0);
             }
         }
-        // Measured 90% Lark geometry: the screenshot's Phone tile used to
-        // resolve to the Notes tile above it (AX y=623..739).
+        
         let target = WindowTarget {
             window_id: 42,
             pid: 123,

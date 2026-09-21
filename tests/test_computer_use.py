@@ -164,7 +164,7 @@ def test_background_mode_allows_focus_changes_but_keeps_window_coordinates():
         tool.validate_input({"action": "focus_window", "window_id": "42"})
     ) is None
     assert "window_id is required" in asyncio.run(
-        tool.validate_input({"action": "focus_window", "text": "Lark"})
+        tool.validate_input({"action": "focus_window", "text": "desktop"})
     )
 
 
