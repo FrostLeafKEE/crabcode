@@ -28,6 +28,10 @@ use core_foundation::number::CFNumber;
 #[cfg(target_os = "macos")]
 use core_foundation::string::{CFString, CFStringRef};
 #[cfg(target_os = "macos")]
+use core_graphics::color_space::{kCGColorSpaceSRGB, CGColorSpace};
+#[cfg(target_os = "macos")]
+use core_graphics::context::CGContext;
+#[cfg(target_os = "macos")]
 use core_graphics::display::CGRectNull;
 #[cfg(target_os = "macos")]
 use core_graphics::event::{
@@ -39,8 +43,10 @@ use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 #[cfg(target_os = "macos")]
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 #[cfg(target_os = "macos")]
+use core_graphics::image::{CGImage, CGImageAlphaInfo, CGImageByteOrderInfo};
+#[cfg(target_os = "macos")]
 use core_graphics::window::{
-    copy_window_info, create_image, kCGNullWindowID, kCGWindowImageDefault,
+    copy_window_info, create_image, kCGNullWindowID, kCGWindowImageBoundsIgnoreFraming,
     kCGWindowListExcludeDesktopElements, kCGWindowListOptionAll,
     kCGWindowListOptionIncludingWindow,
 };
@@ -421,7 +427,7 @@ fn window_list() -> Result<Vec<Value>, String> {
         .collect()
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WindowTarget {
     window_id: u32,
     pid: i32,
@@ -432,7 +438,7 @@ struct WindowTarget {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct MacWindowInfo {
     target: WindowTarget,
     title: String,
@@ -445,6 +451,9 @@ struct MacWindowInfo {
 struct MacWindowGroup {
     // Components are ordered front-to-back and always include the root.
     components: Vec<MacWindowInfo>,
+    // Visual companions (for example a watermark) still belong in the image,
+    // but must not intercept input meant for the actual window underneath.
+    passive_window_ids: HashSet<u32>,
 }
 
 #[cfg(target_os = "macos")]
@@ -564,7 +573,7 @@ fn same_window_bounds(left: WindowTarget, right: WindowTarget) -> bool {
 fn mac_window_group_from_info(
     root: WindowTarget,
     windows: &[MacWindowInfo],
-    accessibility_window_ids: &HashSet<u32>,
+    interactive_window_ids: &HashSet<u32>,
 ) -> MacWindowGroup {
     let Some(root_index) = windows
         .iter()
@@ -577,38 +586,28 @@ fn mac_window_group_from_info(
                 layer: 0,
                 on_screen: true,
             }],
+            passive_window_ids: HashSet::new(),
         };
     };
+    let root = windows[root_index].target;
     let root_layer = windows[root_index].layer;
-    let root_area = u64::from(root.width) * u64::from(root.height);
     let mut components = windows[..=root_index]
         .iter()
         .filter(|window| {
             if window.target.window_id == root.window_id {
                 return true;
             }
-            if window.target.pid != root.pid || window.layer != root_layer {
+            if window.target.pid != root.pid
+                || !window.on_screen
+                || (window.layer != root_layer
+                    && !interactive_window_ids.contains(&window.target.window_id))
+            {
                 return false;
             }
-            let intersection = window_intersection_area(window.target, root);
-            if intersection == 0 {
-                return false;
-            }
-            if window.on_screen {
-                // Electron apps often keep a full-size, titleless watermark or
-                // hit-test companion above the real window. It is not an
-                // interaction surface and must not steal routed events.
-                return !(window.title.is_empty() && same_window_bounds(window.target, root));
-            }
-            // Electron may retain a closed transient window indefinitely in
-            // the CoreGraphics list, including its stale backing store. AXWindows
-            // reflects the application's current logical windows, so require
-            // that independent signal before reviving an ordered-out surface.
-            // If Accessibility cannot enumerate the application, hidden windows
-            // are omitted instead of risking a false overlay or unsafe routing.
-            accessibility_window_ids.contains(&window.target.window_id)
-                && root_area > 0
-                && intersection.saturating_mul(50) >= root_area
+            // Covered windows remain ordered onscreen. An ordered-out window
+            // can retain both its backing pixels and its AXWindows entry after
+            // dismissal; neither is evidence that it should be composited.
+            window_intersection_area(window.target, root) > 0
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -618,17 +617,31 @@ fn mac_window_group_from_info(
     {
         components.push(windows[root_index].clone());
     }
-    MacWindowGroup { components }
+    let passive_window_ids = components
+        .iter()
+        .filter(|window| {
+            window.target.window_id != root.window_id
+                && window.title.is_empty()
+                && same_window_bounds(window.target, root)
+                && !interactive_window_ids.contains(&window.target.window_id)
+        })
+        .map(|window| window.target.window_id)
+        .collect();
+    MacWindowGroup {
+        components,
+        passive_window_ids,
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn mac_window_group(root: WindowTarget) -> Result<MacWindowGroup, String> {
     let windows = mac_all_window_info()?;
-    let accessibility_window_ids = mac_ax_application_window_ids(root.pid).unwrap_or_default();
+    let interactive_window_ids =
+        mac_ax_application_interactive_window_ids(root.pid).unwrap_or_default();
     Ok(mac_window_group_from_info(
         root,
         &windows,
-        &accessibility_window_ids,
+        &interactive_window_ids,
     ))
 }
 
@@ -649,7 +662,10 @@ fn mac_event_target_from_group(
     group
         .components
         .into_iter()
-        .find(|window| point_in_window(window.target, point))
+        .find(|window| {
+            !group.passive_window_ids.contains(&window.target.window_id)
+                && point_in_window(window.target, point)
+        })
         .unwrap_or(MacWindowInfo {
             target: root,
             title: String::new(),
@@ -865,7 +881,7 @@ fn mac_ax_window_id(element: &CFType) -> Result<u32, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn mac_ax_application_window_ids(pid: i32) -> Result<HashSet<u32>, String> {
+fn mac_ax_application_interactive_window_ids(pid: i32) -> Result<HashSet<u32>, String> {
     let application_ref = unsafe { AXUIElementCreateApplication(pid) };
     if application_ref.is_null() {
         return Err("Unable to create the target application's accessibility element".to_string());
@@ -881,6 +897,13 @@ fn mac_ax_application_window_ids(pid: i32) -> Result<HashSet<u32>, String> {
         .filter(|window| !window.is_null())
         .filter_map(|window| {
             let window = unsafe { CFType::wrap_under_get_rule(window.cast()) };
+            // watermark companions. Size/title alone cannot distinguish them.
+            if !matches!(
+                mac_ax_string(&window, "AXSubrole").as_deref(),
+                Some("AXStandardWindow" | "AXDialog" | "AXSystemDialog" | "AXFloatingWindow")
+            ) {
+                return None;
+            }
             mac_ax_window_id(&window).ok()
         })
         .collect())
@@ -1507,6 +1530,86 @@ fn mac_post_prepared_mouse(event: &CGEvent, pid: i32) {
 }
 
 #[cfg(target_os = "macos")]
+fn mac_prepare_mouse_window(target: WindowTarget) -> Result<(), String> {
+    let application_ref = unsafe { AXUIElementCreateApplication(target.pid) };
+    if application_ref.is_null() {
+        return Err("Unable to prepare the target application for mouse input".to_string());
+    }
+    let application = unsafe { CFType::wrap_under_create_rule(application_ref) };
+    let enabled = CFBoolean::true_value();
+    // A correctly routed CGEvent can reach an inactive Chromium process and
+    // still be discarded before its content sees mouseDown. Application mode
+    // allows activation: select the requested window and activate it BEFORE
+    // the one intended gesture, rather than retrying a possibly delivered click.
+    if let Ok(window) = mac_ax_window(&application, target) {
+        let main = CFString::new("AXMain");
+        // Panels need not expose AXMain. AXRaise and the event's window number
+        // still select them; changing AXMain is useful for ordinary app windows.
+        unsafe {
+            AXUIElementSetAttributeValue(
+                window.as_CFTypeRef(),
+                main.as_concrete_TypeRef(),
+                enabled.as_CFTypeRef(),
+            );
+        }
+        if mac_ax_supports_action(&window, "AXRaise") == Ok(true) {
+            let raise = CFString::new("AXRaise");
+            let status = unsafe {
+                AXUIElementPerformAction(window.as_CFTypeRef(), raise.as_concrete_TypeRef())
+            };
+            if status != AX_ERROR_SUCCESS {
+                return Err(mac_ax_error("Preparing the selected window for mouse input", status));
+            }
+        }
+    }
+    let frontmost = CFString::new("AXFrontmost");
+    let status = unsafe {
+        AXUIElementSetAttributeValue(
+            application.as_CFTypeRef(),
+            frontmost.as_concrete_TypeRef(),
+            enabled.as_CFTypeRef(),
+        )
+    };
+    if status != AX_ERROR_SUCCESS {
+        return Err(mac_ax_error("Activating the target for mouse input", status));
+    }
+    let process = mac_process_serial_number(target.pid)?;
+    for _ in 0..25 {
+        if mac_front_process_serial_number()? == process {
+            // The application still needs to consume its activation message.
+            thread::sleep(Duration::from_millis(50));
+            if mac_front_process_serial_number()? == process {
+                return Ok(());
+            }
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    Err("The target did not remain active for mouse input; observe again before clicking".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_validate_mouse_layout(
+    root: WindowTarget,
+    event_target: WindowTarget,
+    point: (i32, i32),
+) -> Result<(), String> {
+    let windows = mac_all_window_info()?;
+    let stable = [root, event_target].iter().all(|target| {
+        windows.iter().any(|window| window.target == *target && window.on_screen)
+    });
+    let interactive = mac_ax_application_interactive_window_ids(root.pid).unwrap_or_default();
+    let group = mac_window_group_from_info(root, &windows, &interactive);
+    let selected = mac_event_target_from_group(group, root, point);
+    if !stable || selected.target != event_target || !selected.on_screen {
+        return Err(
+            "Window layout changed while preparing mouse input; no click was sent. Observe again before clicking".to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn mac_click(
     target: WindowTarget,
     x: i32,
@@ -1527,10 +1630,8 @@ fn mac_click(
         y,
         0,
     )?;
-    // Construct every event before sending mouse-down. Do not synthesize an
-    // application activation record: Electron treats that private event as a
-    // real foreground request even when WindowServer initially leaves the
-    // process in the background.
+    // Construct every event before sending mouse-down. The application-mode
+    // caller prepares input activation separately using accessibility APIs.
     let events = (1..=click_count)
         .map(|count| {
             Ok((
@@ -1811,45 +1912,78 @@ fn mac_capture_window(target: WindowTarget) -> Result<RgbaImage, String> {
         bounds,
         kCGWindowListOptionIncludingWindow,
         target.window_id,
-        kCGWindowImageDefault,
+        kCGWindowImageBoundsIgnoreFraming,
     )
     .or_else(|| {
         create_image(
             unsafe { CGRectNull },
             kCGWindowListOptionIncludingWindow,
             target.window_id,
-            kCGWindowImageDefault,
+            kCGWindowImageBoundsIgnoreFraming,
         )
     }) else {
         return mac_capture_hidden_window_with_screencapture(target);
     };
+    mac_decode_window_image(image, target)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_decode_window_image(image: CGImage, target: WindowTarget) -> Result<RgbaImage, String> {
     let width = image.width();
     let height = image.height();
-    let bytes_per_row = image.bytes_per_row();
-    if width == 0 || height == 0 || bytes_per_row < width.saturating_mul(4) {
+    if width == 0 || height == 0 {
         return Err(format!(
-            "Window {} returned an invalid capture buffer",
+            "Window {} returned an empty capture",
             target.window_id
         ));
     }
-    let data = image.data();
-    let bytes = data.bytes();
-    if bytes.len() < bytes_per_row.saturating_mul(height) {
-        return Err(format!(
-            "Window {} returned a truncated capture buffer",
-            target.window_id
-        ));
-    }
-    let mut rgba = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4));
-    for row in bytes.chunks_exact(bytes_per_row).take(height) {
-        rgba.extend_from_slice(&row[..width * 4]);
-    }
-    for bgra in rgba.chunks_exact_mut(4) {
-        bgra.swap(0, 2);
+    // Let CoreGraphics handle the source color space and byte order. Captured
+    // windows can use the display profile; the PNG and image compositor need
+    // a consistent sRGB, RGBA buffer.
+    let color_space = CGColorSpace::create_with_name(unsafe { kCGColorSpaceSRGB })
+        .ok_or_else(|| "Unable to create the screenshot color space".to_string())?;
+    let mut context = CGContext::create_bitmap_context(
+        None,
+        width,
+        height,
+        8,
+        width * 4,
+        &color_space,
+        CGImageAlphaInfo::CGImageAlphaPremultipliedLast as u32
+            | CGImageByteOrderInfo::CGImageByteOrder32Big as u32,
+    );
+    context.draw_image(
+        CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(width as f64, height as f64),
+        ),
+        &image,
+    );
+    let mut rgba = context.data().to_vec();
+    for pixel in rgba.chunks_exact_mut(4) {
+        mac_unpremultiply_pixel(pixel);
     }
     let image = RgbaImage::from_raw(width as u32, height as u32, rgba)
         .ok_or_else(|| format!("Unable to decode window {} capture", target.window_id))?;
     Ok(normalize_image(image, target.width, target.height))
+}
+
+#[cfg(target_os = "macos")]
+fn mac_unpremultiply_pixel(pixel: &mut [u8]) {
+    // CoreGraphics stores premultiplied color, whereas image::overlay and PNG
+    // expect straight alpha. Applying alpha a second time darkens translucent
+    // dialog surfaces into a mask.
+    let alpha = u32::from(pixel[3]);
+    if alpha == 255 {
+        return;
+    }
+    for channel in &mut pixel[..3] {
+        *channel = if alpha == 0 {
+            0
+        } else {
+            ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8
+        };
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1889,7 +2023,31 @@ fn mac_capture_hidden_window_with_screencapture(target: WindowTarget) -> Result<
 
 #[cfg(target_os = "macos")]
 fn mac_capture_window_group(root: WindowTarget) -> Result<ScreenshotCapture, String> {
-    let group = mac_window_group(root)?;
+    let mut group = mac_window_group(root)?;
+    for _ in 0..2 {
+        let capture = mac_capture_window_group_snapshot(root, &group)?;
+        let current = mac_window_group(root)?;
+        if current.components == group.components {
+            return Ok(capture);
+        }
+        // A popup can close while its backing store is being captured. Do not
+        // return the old overlay after the server has ordered that window out.
+        group = current;
+    }
+    Err("Window layout changed during capture; observe again for a current frame".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_capture_window_group_snapshot(
+    root: WindowTarget,
+    group: &MacWindowGroup,
+) -> Result<ScreenshotCapture, String> {
+    let root = group
+        .components
+        .iter()
+        .find(|window| window.target.window_id == root.window_id)
+        .map(|window| window.target)
+        .unwrap_or(root);
     let mut image = mac_capture_window(root)?;
     let mut component_window_ids = vec![root.window_id];
     let mut hidden_component_window_ids = Vec::new();
@@ -2437,7 +2595,7 @@ fn execute_background_click(action: &ComputerAction) -> Result<Value, String> {
     let (x, y) = background_point(action, target)?;
     let event_window = mac_background_event_target(target, (x, y));
     let event_target = event_window.target;
-    let before = capture_screenshot(action)?;
+    let mut before = capture_screenshot(action)?;
     let is_single_left_click = action.action == "click"
         && action
             .button
@@ -2466,6 +2624,28 @@ fn execute_background_click(action: &ComputerAction) -> Result<Value, String> {
     };
     let uses_mouse = matches!(dispatch, MacAxPressOutcome::Unsupported { .. });
     if uses_mouse {
+        let preparation = mac_prepare_mouse_window(event_target).and_then(|_| {
+            // Activation alone can change title-bar pixels. Compare the click
+            // against the prepared window, so that is not counted as its effect.
+            let baseline = capture_screenshot(action)?;
+            mac_validate_mouse_layout(target, event_target, (x, y))?;
+            if mac_front_process_serial_number()? != mac_process_serial_number(target.pid)? {
+                return Err("The target lost activation before mouse input; no click was sent. Observe again before clicking".to_string());
+            }
+            Ok(baseline)
+        });
+        match preparation {
+            Ok(baseline) => before = baseline,
+            Err(reason) => {
+                let mut result =
+                    unsupported_background_click(action, target, event_target, point, reason);
+                record_click_foreground_change(
+                    &mut result,
+                    foreground_monitor.and_then(MacForegroundMonitor::finish),
+                );
+                return Ok(finish_background_click(action, result, capture_screenshot(action)));
+            }
+        }
         mac_click(
             event_target,
             x,
@@ -3103,7 +3283,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn background_window_group_requires_ax_confirmation_for_hidden_dialogs() {
+    fn background_window_group_separates_visible_surfaces_from_input_targets() {
         let root = WindowTarget {
             window_id: 107,
             pid: 1084,
@@ -3132,7 +3312,7 @@ mod tests {
             info(153, 0, 482, 64, 64, "", false),
             info(107, 0, 33, 1492, 868, "", true),
         ];
-        let current_ax_windows = HashSet::from([107, 8676]);
+        let current_ax_windows = HashSet::from([107]);
         let group = mac_window_group_from_info(root, &windows, &current_ax_windows);
         assert_eq!(
             group
@@ -3140,13 +3320,15 @@ mod tests {
                 .iter()
                 .map(|window| window.target.window_id)
                 .collect::<Vec<_>>(),
-            vec![200, 107]
+            vec![8676, 200, 107]
         );
         let event_target = mac_event_target_from_group(group, root, (450, 250));
         assert_eq!(event_target.target.window_id, 200);
         assert!(event_target.on_screen);
 
-        let current_ax_windows = HashSet::from([107, 8676, 10057]);
+        // AX can retain a dismissed dialog. It must stay out of both the
+        // screenshot and event routing, even with a live AX window ID.
+        let current_ax_windows = HashSet::from([107, 10057]);
         let group = mac_window_group_from_info(root, &windows, &current_ax_windows);
         assert_eq!(
             group
@@ -3154,11 +3336,11 @@ mod tests {
                 .iter()
                 .map(|window| window.target.window_id)
                 .collect::<Vec<_>>(),
-            vec![10057, 200, 107]
+            vec![8676, 200, 107]
         );
         let event_target = mac_event_target_from_group(group, root, (450, 250));
-        assert_eq!(event_target.target.window_id, 10057);
-        assert!(!event_target.on_screen);
+        assert_eq!(event_target.target.window_id, 200);
+        assert!(event_target.on_screen);
 
         let group = mac_window_group_from_info(root, &windows, &HashSet::new());
         assert_eq!(
@@ -3167,8 +3349,42 @@ mod tests {
                 .iter()
                 .map(|window| window.target.window_id)
                 .collect::<Vec<_>>(),
-            vec![200, 107]
+            vec![8676, 200, 107]
         );
+
+        // A full-size AXDialog can have exactly the same title and geometry
+        // as an AXUnknown companion. Both are visible; only the dialog takes
+        // input. This also works for an AX-confirmed floating panel.
+        for layer in [0, 3] {
+            let mut windows = windows.clone();
+            windows[1].layer = layer;
+            let group = mac_window_group_from_info(root, &windows, &HashSet::from([107, 8676]));
+            assert_eq!(
+                mac_event_target_from_group(group, root, (450, 250)).target.window_id,
+                8676
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn translucent_window_pixels_are_composited_with_straight_alpha() {
+        use xcap::image::Rgba;
+
+        let mut rgba = [128, 128, 128, 128];
+        mac_unpremultiply_pixel(&mut rgba);
+        assert_eq!(rgba, [255, 255, 255, 128]);
+        let mut root = RgbaImage::from_pixel(1, 1, Rgba([0, 0, 255, 255]));
+        let overlay = RgbaImage::from_pixel(1, 1, Rgba(rgba));
+        xcap::image::imageops::overlay(&mut root, &overlay, 0, 0);
+        assert_eq!(root.get_pixel(0, 0).0[..3], [128, 128, 255]);
+        assert!(root.get_pixel(0, 0).0[3] >= 254);
+        let mut transparent = [0, 0, 0, 0];
+        mac_unpremultiply_pixel(&mut transparent);
+        assert_eq!(transparent, [0, 0, 0, 0]);
+        let mut opaque = [23, 101, 255, 255];
+        mac_unpremultiply_pixel(&mut opaque);
+        assert_eq!(opaque, [23, 101, 255, 255]);
     }
 
     #[cfg(target_os = "macos")]
@@ -3221,6 +3437,92 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    #[ignore = "requires macOS Accessibility and Screen Recording; launches isolated overlay windows"]
+    fn macos_window_group_captures_covered_dialog_and_drops_dismissed_pixels() {
+        let wait_state = |host: &MacInputTestHost, phase: &str| {
+            (0..100)
+                .find_map(|_| {
+                    let state = host.state().filter(|state| state["phase"] == phase);
+                    if state.is_none() {
+                        thread::sleep(Duration::from_millis(50));
+                    }
+                    state
+                })
+                .expect("window group fixture did not reach the requested phase")
+        };
+        let host = MacInputTestHost::start_fixture("tests/fixtures/window_group_host.swift", &[]);
+        let initial = wait_state(&host, "open");
+        let root_id = initial["root_id"].as_u64().unwrap() as u32;
+        let dialog_id = initial["dialog_id"].as_u64().unwrap() as u32;
+        let companion_id = initial["companion_id"].as_u64().unwrap() as u32;
+        let root = window_target(&root_id.to_string()).unwrap();
+        let assert_frame = |dialog_visible: bool| {
+            let capture = mac_capture_window_group(root).unwrap();
+            assert!(capture.component_capture_errors.is_empty());
+            assert!(capture.hidden_component_window_ids.is_empty());
+            assert!(
+                capture.component_window_ids.contains(&companion_id),
+                "missing companion {companion_id}; root={root:?}; windows={:?}",
+                mac_all_window_info()
+                    .unwrap()
+                    .into_iter()
+                    .filter(|window| window.target.pid == root.pid)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                capture.component_window_ids.contains(&dialog_id),
+                dialog_visible
+            );
+            let check_pixel = |x, y, expected: [u8; 4]| {
+                let actual = capture.image.get_pixel(x, y).0;
+                assert!(
+                    actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 3),
+                    "pixel ({x}, {y}) was {actual:?}, expected {expected:?}"
+                );
+            };
+            check_pixel(20, 20, [255, 255, 255, 255]);
+            if dialog_visible {
+                check_pixel(60, 60, [128, 128, 128, 255]);
+                check_pixel(180, 120, [255, 255, 255, 255]);
+            } else {
+                check_pixel(60, 60, [0, 0, 0, 255]);
+                check_pixel(180, 120, [0, 0, 0, 255]);
+            }
+            let target = mac_background_event_target(root, (root.x + 180, root.y + 120));
+            assert_eq!(
+                target.target.window_id,
+                if dialog_visible { dialog_id } else { root_id }
+            );
+        };
+        assert_frame(true);
+
+        // Another process covers every target pixel. It must neither prevent
+        // capture nor appear in the captured application window group.
+        let occluder = MacInputTestHost::start_fixture(
+            "tests/fixtures/window_group_host.swift",
+            &[&companion_id.to_string()],
+        );
+        let occluder_state = wait_state(&occluder, "open");
+        let occluder_id = occluder_state["root_id"].as_u64().unwrap() as u32;
+        let windows = mac_all_window_info().unwrap();
+        let index = |id| {
+            windows
+                .iter()
+                .position(|w| w.target.window_id == id)
+                .unwrap()
+        };
+        assert!(index(occluder_id) < index(dialog_id));
+        assert_frame(true);
+        for (phase, visible) in [("closed", false), ("reopened", true), ("closed", false)] {
+            std::fs::write(host.state_path.with_extension("command"), phase).unwrap();
+            let state = wait_state(&host, phase);
+            assert_eq!(state["active"], false);
+            assert_frame(visible);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     #[ignore = "read-only live window-group capture; set CRABCODE_TEST_WINDOW_ID explicitly"]
     fn macos_background_window_group_capture_is_read_only() {
         let window_id = std::env::var("CRABCODE_TEST_WINDOW_ID")
@@ -3233,8 +3535,8 @@ mod tests {
             .collect::<Vec<_>>();
         eprintln!("process_windows={process_windows:?}");
         eprintln!(
-            "accessibility_window_ids={:?}",
-            mac_ax_application_window_ids(target.pid)
+            "interactive_window_ids={:?}",
+            mac_ax_application_interactive_window_ids(target.pid)
         );
         let capture = mac_capture_window_group(target).expect("window group capture failed");
         assert_eq!(capture.image.dimensions(), (target.width, target.height));
@@ -3318,6 +3620,121 @@ mod tests {
                 assert_eq!(foreground.get_integer_value_field(axis), delta);
             }
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires macOS Accessibility; launches isolated overlapping test windows"]
+    fn macos_background_raw_click_hits_off_center_button() {
+        mac_require_input_permission().unwrap();
+        let host = MacInputTestHost::start();
+        let initial = (0..100)
+            .find_map(|_| {
+                let state = host.state();
+                if state.is_none() {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                state
+            })
+            .expect("pointer fixture did not become ready");
+        let target = window_target(&initial["target_id"].to_string()).unwrap();
+        let point = (
+            initial["button_x"].as_i64().unwrap() as i32,
+            initial["button_y"].as_i64().unwrap() as i32,
+        );
+        mac_click(target, point.0, point.1, Some("left"), 1).unwrap();
+        thread::sleep(Duration::from_millis(500));
+        let after = host.state().unwrap();
+        eprintln!("target={target:?}, point={point:?}, state={after}");
+        assert_eq!(after["button_presses"], 1);
+        assert_eq!(after["decoy_button_presses"], 0);
+        assert_eq!(after["target_clicks"], 0);
+        assert_eq!(after["decoy_clicks"], 0);
+        for received in after["received_mouse_points"].as_array().unwrap() {
+            assert_eq!(received[0].as_f64().unwrap(), f64::from(target.window_id));
+            assert_eq!(received[3].as_f64().unwrap(), f64::from(point.0));
+            assert_eq!(received[4].as_f64().unwrap(), f64::from(point.1));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires macOS Accessibility and Screen Recording; activates isolated test windows"]
+    fn macos_background_mouse_fallback_activates_inactive_content() {
+        mac_require_input_permission().unwrap();
+        let host = MacInputTestHost::start_fixture(
+            "tests/fixtures/scroll_host.swift",
+            &["--require-active"],
+        );
+        let initial = (0..100)
+            .find_map(|_| {
+                let state = host.state();
+                if state.is_none() {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                state
+            })
+            .expect("pointer fixture did not become ready");
+        assert_eq!(initial["active"], false);
+        let target = window_target(&initial["decoy_id"].to_string()).unwrap();
+        let point = (
+            initial["x"].as_i64().unwrap() as i32,
+            initial["y"].as_i64().unwrap() as i32,
+        );
+        // Reproduce the failure: an ordinary PID-routed click is received by
+        // the selected process/window, but inactive content discards it.
+        mac_click(target, point.0, point.1, Some("left"), 1).unwrap();
+        thread::sleep(Duration::from_millis(150));
+        let dropped = host.state().unwrap();
+        assert_eq!(dropped["decoy_dropped_clicks"], 1);
+        assert_eq!(dropped["decoy_clicks"], 0);
+
+        let result = execute(serde_json::from_value(json!({
+            "mode": "background_app",
+            "action": {
+                "action": "click", "window_id": target.window_id.to_string(),
+                "x": point.0 - target.x, "y": point.1 - target.y,
+                "include_screenshot": false,
+            },
+        })).unwrap()).unwrap();
+        let after = host.state().unwrap();
+        assert_eq!(result["input_method"], "quartz_event", "{result}");
+        assert_eq!(result["dispatch_succeeded"], true, "{result}");
+        assert_eq!(result["dispatch_window_id"], target.window_id.to_string());
+        assert_eq!(after["decoy_clicks"], 1, "{after}");
+        assert_eq!(after["decoy_dropped_clicks"], 1, "{after}");
+        assert_eq!(after["target_clicks"], 0);
+        assert_eq!(after["modifiers"], json!([]));
+        // A moved observation or a vanished target must not pass preflight.
+        let stale = WindowTarget { x: target.x + 1, ..target };
+        assert!(mac_validate_mouse_layout(stale, target, point).is_err());
+        let missing = WindowTarget { window_id: u32::MAX, ..target };
+        assert!(mac_validate_mouse_layout(target, missing, point).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "sends one live click; explicitly set CRABCODE_TEST_WINDOW_ID, X, Y and CAPTURE_OUTPUT"]
+    fn macos_background_click_at_explicit_live_point() {
+        let window_id = std::env::var("CRABCODE_TEST_WINDOW_ID").unwrap();
+        let x = std::env::var("CRABCODE_TEST_X").unwrap().parse::<i32>().unwrap();
+        let y = std::env::var("CRABCODE_TEST_Y").unwrap().parse::<i32>().unwrap();
+        let output = std::env::var("CRABCODE_TEST_CAPTURE_OUTPUT").unwrap();
+        let result = execute(serde_json::from_value(json!({
+            "mode": "background_app",
+            "action": {
+                "action": "click", "window_id": window_id, "x": x, "y": y,
+            },
+        })).unwrap()).unwrap();
+        let mut receipt = result.clone();
+        receipt.as_object_mut().unwrap().remove("screenshot");
+        eprintln!("{receipt}");
+        if let Some(encoded) = result["screenshot"]["data"].as_str() {
+            std::fs::write(output, STANDARD.decode(encoded).unwrap()).unwrap();
+        }
+        assert_eq!(result["dispatch_succeeded"], true, "{receipt}");
+        // Delivery into the real app is judged from the saved screenshot,
+        // not inferred from the dispatch receipt or unrelated pixel changes.
     }
 
     #[cfg(target_os = "macos")]

@@ -3,6 +3,7 @@
 import AppKit
 
 let stateURL = URL(fileURLWithPath: CommandLine.arguments[1])
+let requiresActiveInput = CommandLine.arguments.contains("--require-active")
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 // The test launches this bundle with open -g, so finishing launch initializes
@@ -15,6 +16,14 @@ var receivedPoint = NSPoint.zero
 var activations = 0
 var everFrontmost = false
 var everRaised = false
+var receivedMousePoints: [[Double]] = []
+let mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { event in
+    let screenPoint = event.window?.convertPoint(toScreen: event.locationInWindow) ?? .zero
+    receivedMousePoints.append([Double(event.windowNumber), event.locationInWindow.x,
+                               event.locationInWindow.y, screenPoint.x,
+                               NSScreen.screens[0].frame.maxY - screenPoint.y])
+    return event
+}
 let activationObserver = NotificationCenter.default.addObserver(
     forName: NSApplication.didBecomeActiveNotification, object: app, queue: nil
 ) { _ in activations += 1 }
@@ -27,6 +36,7 @@ let monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event i
 
 final class Document: NSView {
     var clicks = 0
+    var droppedClicks = 0
     var clickCounts: [Int] = []
     var clickTimes: [Double] = []
     var modifiers: [UInt] = []
@@ -34,6 +44,12 @@ final class Document: NSView {
     var drags = 0
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) {
+        // Chromium-style input gating: receipt by the process is insufficient
+        // while the application's content is inactive.
+        if requiresActiveInput && !NSApplication.shared.isActive {
+            droppedClicks += 1
+            return
+        }
         clicks += 1
         clickCounts.append(event.clickCount)
         clickTimes.append(event.timestamp)
@@ -148,12 +164,15 @@ func recordState() {
         "received_events": receivedWheelEvents,
         "received_window": receivedWindow,
         "received_point": [receivedPoint.x, receivedPoint.y],
+        "received_mouse_points": receivedMousePoints,
         "active": app.isActive,
         "activations": activations,
         "target_clicks": (targetScroll.documentView as! Document).clicks,
+        "target_dropped_clicks": (targetScroll.documentView as! Document).droppedClicks,
         "target_other_clicks": (targetScroll.documentView as! Document).otherClicks,
         "target_drags": (targetScroll.documentView as! Document).drags,
         "decoy_clicks": (decoyScroll.documentView as! Document).clicks,
+        "decoy_dropped_clicks": (decoyScroll.documentView as! Document).droppedClicks,
         "decoy_other_clicks": (decoyScroll.documentView as! Document).otherClicks,
         "decoy_drags": (decoyScroll.documentView as! Document).drags,
         "click_counts": (targetScroll.documentView as! Document).clickCounts,
