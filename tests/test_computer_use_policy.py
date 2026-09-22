@@ -6,12 +6,124 @@ import pytest
 
 from crabcode_core.config.manager import _merge_settings
 from crabcode_core.events import CoreSession
+from crabcode_core.permissions.manager import PermissionManager, PermissionMode
 from crabcode_core.tools.computer_use import ComputerUseTool
-from crabcode_core.types.config import ComputerUseSettings
+from crabcode_core.types.config import ComputerUseSettings, CrabCodeSettings
 from crabcode_core.types.tool import ToolContext
 from crabcode_gateway.computer_use import ComputerUseBroker
 from crabcode_gateway.routes.session import _bind_computer_use
 from crabcode_gateway.schemas import NewSessionRequest, ResumeSessionRequest, SendMessageRequest
+
+
+@pytest.mark.parametrize("initialized", [False, True])
+@pytest.mark.parametrize("mode,expected", [
+    ("default", "strict_background"),
+    ("ask", "strict_background"),
+    ("ai_review", "strict_background"),
+    ("run_everything", "allow_foreground"),
+    ("bypassPermissions", "allow_foreground"),
+])
+def test_full_access_controls_effective_policy_without_rewriting_configuration(initialized, mode, expected):
+    session = CoreSession(settings=CrabCodeSettings(), tools=[])
+    if initialized:
+        session._permission_manager = PermissionManager(settings=session.settings.permissions)
+    before = session.settings.model_dump()
+    assert session.set_client_permission_mode(mode)
+    assert session.effective_computer_use_delivery_policy == expected
+    assert session.computer_use_delivery_policy == "strict_background"
+    assert session._computer_use_delivery_policy_override is None
+    assert session.computer_use_target_scope == "app_window"
+    assert session.computer_use_enabled is False
+    assert session.settings.model_dump() == before
+    assert session.set_client_permission_mode("ask")
+    assert session.effective_computer_use_delivery_policy == "strict_background"
+
+
+@pytest.mark.parametrize("permissions", [
+    {"run_everything": True},
+    {"default_mode": "run_everything"},
+    {"default_mode": "bypassPermissions"},
+])
+@pytest.mark.parametrize("initialized", [False, True])
+def test_full_access_from_loaded_settings_also_grants_foreground(permissions, initialized):
+    session = CoreSession(settings=CrabCodeSettings(permissions=permissions), tools=[])
+    if initialized:
+        session._permission_manager = PermissionManager(settings=session.settings.permissions)
+    assert session.effective_computer_use_delivery_policy == "allow_foreground"
+    session.set_client_permission_mode("ask")
+    assert session.effective_computer_use_delivery_policy == "strict_background"
+    session.set_client_permission_mode("default")
+    assert session.effective_computer_use_delivery_policy == "allow_foreground"
+
+
+def test_plan_and_other_auto_approval_modes_do_not_grant_foreground():
+    session = CoreSession(settings=CrabCodeSettings(), tools=[])
+    session.set_client_permission_mode("run_everything")
+    session.switch_mode("plan")
+    assert session.effective_computer_use_delivery_policy == "strict_background"
+    session._permission_manager = PermissionManager(settings=session.settings.permissions)
+    session.switch_mode("plan")
+    assert session.effective_computer_use_delivery_policy == "strict_background"
+    session.switch_mode("agent")
+    assert session.effective_computer_use_delivery_policy == "allow_foreground"
+    for mode in (PermissionMode.ACCEPT_EDITS, PermissionMode.DONT_ASK, PermissionMode.AI_REVIEW):
+        session._permission_manager.mode = mode
+        assert session.effective_computer_use_delivery_policy == "strict_background"
+
+
+def test_full_access_policy_reaches_host_and_updates_cached_schema_on_each_call():
+    async def scenario():
+        broker = ComputerUseBroker(timeout_seconds=1)
+        messages = []
+
+        class Socket:
+            async def send_json(self, payload):
+                messages.append(payload)
+                assert "delivery_policy" not in payload["action"]
+                allowed = payload["delivery_policy"] == "allow_foreground"
+                broker.resolve("h", payload["request_id"], {
+                    "ok": allowed, "action": "click", "action_dispatched": allowed,
+                })
+
+        broker.register("h", Socket(), enabled=True, gui_available=True, capabilities={
+            "supported_modes": ["background_app"], "delivery_policy_version": 1,
+        })
+        session = CoreSession(settings=CrabCodeSettings(), tools=[])
+        session._permission_manager = PermissionManager(settings=session.settings.permissions)
+        _bind_computer_use(session, SimpleNamespace(computer_use_broker=broker), "h", True)
+        tool = ComputerUseTool()
+        context = ToolContext(session=session, session_id="s")
+        await tool.setup(context)
+        await tool.resolve_prompt()
+        action = {"action": "click", "window_id": "42", "x": 1, "y": 2}
+        strict_key = tool.get_permission_key(action)
+        for mode, policy in [
+            ("run_everything", "allow_foreground"),
+            ("ask", "strict_background"),
+            ("bypassPermissions", "allow_foreground"),
+            ("default", "strict_background"),
+        ]:
+            session.set_client_permission_mode(mode)
+            assert f"delivery_policy={policy}" in tool.to_api_schema()["description"]
+            assert f"delivery_policy={policy}" in await tool.get_prompt()
+            assert (tool.get_permission_key(action) == strict_key) == (policy == "strict_background")
+            result = await tool.call(action, context)
+            assert result.is_error == (policy == "strict_background")
+            assert messages[-1]["delivery_policy"] == policy
+            assert messages[-1]["target_scope"] == "app_window"
+            assert broker.restorable_previews("h")[0]["delivery_policy"] == policy
+        assert len(messages) == 4
+        # Leaving Full Access restores an independently selected foreground policy too.
+        _bind_computer_use(session, None, None, delivery_policy="allow_foreground")
+        session.set_client_permission_mode("run_everything")
+        session.set_client_permission_mode("ask")
+        assert session.effective_computer_use_delivery_policy == "allow_foreground"
+        session.computer_use_enabled = False
+        result = await tool.call(action, context)
+        assert result.is_error
+        assert len(messages) == 4
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("mode,scope", [("background_app", "app_window"), ("foreground_desktop", "desktop")])

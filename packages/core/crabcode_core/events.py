@@ -4011,6 +4011,27 @@ class CoreSession:
         """Return the client permission override, or ``default``."""
         return self._client_permission_mode_override or "default"
 
+    @property
+    def effective_computer_use_delivery_policy(self) -> str:
+        """Full Access grants foreground delivery without changing the saved policy."""
+        from crabcode_core.permissions.manager import (
+            PermissionManager,
+            PermissionMode,
+            mode_from_default_mode,
+        )
+
+        if self._agent_mode != "plan":
+            if self._permission_manager is not None:
+                permission_mode = self._permission_manager.mode
+            elif self._client_permission_mode_override is not None:
+                # Client controls may be selected before lazy initialization.
+                permission_mode = mode_from_default_mode(self._client_permission_mode_override)
+            else:
+                permission_mode = PermissionManager(settings=self.settings.permissions).mode
+            if permission_mode == PermissionMode.BYPASS:
+                return "allow_foreground"
+        return self.computer_use_delivery_policy
+
     def switch_mode(self, mode: str) -> bool:
         """Switch between 'agent' and 'plan' mode.
 

@@ -74,15 +74,23 @@ settings layer.
 The Runtime & Tools settings section edits Computer Use's independent
 `target_scope` (`app_window` / `desktop`) and `delivery_policy`
 (`strict_background` / `allow_foreground`), file snapshots, and extra tools.
-Defaults are `app_window + strict_background`. Desktop scope requires explicit
+Defaults are `app_window + strict_background`. Desktop scope requires
 `allow_foreground`. These are user/session settings, not model action arguments.
+
+Full Access (`run_everything` / `bypassPermissions`) temporarily makes the
+session's effective delivery policy `allow_foreground`, even when its configured
+policy is `strict_background`. Leaving Full Access restores the configured
+policy; no settings are rewritten and the target scope is unchanged. Plan mode
+does not receive this automatic grant. The Computer Use toggle, host capability
+checks and macOS permissions still apply.
 
 Strict background currently supports window observation, listing and waiting.
 Input (including AX actions and app launch) returns
 `background_delivery_unsupported` before dispatch because a preventive focus
 provider has not yet been verified. To use the existing activation-assisted
-clicks, typing and dragging, explicitly select **允许前台操作**.
-This can interrupt the user's foreground app. There is no automatic escalation.
+clicks, typing and dragging, select **允许前台操作** or enable **完全访问** for
+the session. This can interrupt the user's foreground app. An unsupported action
+never changes the policy by itself.
 
 Legacy `computer_use.mode` values migrate only the target scope, never the
 foreground permission. Old Desktop hosts must be upgraded before input can be

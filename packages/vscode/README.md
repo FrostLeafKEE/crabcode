@@ -79,10 +79,17 @@ Explicit VS Code values override the Gateway's `computer_use.target_scope`
 and `computer_use.delivery_policy` when creating, resuming or sending to a
 session. Merely inheriting an extension default does not override Gateway settings.
 Targets are `app_window` and `desktop`; policies are `strict_background`
-and `allow_foreground`. Desktop scope requires explicit foreground permission.
+and `allow_foreground`. Desktop scope requires foreground permission.
+
+Full Access (`run_everything` / `bypassPermissions`) grants `allow_foreground`
+for the session while active, overriding even an explicitly configured
+`strict_background`. Leaving Full Access restores the configured delivery
+policy without rewriting settings or expanding the target scope. Plan mode
+does not receive this automatic grant; disabling Computer Use, unsupported
+hosts and missing macOS permissions still prevent input.
 
 Strict background currently allows observation but refuses input until the host
-has a verified focus-isolation provider. Select `allow_foreground` to use the
+has a verified focus-isolation provider. Select `allow_foreground` or Full Access to use the
 existing activation-assisted window input; it can interrupt your foreground app.
 The model cannot set this permission inside a ComputerUse action.
 Legacy `crabcode.computerUseMode` remains a target alias only and grants no

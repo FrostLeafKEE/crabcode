@@ -173,7 +173,7 @@
           "enum": ["strict_background", "allow_foreground"],
           "enumDescriptions": ["Reject input when foreground and typing focus isolation cannot be guaranteed.", "Allow activation and foreground interaction; may interrupt your work."],
           "default": "strict_background",
-          "description": "Computer Use foreground permission. The agent cannot override this in an action."
+          "description": "Computer Use foreground permission. Full Access temporarily grants allow_foreground; leaving it restores this setting. The agent cannot override this in an action."
         },
         "crabcode.computerUseMode": {
           "deprecationMessage": "Use computerUseTargetScope and computerUseDeliveryPolicy. This legacy setting never grants foreground permission.",
@@ -211,7 +211,7 @@
             "run_everything"
           ],
           "default": "default",
-          "description": "CrabCode 工具权限：default 使用当前工作区加载的权限规则；ask 在高风险操作前确认；ai_review 使用 AI 审查；run_everything 自动批准所有工具"
+          "description": "CrabCode 工具权限：default 使用当前工作区加载的权限规则；ask 在高风险操作前确认；ai_review 使用 AI 审查；run_everything 自动批准所有工具，并在该模式期间允许 Computer Use 切到前台"
         },
         "crabcode.pythonPath": {
           "type": "string",

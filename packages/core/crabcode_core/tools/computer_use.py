@@ -141,16 +141,31 @@ class ComputerUseTool(Tool):
         return bool(enabled and backend and host_id and backend.is_available(host_id, _mode))
 
     def _delivery_policy(self) -> str:
-        policy = getattr(self._session, "computer_use_delivery_policy", "strict_background")
+        policy = getattr(
+            self._session,
+            "effective_computer_use_delivery_policy",
+            getattr(self._session, "computer_use_delivery_policy", "strict_background"),
+        )
         return policy if policy in ("strict_background", "allow_foreground") else "strict_background"
 
     async def get_prompt(self, **kwargs: Any) -> str:
+        return self._current_prompt()
+
+    def to_api_schema(self) -> dict[str, Any]:
+        # Permission mode can change after setup/resolve_prompt(). The next
+        # model request must describe the same policy the host will receive.
+        schema = super().to_api_schema()
+        schema["description"] = self._current_prompt()
+        return schema
+
+    def _current_prompt(self) -> str:
         _backend, _host_id, _enabled, mode = self._binding()
         policy = self._delivery_policy()
         target = "app_window" if mode == "background_app" else "desktop"
         guidance = (
             f"ComputerUse target_scope={target}, delivery_policy={policy}. "
             "These are user/session settings; actions cannot override them. "
+            "Full Access permission mode grants allow_foreground while active; leaving it restores the configured policy. "
             "Never change configuration or use another tool to bypass a denied delivery policy. "
             "Prefer one deliberate action per call. action_dispatched reports submission, not UI success. "
             "effect_verified/visual_change_detected describe screenshot differences, not business success. "
