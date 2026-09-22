@@ -21,27 +21,30 @@ from crabcode_gateway.schemas import (
 
 
 @pytest.mark.parametrize("initialized", [False, True])
-@pytest.mark.parametrize("mode,expected", [
-    ("default", "allow_foreground"),
-    ("ask", "allow_foreground"),
-    ("ai_review", "allow_foreground"),
-    ("run_everything", "allow_foreground"),
-    ("bypassPermissions", "allow_foreground"),
+@pytest.mark.parametrize("mode", [
+    "default",
+    "ask",
+    "ai_review",
+    "run_everything",
+    "bypassPermissions",
 ])
-def test_full_access_controls_effective_policy_without_rewriting_configuration(initialized, mode, expected):
-    session = CoreSession(settings=CrabCodeSettings(), tools=[])
+def test_tool_approval_mode_never_changes_computer_use_policy(initialized, mode):
+    session = CoreSession(
+        settings=CrabCodeSettings(computer_use={"delivery_policy": "strict_background"}),
+        tools=[],
+    )
     if initialized:
         session._permission_manager = PermissionManager(settings=session.settings.permissions)
     before = session.settings.model_dump()
     assert session.set_client_permission_mode(mode)
-    assert session.effective_computer_use_delivery_policy == expected
-    assert session.computer_use_delivery_policy == "allow_foreground"
+    assert session.effective_computer_use_delivery_policy == "strict_background"
+    assert session.computer_use_delivery_policy == "strict_background"
     assert session._computer_use_delivery_policy_override is None
     assert session.computer_use_target_scope == "app_window"
     assert session.computer_use_enabled is False
     assert session.settings.model_dump() == before
     assert session.set_client_permission_mode("ask")
-    assert session.effective_computer_use_delivery_policy == "allow_foreground"
+    assert session.effective_computer_use_delivery_policy == "strict_background"
 
 
 @pytest.mark.parametrize("permissions", [
@@ -50,18 +53,21 @@ def test_full_access_controls_effective_policy_without_rewriting_configuration(i
     {"default_mode": "bypassPermissions"},
 ])
 @pytest.mark.parametrize("initialized", [False, True])
-def test_full_access_from_loaded_settings_also_grants_foreground(permissions, initialized):
-    session = CoreSession(settings=CrabCodeSettings(permissions=permissions), tools=[])
+def test_full_access_from_loaded_settings_does_not_grant_foreground(permissions, initialized):
+    session = CoreSession(settings=CrabCodeSettings(
+        permissions=permissions,
+        computer_use={"delivery_policy": "strict_background"},
+    ), tools=[])
     if initialized:
         session._permission_manager = PermissionManager(settings=session.settings.permissions)
-    assert session.effective_computer_use_delivery_policy == "allow_foreground"
+    assert session.effective_computer_use_delivery_policy == "strict_background"
     session.set_client_permission_mode("ask")
-    assert session.effective_computer_use_delivery_policy == "allow_foreground"
+    assert session.effective_computer_use_delivery_policy == "strict_background"
     session.set_client_permission_mode("default")
-    assert session.effective_computer_use_delivery_policy == "allow_foreground"
+    assert session.effective_computer_use_delivery_policy == "strict_background"
 
 
-def test_plan_and_other_auto_approval_modes_do_not_override_explicit_strict_background():
+def test_plan_and_every_permission_manager_mode_preserve_explicit_strict_background():
     session = CoreSession(
         settings=CrabCodeSettings(computer_use={"delivery_policy": "strict_background"}),
         tools=[],
@@ -73,13 +79,18 @@ def test_plan_and_other_auto_approval_modes_do_not_override_explicit_strict_back
     session.switch_mode("plan")
     assert session.effective_computer_use_delivery_policy == "strict_background"
     session.switch_mode("agent")
-    assert session.effective_computer_use_delivery_policy == "allow_foreground"
-    for mode in (PermissionMode.ACCEPT_EDITS, PermissionMode.DONT_ASK, PermissionMode.AI_REVIEW):
+    assert session.effective_computer_use_delivery_policy == "strict_background"
+    for mode in (
+        PermissionMode.ACCEPT_EDITS,
+        PermissionMode.DONT_ASK,
+        PermissionMode.AI_REVIEW,
+        PermissionMode.BYPASS,
+    ):
         session._permission_manager.mode = mode
         assert session.effective_computer_use_delivery_policy == "strict_background"
 
 
-def test_full_access_policy_reaches_host_and_updates_cached_schema_on_each_call():
+def test_configured_policy_reaches_host_regardless_of_permission_mode():
     async def scenario():
         broker = ComputerUseBroker(timeout_seconds=1)
         messages = []
@@ -88,9 +99,8 @@ def test_full_access_policy_reaches_host_and_updates_cached_schema_on_each_call(
             async def send_json(self, payload):
                 messages.append(payload)
                 assert "delivery_policy" not in payload["action"]
-                allowed = payload["delivery_policy"] == "allow_foreground"
                 broker.resolve("h", payload["request_id"], {
-                    "ok": allowed, "action": "click", "action_dispatched": allowed,
+                    "ok": True, "action": "click", "action_dispatched": True,
                 })
 
         broker.register("h", Socket(), enabled=True, gui_available=True, capabilities={
@@ -109,22 +119,22 @@ def test_full_access_policy_reaches_host_and_updates_cached_schema_on_each_call(
         action = {"action": "click", "window_id": "42", "x": 1, "y": 2}
         strict_key = tool.get_permission_key(action)
         for mode, policy in [
-            ("run_everything", "allow_foreground"),
+            ("run_everything", "strict_background"),
             ("ask", "strict_background"),
-            ("bypassPermissions", "allow_foreground"),
+            ("bypassPermissions", "strict_background"),
             ("default", "strict_background"),
         ]:
             session.set_client_permission_mode(mode)
             assert f"delivery_policy={policy}" in tool.to_api_schema()["description"]
             assert f"delivery_policy={policy}" in await tool.get_prompt()
-            assert (tool.get_permission_key(action) == strict_key) == (policy == "strict_background")
+            assert tool.get_permission_key(action) == strict_key
             result = await tool.call(action, context)
-            assert result.is_error == (policy == "strict_background")
+            assert not result.is_error
             assert messages[-1]["delivery_policy"] == policy
             assert messages[-1]["target_scope"] == "app_window"
             assert broker.restorable_previews("h")[0]["delivery_policy"] == policy
         assert len(messages) == 4
-        # Leaving Full Access restores an independently selected foreground policy too.
+        # An independently selected foreground policy also remains independent.
         _bind_computer_use(session, None, None, delivery_policy="allow_foreground")
         session.set_client_permission_mode("run_everything")
         session.set_client_permission_mode("ask")
@@ -187,7 +197,7 @@ def test_action_cannot_override_session_policy_and_permission_cache_is_scoped():
 
         async def execute(self, *_args, **kwargs):
             self.calls.append(kwargs)
-            return {"ok": False, "error_code": "background_delivery_unsupported", "action_dispatched": False, "retry_safe": True}
+            return {"ok": True, "action": "click", "action_dispatched": True, "retry_safe": False}
 
     async def scenario():
         backend = Backend()
@@ -206,16 +216,23 @@ def test_action_cannot_override_session_policy_and_permission_cache_is_scoped():
         assert "Use focus_window when" not in prompt
         assert "allowed to become foreground" not in prompt
         assert "delivery_policy" not in tool.input_schema["properties"]
+        assert "focus_window" not in tool.to_api_schema()["input_schema"]["properties"]["action"]["enum"]
+        assert "focus_window" not in prompt
+        focus_result = await tool.call({"action": "focus_window", "window_id": "1"}, context)
+        assert focus_result.is_error
+        assert backend.calls == []
         for key in ["delivery_policy", "target_scope", "mode"]:
             result = await tool.call({**action, key: "allow_foreground"}, context)
             assert result.is_error
         assert backend.calls == []
         strict_key = tool.get_permission_key(action)
         result = await tool.call(action, context)
-        assert result.data["action_dispatched"] is False
+        assert not result.is_error
+        assert result.data["action_dispatched"] is True
         assert backend.calls[-1]["delivery_policy"] == "strict_background"
         session.computer_use_delivery_policy = "allow_foreground"
         assert tool.get_permission_key(action) != strict_key
+        assert "focus_window" in tool.to_api_schema()["input_schema"]["properties"]["action"]["enum"]
         await tool.call(action, context)
         assert backend.calls[-1]["delivery_policy"] == "allow_foreground"
 

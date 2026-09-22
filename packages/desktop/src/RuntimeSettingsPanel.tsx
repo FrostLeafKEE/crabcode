@@ -278,7 +278,7 @@ export function RuntimeSettingsPanel({
             <div className="settings-row compact">
               <div className="settings-row-copy">
                 <strong>前台权限</strong>
-                <span>严格后台无法执行的动作会明确返回不支持；完全访问期间会临时允许前台操作，可能打断你正在进行的操作。</span>
+                <span>严格后台只向指定窗口投递操作；允许前台操作时，后台投递不适配目标控件会自动回退并激活窗口。</span>
               </div>
               <div className="settings-segmented" aria-label="Computer Use 前台权限">
                 {(["strict_background", "allow_foreground"] as const).map((policy) => (
@@ -299,7 +299,7 @@ export function RuntimeSettingsPanel({
               </div>
             </div>
             <div className="runtime-settings-note">
-              指定窗口目前仅支持 macOS。当前版本的严格后台仅支持查看窗口，点击、输入等动作尚未开放；可以选择允许前台操作，或在会话中开启完全访问。退出完全访问后恢复此处配置，不改写设置。使用整个桌面前仍需在此选择允许前台操作。
+              指定窗口目前仅支持 macOS。严格后台会优先使用进程定向的消息投递，不提供聚焦窗口操作；部分要求激活状态的应用可能忽略输入。是否允许回退到前台仅由此处设置决定，与会话的“完全访问”权限无关。使用整个桌面前仍需选择允许前台操作。
             </div>
           </section>
 

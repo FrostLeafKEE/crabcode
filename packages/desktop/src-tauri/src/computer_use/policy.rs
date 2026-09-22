@@ -40,11 +40,9 @@ pub(super) fn rejection(
     if action == "focus_window" {
         return Some("focus_window requires allow_foreground");
     }
-    // AXPress itself can activate an app; PID routing and a retrospective
-    // foreground poll do not prevent that. Until a preventive focus provider
-    // has passed input-isolation tests, refuse BEFORE even enabling AX or
-    // launching an app. Runtime symbol availability alone is insufficient.
-    Some("Strict background input is unavailable: no verified preventive focus provider. No action was dispatched.")
+    // App-window input has a PID/window-targeted delivery path. Strict mode
+    // skips every activation helper and never falls back to foreground input.
+    None
 }
 
 #[cfg(test)]
@@ -52,7 +50,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strict_policy_blocks_every_input_route_before_dispatch() {
+    fn strict_policy_allows_window_targeted_input_but_blocks_focus() {
         for action in [
             "move",
             "click",
@@ -61,7 +59,6 @@ mod tests {
             "scroll",
             "type",
             "keypress",
-            "focus_window",
             "open_app",
         ] {
             assert!(
@@ -70,7 +67,7 @@ mod tests {
                     DeliveryPolicy::StrictBackground,
                     action
                 )
-                .is_some(),
+                .is_none(),
                 "{action}"
             );
             assert!(
@@ -83,6 +80,12 @@ mod tests {
                 "{action}"
             );
         }
+        assert!(rejection(
+            TargetScope::AppWindow,
+            DeliveryPolicy::StrictBackground,
+            "focus_window"
+        )
+        .is_some());
         for action in ["observe", "list_windows", "wait"] {
             assert!(rejection(
                 TargetScope::AppWindow,

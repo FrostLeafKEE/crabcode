@@ -77,20 +77,13 @@ The Runtime & Tools settings section edits Computer Use's independent
 Defaults are `app_window + allow_foreground`. Desktop scope requires
 `allow_foreground`. These are user/session settings, not model action arguments.
 
-Full Access (`run_everything` / `bypassPermissions`) temporarily makes the
-session's effective delivery policy `allow_foreground`, even when its configured
-policy is `strict_background`. Leaving Full Access restores the configured
-policy; no settings are rewritten and the target scope is unchanged. Plan mode
-does not receive this automatic grant. The Computer Use toggle, host capability
-checks and macOS permissions still apply.
-
-Strict background currently supports window observation, listing and waiting.
-Input (including AX actions and app launch) returns
-`background_delivery_unsupported` before dispatch because a preventive focus
-provider has not yet been verified. To use the existing activation-assisted
-clicks, typing and dragging, select **允许前台操作** or enable **完全访问** for
-the session. This can interrupt the user's foreground app. An unsupported action
-never changes the policy by itself.
+The delivery policy is independent of tool approval modes, including Full
+Access (`run_everything` / `bypassPermissions`). Strict background permits
+window-targeted input but never exposes or dispatches `focus_window`. Clicks
+use PID/window-targeted Quartz event delivery first and do not run activation
+helpers. Some applications can ignore input while inactive; select
+**允许前台操作** in settings to permit activation-assisted fallback. An
+unsupported action never changes the policy by itself.
 
 Legacy `computer_use.mode` values migrate only the target scope, never the
 foreground permission. Old Desktop hosts must be upgraded before input can be

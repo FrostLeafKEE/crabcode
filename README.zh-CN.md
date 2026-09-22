@@ -962,17 +962,19 @@ CrabCode 集成了 **Language Server Protocol (LSP)** 服务器，为 AI agent �
 ```json
 {
   "computer_use": {
-    "mode": "background_app"
+    "target_scope": "app_window",
+    "delivery_policy": "allow_foreground"
   }
 }
 ```
 
-仅支持两个模式：
+操作目标和投递策略彼此独立：
 
-- `background_app`：macOS 上定向截图并操作指定应用窗口，不移动真实鼠标，也不会自动回退到前台桌面。必须先通过 `list_windows` 取得 `window_id`；完整桌面、显示器选择和系统级界面不可用。
-- `foreground_desktop`：截图并操作完整桌面，使用真实鼠标和键盘，会影响当前用户的前台工作。
+- `app_window`：macOS 上定向截图并操作指定应用窗口；必须先通过 `list_windows` 取得 `window_id`。`desktop` 则控制完整桌面和真实鼠标键盘。
+- `strict_background`：只做进程/窗口定向投递，不提供 `focus_window`；部分要求激活状态的应用可能忽略输入。
+- `allow_foreground`：后台投递不适配目标控件时允许激活目标窗口，可能打断当前用户。完整桌面需要此策略。
 
-可在 Crab Desktop 的“设置 → 运行与工具 → Computer Use”中写入用户、项目或项目本地配置。VS Code 可通过 `crabcode.computerUseMode` 为其创建或恢复的会话显式覆盖；没有显式设置时使用 Gateway 配置。后台模式在当前宿主或动作不受支持时会返回错误，不会自动切换到前台模式。
+可在 Crab Desktop 的“设置 → 运行与工具 → Computer Use”中写入用户、项目或项目本地配置。VS Code 可通过 `crabcode.computerUseTargetScope` 和 `crabcode.computerUseDeliveryPolicy` 显式覆盖。投递策略与“完全访问”等工具审批模式相互独立，Agent 也不能在单次动作中改写它。
 
 ### Diff 显示
 

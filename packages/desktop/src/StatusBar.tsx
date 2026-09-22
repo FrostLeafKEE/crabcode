@@ -236,7 +236,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
             <p className="computer-use-warning">{computerUse.capabilities.reason || "桌面输入权限不可用；Agent 仍可查看屏幕。"}</p>
           )}
           {computerUse.enabled && strictInputUnavailable && (
-            <p className="computer-use-warning">当前宿主尚不支持严格后台输入；可以查看窗口，点击、输入等动作会被拒绝。若需要现有输入功能，请选择允许前台操作，或在会话中开启完全访问。</p>
+            <p className="computer-use-warning">当前宿主尚不支持严格后台输入；可以查看窗口，但输入动作会被拒绝。若要操作，请在设置中选择允许前台操作。</p>
           )}
           <div className="computer-use-log" aria-label="Agent 操作记录">
             {computerUse.logs.length ? [...computerUse.logs].reverse().map((entry) => (

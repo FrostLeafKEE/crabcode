@@ -5042,7 +5042,7 @@ const PERMISSION_OPTIONS: Array<{
   {
     value: "run_everything",
     label: "完全访问",
-    description: "不再弹出权限确认，并允许 Computer Use 切到前台",
+    description: "不再弹出工具权限确认；Computer Use 前台策略仍以设置为准",
     icon: Zap,
     tone: "danger",
   },

@@ -540,7 +540,8 @@ describe("SettingsView", () => {
       .find((item) => item.textContent === label)!;
     act(() => render(data));
     expect(button("整个桌面").disabled).toBe(true);
-    expect(container.textContent).toContain("点击、输入等动作尚未开放");
+    expect(container.textContent).toContain("优先使用进程定向的消息投递");
+    expect(container.textContent).toContain("与会话的“完全访问”权限无关");
     await act(async () => button("允许前台操作").click());
     expect(onMutate).toHaveBeenLastCalledWith(expect.objectContaining({
       computer_use_delivery_policy: "allow_foreground",

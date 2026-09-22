@@ -986,17 +986,19 @@ After a Crab Desktop Computer Use host is connected, agents can inspect and oper
 ```json
 {
   "computer_use": {
-    "mode": "background_app"
+    "target_scope": "app_window",
+    "delivery_policy": "allow_foreground"
   }
 }
 ```
 
-Exactly two modes are supported:
+The target and delivery policy are independent:
 
-- `background_app`: on macOS, captures and sends input directly to a selected application window without moving the real pointer. Call `list_windows` first and pass `window_id`; full-desktop capture, display selection, and system UI are unavailable. It never falls back automatically.
-- `foreground_desktop`: captures and controls the complete desktop through the real pointer and keyboard, so it can interrupt the current user.
+- `app_window` captures and sends input to a selected macOS application window; call `list_windows` first and pass `window_id`. `desktop` controls the complete desktop and real pointer/keyboard.
+- `strict_background` uses process/window-targeted delivery and does not expose `focus_window`; applications that require activation may ignore input.
+- `allow_foreground` permits activating the target window when background delivery is insufficient and can interrupt the current user. Desktop scope requires this policy.
 
-Crab Desktop can write this setting from **Settings → Runtime & Tools → Computer Use** at the user, project, or project-local layer. VS Code can explicitly override it for sessions it creates or resumes with `crabcode.computerUseMode`; without an explicit VS Code value, the Gateway configuration applies. Unsupported background actions or hosts return an error instead of switching modes.
+Crab Desktop can write these settings from **Settings → Runtime & Tools → Computer Use** at the user, project, or project-local layer. VS Code can explicitly override them with `crabcode.computerUseTargetScope` and `crabcode.computerUseDeliveryPolicy`. Delivery policy is independent of tool approval modes such as Full Access, and the agent cannot override it inside an action.
 
 ### Diff Display
 

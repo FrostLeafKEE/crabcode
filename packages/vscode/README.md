@@ -81,17 +81,12 @@ session. Merely inheriting an extension default does not override Gateway settin
 Targets are `app_window` and `desktop`; policies are `strict_background`
 and `allow_foreground`. Desktop scope requires foreground permission.
 
-Full Access (`run_everything` / `bypassPermissions`) grants `allow_foreground`
-for the session while active, overriding even an explicitly configured
-`strict_background`. Leaving Full Access restores the configured delivery
-policy without rewriting settings or expanding the target scope. Plan mode
-does not receive this automatic grant; disabling Computer Use, unsupported
-hosts and missing macOS permissions still prevent input.
-
-Strict background currently allows observation but refuses input until the host
-has a verified focus-isolation provider. Select `allow_foreground` or Full Access to use the
-existing activation-assisted window input; it can interrupt your foreground app.
-The model cannot set this permission inside a ComputerUse action.
+The Computer Use delivery policy is independent of tool approval modes,
+including Full Access (`run_everything` / `bypassPermissions`). Strict
+background uses process/window-targeted input and never exposes `focus_window`.
+Some applications can ignore input while inactive; select `allow_foreground`
+in settings to permit activation-assisted fallback. The model cannot set this
+permission inside a ComputerUse action.
 Legacy `crabcode.computerUseMode` remains a target alias only and grants no
 foreground permission. The new target setting takes precedence over that alias.
 

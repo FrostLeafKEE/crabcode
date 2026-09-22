@@ -66,6 +66,18 @@ const SCROLL_SETTLE_MS: u64 = 180;
 #[cfg(target_os = "macos")]
 const CLICK_SETTLE_MS: u64 = 250;
 
+fn strict_background_input_available() -> bool {
+    cfg!(target_os = "macos")
+}
+
+fn strict_background_reason() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Window-targeted input is available; focus_window remains disabled"
+    } else {
+        "Strict background input requires macOS window targeting"
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DisplayInfo {
     id: String,
@@ -178,8 +190,8 @@ fn detect_capabilities() -> ComputerUseCapabilities {
                 displays: Vec::new(),
                 supported_modes: supported_modes(),
                 delivery_policy_version: 1,
-                strict_background_input_available: false,
-                strict_background_reason: "No verified preventive focus provider",
+                strict_background_input_available: strict_background_input_available(),
+                strict_background_reason: strict_background_reason(),
                 reason: Some("No graphical displays were detected".to_string()),
             }
         }
@@ -191,8 +203,8 @@ fn detect_capabilities() -> ComputerUseCapabilities {
                 displays: Vec::new(),
                 supported_modes: supported_modes(),
                 delivery_policy_version: 1,
-                strict_background_input_available: false,
-                strict_background_reason: "No verified preventive focus provider",
+                strict_background_input_available: strict_background_input_available(),
+                strict_background_reason: strict_background_reason(),
                 reason: Some(error),
             }
         }
@@ -223,8 +235,8 @@ fn detect_capabilities() -> ComputerUseCapabilities {
         displays,
         supported_modes: supported_modes(),
         delivery_policy_version: 1,
-        strict_background_input_available: false,
-        strict_background_reason: "No verified preventive focus provider",
+        strict_background_input_available: strict_background_input_available(),
+        strict_background_reason: strict_background_reason(),
         reason,
     }
 }
@@ -240,8 +252,8 @@ pub async fn computer_use_capabilities() -> ComputerUseCapabilities {
             displays: Vec::new(),
             supported_modes: supported_modes(),
             delivery_policy_version: 1,
-            strict_background_input_available: false,
-            strict_background_reason: "No verified preventive focus provider",
+            strict_background_input_available: strict_background_input_available(),
+            strict_background_reason: strict_background_reason(),
             reason: Some(format!("Computer Use capability detection failed: {error}")),
         })
 }
@@ -2626,7 +2638,10 @@ fn record_click_outcome(result: &mut Value, dispatched: bool, changed: bool) {
 }
 
 #[cfg(target_os = "macos")]
-fn execute_background_click(action: &ComputerAction) -> Result<Value, String> {
+fn execute_background_click(
+    action: &ComputerAction,
+    delivery_policy: DeliveryPolicy,
+) -> Result<Value, String> {
     let target = background_target(action)?;
     let point = background_local_point(action, target)?;
     let (x, y) = background_point(action, target)?;
@@ -2640,39 +2655,58 @@ fn execute_background_click(action: &ComputerAction) -> Result<Value, String> {
             .unwrap_or("left")
             .eq_ignore_ascii_case("left");
     if !event_window.on_screen {
+        let reason = if delivery_policy == DeliveryPolicy::StrictBackground {
+            "The target surface is off-screen; strict background delivery cannot activate it"
+                .to_string()
+        } else {
+            "The target surface is off-screen; focus it and observe again before clicking"
+                .to_string()
+        };
         return Ok(finish_background_click(
             action,
-            unsupported_background_click(action, target, event_target, point,
-                "The target surface is off-screen; use focus_window and observe again before clicking".to_string()),
+            unsupported_background_click(action, target, event_target, point, reason),
             Ok(before),
         ));
     }
     let foreground_monitor = MacForegroundMonitor::start(target.pid);
 
-    // Prefer a semantic action, but custom-drawn controls need mouse events.
-    // PID/window routing preserves the target; activation by the app is allowed.
-    // Never retry an acknowledged/uncertain action via another input path.
-    let dispatch = if is_single_left_click {
-        mac_ax_press(event_target, x, y)
+    // Strict mode goes directly through PID/window-targeted Quartz events and
+    // never runs AX activation helpers. Foreground-enabled mode keeps semantic
+    // AX actions first, then prepares the target before its mouse fallback.
+    // Never retry an acknowledged/uncertain action through another input path.
+    let semantic_dispatch = if delivery_policy == DeliveryPolicy::StrictBackground {
+        None
+    } else if is_single_left_click {
+        Some(mac_ax_press(event_target, x, y))
     } else {
-        MacAxPressOutcome::Unsupported {
+        Some(MacAxPressOutcome::Unsupported {
             reason: "The requested mouse gesture requires window-targeted mouse events".to_string(),
-        }
+        })
     };
-    let uses_mouse = matches!(dispatch, MacAxPressOutcome::Unsupported { .. });
+    let uses_mouse = semantic_dispatch.is_none()
+        || matches!(
+            &semantic_dispatch,
+            Some(MacAxPressOutcome::Unsupported { .. })
+        );
     if uses_mouse {
-        let preparation = mac_prepare_mouse_window(event_target).and_then(|_| {
-            // Activation alone can change title-bar pixels. Compare the click
-            // against the prepared window, so that is not counted as its effect.
-            let baseline = capture_screenshot(action)?;
+        let preparation = if delivery_policy == DeliveryPolicy::StrictBackground {
             mac_validate_mouse_layout(target, event_target, (x, y))?;
-            if mac_front_process_serial_number()? != mac_process_serial_number(target.pid)? {
-                return Err("The target lost activation before mouse input; no click was sent. Observe again before clicking".to_string());
-            }
-            Ok(baseline)
-        });
+            Ok(None)
+        } else {
+            mac_prepare_mouse_window(event_target).and_then(|_| {
+                // Activation alone can change title-bar pixels. Compare the click
+                // against the prepared window, so that is not counted as its effect.
+                let baseline = capture_screenshot(action)?;
+                mac_validate_mouse_layout(target, event_target, (x, y))?;
+                if mac_front_process_serial_number()? != mac_process_serial_number(target.pid)? {
+                    return Err("The target lost activation before mouse input; no click was sent. Observe again before clicking".to_string());
+                }
+                Ok(Some(baseline))
+            })
+        };
         match preparation {
-            Ok(baseline) => before = baseline,
+            Ok(Some(baseline)) => before = baseline,
+            Ok(None) => {}
             Err(reason) => {
                 let mut result =
                     unsupported_background_click(action, target, event_target, point, reason);
@@ -2724,23 +2758,36 @@ fn execute_background_click(action: &ComputerAction) -> Result<Value, String> {
         "dispatch_window_id": event_target.window_id.to_string(),
         "visual_changed_pixels": visual_change.map(|change| change.changed_pixels),
         "visual_sampled_pixels": visual_change.map(|change| change.sampled_pixels),
-        "input_method": if uses_mouse { "quartz_event" } else { "accessibility_action" },
+        "input_method": if delivery_policy == DeliveryPolicy::StrictBackground {
+            "quartz_pid_event"
+        } else if uses_mouse {
+            "quartz_event"
+        } else {
+            "accessibility_action"
+        },
         "verification_method": "screenshot_difference",
         "real_cursor_moved": false,
     });
     record_click_outcome(
         &mut result,
-        uses_mouse || matches!(dispatch, MacAxPressOutcome::Performed { .. }),
+        uses_mouse
+            || matches!(
+                &semantic_dispatch,
+                Some(MacAxPressOutcome::Performed { .. })
+            ),
         changed,
     );
-    match dispatch {
-        MacAxPressOutcome::Performed { action: ax_action } => {
+    match semantic_dispatch {
+        None => {
+            result["delivery_route"] = json!("pid_targeted_message");
+        }
+        Some(MacAxPressOutcome::Performed { action: ax_action }) => {
             result["accessibility_action"] = json!(ax_action);
         }
-        MacAxPressOutcome::Uncertain { reason } => {
+        Some(MacAxPressOutcome::Uncertain { reason }) => {
             result["dispatch_warning"] = json!(reason);
         }
-        MacAxPressOutcome::Unsupported { reason } => {
+        Some(MacAxPressOutcome::Unsupported { reason }) => {
             result["fallback_reason"] = json!(reason);
         }
     }
@@ -2754,6 +2801,7 @@ fn execute_background_click(action: &ComputerAction) -> Result<Value, String> {
 
 #[cfg(target_os = "macos")]
 fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
+    let delivery_policy = request.delivery_policy;
     let action = &request.action;
     if matches!(
         action.action.as_str(),
@@ -2796,7 +2844,7 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
             "Moved application pointer".to_string()
         }
         "click" | "double_click" => {
-            return execute_background_click(action);
+            return execute_background_click(action, delivery_policy);
         }
         "drag" => {
             let target = background_target(action)?;
@@ -2991,6 +3039,12 @@ fn execute(request: ExecuteRequest) -> Result<Value, String> {
     result["delivery_policy"] = json!(policy);
     result["focus_isolation"] = json!(if read_only {
         "preserved"
+    } else if policy == DeliveryPolicy::StrictBackground {
+        match result.get("foreground_activated").and_then(Value::as_bool) {
+            Some(false) => "preserved",
+            Some(true) => "violated",
+            None => "unavailable",
+        }
     } else {
         "unavailable"
     });
@@ -3026,7 +3080,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_requests_allow_foreground_and_explicit_strict_requests_stay_isolated() {
+    fn default_requests_allow_foreground_and_explicit_strict_requests_block_focus() {
         let default_request = serde_json::from_value::<ExecuteRequest>(json!({
             "action": {"action": "wait"}
         }))
@@ -3036,39 +3090,18 @@ mod tests {
             DeliveryPolicy::AllowForeground
         );
 
-        // Deliberately omit window IDs and coordinates. Rejection must occur
-        // before resolving a window, probing AX permission or emitting events.
-        for action in [
-            "click",
-            "double_click",
-            "move",
-            "drag",
-            "scroll",
-            "type",
-            "keypress",
-            "focus_window",
-            "open_app",
-        ] {
-            let result = execute(
-                serde_json::from_value(json!({
-                    "target_scope": "app_window", "delivery_policy": "strict_background",
-                    "action": {"action": action},
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                result["error_code"], "background_delivery_unsupported",
-                "{result}"
-            );
-            assert_eq!(
-                result["summary"],
-                "This action is not supported in strict background mode; no input was sent.",
-                "{result}"
-            );
-            assert_eq!(result["action_dispatched"], false);
-            assert_eq!(result["retry_safe"], true);
-        }
+        // Focus is rejected by policy before window resolution or native input.
+        let result = execute(
+            serde_json::from_value(json!({
+                "target_scope": "app_window", "delivery_policy": "strict_background",
+                "action": {"action": "focus_window"},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result["error_code"], "background_delivery_unsupported");
+        assert_eq!(result["action_dispatched"], false);
+        assert_eq!(result["retry_safe"], true);
         assert!(serde_json::from_value::<ExecuteRequest>(json!({
             "action": {"action": "click", "delivery_policy": "allow_foreground"}
         }))
@@ -4280,7 +4313,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(request.mode, None);
-        assert_eq!(request.delivery_policy, DeliveryPolicy::StrictBackground);
+        assert_eq!(request.delivery_policy, DeliveryPolicy::AllowForeground);
         assert!(serde_json::from_value::<ExecuteRequest>(json!({
             "mode": "automatic",
             "action": { "action": "list_windows" }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import json
 from typing import Any
 
@@ -152,10 +153,18 @@ class ComputerUseTool(Tool):
         return self._current_prompt()
 
     def to_api_schema(self) -> dict[str, Any]:
-        # Permission mode can change after setup/resolve_prompt(). The next
-        # model request must describe the same policy the host will receive.
-        schema = super().to_api_schema()
+        # Computer Use settings can change after setup/resolve_prompt(). The
+        # next model request must describe the same policy the host receives.
+        schema = copy.deepcopy(super().to_api_schema())
         schema["description"] = self._current_prompt()
+        if self._delivery_policy() == "strict_background":
+            actions = schema["input_schema"]["properties"]["action"]["enum"]
+            schema["input_schema"]["properties"]["action"]["enum"] = [
+                action for action in actions if action != "focus_window"
+            ]
+            schema["input_schema"]["properties"]["text"]["description"] = (
+                "Text to type, or an application/process name to open."
+            )
         return schema
 
     def _current_prompt(self) -> str:
@@ -165,7 +174,7 @@ class ComputerUseTool(Tool):
         guidance = (
             f"ComputerUse target_scope={target}, delivery_policy={policy}. "
             "These are user/session settings; actions cannot override them. "
-            "Full Access permission mode grants allow_foreground while active; leaving it restores the configured policy. "
+            "Tool approval modes, including Full Access, do not change the delivery policy. "
             "Never change configuration or use another tool to bypass a denied delivery policy. "
             "Prefer one deliberate action per call. action_dispatched reports submission, not UI success. "
             "effect_verified/visual_change_detected describe screenshot differences, not business success. "
@@ -176,10 +185,9 @@ class ComputerUseTool(Tool):
         )
         if policy == "strict_background":
             guidance += (
-                "Only delivery that can preserve the user's foreground and typing focus is permitted. "
-                "focus_window and desktop control are prohibited. The host may reject even AX actions when "
-                "focus suppression is unavailable. Do not activate the target or automatically switch policy. "
-                "Observation remains available for app windows when input is unsupported. "
+                "Use window-targeted background delivery only; do not activate or focus the target. "
+                "Clicks and other window input are sent directly to the target process and may be ignored by applications "
+                "that require activation. Never switch policy automatically. "
             )
         else:
             guidance += (
@@ -219,6 +227,8 @@ class ComputerUseTool(Tool):
         action = str(tool_input.get("action", "")).strip()
         if action not in _ACTIONS:
             return f"action must be one of: {', '.join(sorted(_ACTIONS))}"
+        if self._delivery_policy() == "strict_background" and action == "focus_window":
+            return "focus_window is unavailable in strict_background delivery policy"
         required: dict[str, tuple[str, ...]] = {
             "move": ("x", "y"),
             "click": ("x", "y"),
