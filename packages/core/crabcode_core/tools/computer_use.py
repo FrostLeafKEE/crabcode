@@ -144,9 +144,9 @@ class ComputerUseTool(Tool):
         policy = getattr(
             self._session,
             "effective_computer_use_delivery_policy",
-            getattr(self._session, "computer_use_delivery_policy", "strict_background"),
+            getattr(self._session, "computer_use_delivery_policy", "allow_foreground"),
         )
-        return policy if policy in ("strict_background", "allow_foreground") else "strict_background"
+        return policy if policy in ("strict_background", "allow_foreground") else "allow_foreground"
 
     async def get_prompt(self, **kwargs: Any) -> str:
         return self._current_prompt()

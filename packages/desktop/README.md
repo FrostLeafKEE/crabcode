@@ -74,7 +74,7 @@ settings layer.
 The Runtime & Tools settings section edits Computer Use's independent
 `target_scope` (`app_window` / `desktop`) and `delivery_policy`
 (`strict_background` / `allow_foreground`), file snapshots, and extra tools.
-Defaults are `app_window + strict_background`. Desktop scope requires
+Defaults are `app_window + allow_foreground`. Desktop scope requires
 `allow_foreground`. These are user/session settings, not model action arguments.
 
 Full Access (`run_everything` / `bypassPermissions`) temporarily makes the

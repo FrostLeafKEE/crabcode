@@ -1022,7 +1022,7 @@ class RuntimeSettingsResponse(BaseModel):
     snapshot_max_size_mb: int = 1024
     computer_use_mode: Literal["background_app", "foreground_desktop"] = "background_app"
     computer_use_target_scope: Literal["app_window", "desktop"] = "app_window"
-    computer_use_delivery_policy: Literal["strict_background", "allow_foreground"] = "strict_background"
+    computer_use_delivery_policy: Literal["strict_background", "allow_foreground"] = "allow_foreground"
     extra_tools: list[str] = Field(default_factory=list)
     extra_tools_by_source: dict[str, list[str]] = Field(default_factory=dict)
     sources: list[str] = Field(default_factory=list)

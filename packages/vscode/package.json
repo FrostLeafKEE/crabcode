@@ -172,11 +172,11 @@
           "type": "string",
           "enum": ["strict_background", "allow_foreground"],
           "enumDescriptions": ["Reject input when foreground and typing focus isolation cannot be guaranteed.", "Allow activation and foreground interaction; may interrupt your work."],
-          "default": "strict_background",
+          "default": "allow_foreground",
           "description": "Computer Use foreground permission. Full Access temporarily grants allow_foreground; leaving it restores this setting. The agent cannot override this in an action."
         },
         "crabcode.computerUseMode": {
-          "deprecationMessage": "Use computerUseTargetScope and computerUseDeliveryPolicy. This legacy setting never grants foreground permission.",
+          "deprecationMessage": "Use computerUseTargetScope and computerUseDeliveryPolicy. This legacy setting does not override foreground permission.",
           "type": "string",
           "enum": [
             "background_app",

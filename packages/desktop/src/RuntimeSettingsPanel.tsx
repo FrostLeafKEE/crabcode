@@ -62,7 +62,7 @@ export function RuntimeSettingsPanel({
   const canEdit = online && Boolean(onMutate) && writableSources.length > 0;
   const computerUseTarget = data?.computer_use_target_scope
     ?? (data?.computer_use_mode === "foreground_desktop" ? "desktop" : "app_window");
-  const computerUsePolicy = data?.computer_use_delivery_policy ?? "strict_background";
+  const computerUsePolicy = data?.computer_use_delivery_policy ?? "allow_foreground";
 
   useEffect(() => {
     setSnapshotSizeDraft(data ? String(data.snapshot_max_size_mb) : "");

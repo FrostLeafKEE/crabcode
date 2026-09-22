@@ -219,7 +219,7 @@ class ComputerUseSettings(BaseModel):
     """Controls how a connected Computer Use host operates the GUI."""
 
     target_scope: Literal["app_window", "desktop"] = "app_window"
-    delivery_policy: Literal["strict_background", "allow_foreground"] = "strict_background"
+    delivery_policy: Literal["strict_background", "allow_foreground"] = "allow_foreground"
 
     @model_validator(mode="before")
     @classmethod
@@ -234,7 +234,7 @@ class ComputerUseSettings(BaseModel):
 
     @property
     def mode(self) -> str:
-        """Legacy routing alias. It never grants foreground permission."""
+        """Legacy routing alias. It never overrides foreground permission."""
         return "foreground_desktop" if self.target_scope == "desktop" else "background_app"
 
 

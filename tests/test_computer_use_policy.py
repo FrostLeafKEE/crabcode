@@ -12,14 +12,19 @@ from crabcode_core.types.config import ComputerUseSettings, CrabCodeSettings
 from crabcode_core.types.tool import ToolContext
 from crabcode_gateway.computer_use import ComputerUseBroker
 from crabcode_gateway.routes.session import _bind_computer_use
-from crabcode_gateway.schemas import NewSessionRequest, ResumeSessionRequest, SendMessageRequest
+from crabcode_gateway.schemas import (
+    NewSessionRequest,
+    ResumeSessionRequest,
+    RuntimeSettingsResponse,
+    SendMessageRequest,
+)
 
 
 @pytest.mark.parametrize("initialized", [False, True])
 @pytest.mark.parametrize("mode,expected", [
-    ("default", "strict_background"),
-    ("ask", "strict_background"),
-    ("ai_review", "strict_background"),
+    ("default", "allow_foreground"),
+    ("ask", "allow_foreground"),
+    ("ai_review", "allow_foreground"),
     ("run_everything", "allow_foreground"),
     ("bypassPermissions", "allow_foreground"),
 ])
@@ -30,13 +35,13 @@ def test_full_access_controls_effective_policy_without_rewriting_configuration(i
     before = session.settings.model_dump()
     assert session.set_client_permission_mode(mode)
     assert session.effective_computer_use_delivery_policy == expected
-    assert session.computer_use_delivery_policy == "strict_background"
+    assert session.computer_use_delivery_policy == "allow_foreground"
     assert session._computer_use_delivery_policy_override is None
     assert session.computer_use_target_scope == "app_window"
     assert session.computer_use_enabled is False
     assert session.settings.model_dump() == before
     assert session.set_client_permission_mode("ask")
-    assert session.effective_computer_use_delivery_policy == "strict_background"
+    assert session.effective_computer_use_delivery_policy == "allow_foreground"
 
 
 @pytest.mark.parametrize("permissions", [
@@ -51,13 +56,16 @@ def test_full_access_from_loaded_settings_also_grants_foreground(permissions, in
         session._permission_manager = PermissionManager(settings=session.settings.permissions)
     assert session.effective_computer_use_delivery_policy == "allow_foreground"
     session.set_client_permission_mode("ask")
-    assert session.effective_computer_use_delivery_policy == "strict_background"
+    assert session.effective_computer_use_delivery_policy == "allow_foreground"
     session.set_client_permission_mode("default")
     assert session.effective_computer_use_delivery_policy == "allow_foreground"
 
 
-def test_plan_and_other_auto_approval_modes_do_not_grant_foreground():
-    session = CoreSession(settings=CrabCodeSettings(), tools=[])
+def test_plan_and_other_auto_approval_modes_do_not_override_explicit_strict_background():
+    session = CoreSession(
+        settings=CrabCodeSettings(computer_use={"delivery_policy": "strict_background"}),
+        tools=[],
+    )
     session.set_client_permission_mode("run_everything")
     session.switch_mode("plan")
     assert session.effective_computer_use_delivery_policy == "strict_background"
@@ -88,7 +96,10 @@ def test_full_access_policy_reaches_host_and_updates_cached_schema_on_each_call(
         broker.register("h", Socket(), enabled=True, gui_available=True, capabilities={
             "supported_modes": ["background_app"], "delivery_policy_version": 1,
         })
-        session = CoreSession(settings=CrabCodeSettings(), tools=[])
+        session = CoreSession(
+            settings=CrabCodeSettings(computer_use={"delivery_policy": "strict_background"}),
+            tools=[],
+        )
         session._permission_manager = PermissionManager(settings=session.settings.permissions)
         _bind_computer_use(session, SimpleNamespace(computer_use_broker=broker), "h", True)
         tool = ComputerUseTool()
@@ -130,7 +141,7 @@ def test_full_access_policy_reaches_host_and_updates_cached_schema_on_each_call(
 def test_legacy_target_never_grants_foreground_permission(mode, scope):
     settings = ComputerUseSettings(mode=mode)
     assert settings.target_scope == scope
-    assert settings.delivery_policy == "strict_background"
+    assert settings.delivery_policy == "allow_foreground"
     assert "mode" not in settings.model_dump()
     merged = _merge_settings(
         {"computer_use": {"target_scope": "app_window"}},
@@ -141,9 +152,9 @@ def test_legacy_target_never_grants_foreground_permission(mode, scope):
 
 def test_session_binding_preserves_permission_until_explicitly_changed():
     session = CoreSession(tools=[])
-    assert session.computer_use_delivery_policy == "strict_background"
+    assert session.computer_use_delivery_policy == "allow_foreground"
     _bind_computer_use(session, None, None, mode="foreground_desktop")
-    assert session.computer_use_delivery_policy == "strict_background"
+    assert session.computer_use_delivery_policy == "allow_foreground"
     _bind_computer_use(session, None, None, target_scope="app_window", delivery_policy="allow_foreground")
     assert session.computer_use_mode == "background_app"
     _bind_computer_use(session, None, None, enabled=True)
@@ -161,6 +172,12 @@ def test_all_session_transports_validate_policy(schema, kwargs):
     assert req.computer_use_delivery_policy == "strict_background"
 
 
+def test_computer_use_foreground_delivery_is_the_default() -> None:
+    assert ComputerUseSettings().delivery_policy == "allow_foreground"
+    assert CrabCodeSettings().computer_use.delivery_policy == "allow_foreground"
+    assert RuntimeSettingsResponse(cwd="/workspace").computer_use_delivery_policy == "allow_foreground"
+
+
 def test_action_cannot_override_session_policy_and_permission_cache_is_scoped():
     class Backend:
         calls = []
@@ -174,7 +191,12 @@ def test_action_cannot_override_session_policy_and_permission_cache_is_scoped():
 
     async def scenario():
         backend = Backend()
-        session = SimpleNamespace(computer_use_backend=backend, computer_use_host_id="h", computer_use_enabled=True)
+        session = SimpleNamespace(
+            computer_use_backend=backend,
+            computer_use_host_id="h",
+            computer_use_enabled=True,
+            computer_use_delivery_policy="strict_background",
+        )
         context = ToolContext(session=session, session_id="s")
         tool = ComputerUseTool()
         await tool.setup(context)
@@ -219,7 +241,8 @@ def test_broker_never_sends_input_to_old_hosts_and_preserves_policy_on_reconnect
             assert result["action_dispatched"] is False
             assert socket.messages == []
         result = await broker.execute("h", session_id="s", agent_id=None,
-                                      action={"action": "observe"}, mode="foreground_desktop")
+                                      action={"action": "observe"}, mode="foreground_desktop",
+                                      delivery_policy="strict_background")
         assert result["action_dispatched"] is False
         assert socket.messages == []
         caps["delivery_policy_version"] = 1
@@ -253,7 +276,13 @@ def test_runtime_settings_mutation_is_atomic_and_uses_the_effective_layers(tmp_p
     monkeypatch.setattr(config, "_resolve_model_settings_cwd", lambda *_args: str(tmp_path))
     monkeypatch.setattr(config, "_settings_mutation_path", lambda _cwd, source: Path(paths[source]))
     project = tmp_path / "projectSettings.json"
-    project.write_text(json.dumps({"computer_use": {"mode": "background_app"}, "unrelated": True}))
+    project.write_text(json.dumps({
+        "computer_use": {
+            "mode": "background_app",
+            "delivery_policy": "strict_background",
+        },
+        "unrelated": True,
+    }))
     initial = project.read_bytes()
 
     def mutate(**kwargs):

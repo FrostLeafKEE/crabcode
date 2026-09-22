@@ -71,7 +71,7 @@ Open **Settings** and search for `CrabCode`, or add settings such as:
   "crabcode.pythonPath": "",
   "crabcode.showDiffOnFileChange": false,
   "crabcode.computerUseTargetScope": "app_window",
-  "crabcode.computerUseDeliveryPolicy": "strict_background"
+  "crabcode.computerUseDeliveryPolicy": "allow_foreground"
 }
 ```
 

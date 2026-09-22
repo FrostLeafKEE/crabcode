@@ -18,7 +18,7 @@ function connection(preferences) {
   });
   const conn = new module.exports.CrabCodeConnection({
     get: (_key, fallback) => fallback,
-    inspect: key => preferences[key] ?? { defaultValue: 'strict_background' },
+    inspect: key => preferences[key] ?? { defaultValue: 'allow_foreground' },
   });
   const messages = [];
   conn.sendRaw = raw => messages.push(JSON.parse(raw));

@@ -3026,7 +3026,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_and_explicit_strict_requests_cannot_reach_native_input() {
+    fn default_requests_allow_foreground_and_explicit_strict_requests_stay_isolated() {
+        let default_request = serde_json::from_value::<ExecuteRequest>(json!({
+            "action": {"action": "wait"}
+        }))
+        .unwrap();
+        assert_eq!(
+            default_request.delivery_policy,
+            DeliveryPolicy::AllowForeground
+        );
+
         // Deliberately omit window IDs and coordinates. Rejection must occur
         // before resolving a window, probing AX permission or emitting events.
         for action in [
@@ -3040,29 +3049,21 @@ mod tests {
             "focus_window",
             "open_app",
         ] {
-            for options in [
-                json!({}),
-                json!({"target_scope": "app_window", "delivery_policy": "strict_background"}),
-            ] {
-                let mut payload = options;
-                payload["action"] = json!({"action": action});
-                let result = execute(serde_json::from_value(payload).unwrap()).unwrap();
-                assert_eq!(
-                    result["error_code"], "background_delivery_unsupported",
-                    "{result}"
-                );
-                assert_eq!(result["action_dispatched"], false);
-                assert_eq!(result["retry_safe"], true);
-            }
+            let result = execute(
+                serde_json::from_value(json!({
+                    "target_scope": "app_window", "delivery_policy": "strict_background",
+                    "action": {"action": action},
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                result["error_code"], "background_delivery_unsupported",
+                "{result}"
+            );
+            assert_eq!(result["action_dispatched"], false);
+            assert_eq!(result["retry_safe"], true);
         }
-        let result = execute(
-            serde_json::from_value(json!({
-                "mode": "foreground_desktop", "action": {"action": "click"}
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(result["action_dispatched"], false);
         assert!(serde_json::from_value::<ExecuteRequest>(json!({
             "action": {"action": "click", "delivery_policy": "allow_foreground"}
         }))

@@ -1656,6 +1656,12 @@ async def _handle_document_selection_translate(ws: WebSocket, msg: dict) -> None
 
 async def _handle_send_message(ws: WebSocket, msg: dict) -> None:
     """Start a query loop from a WebSocket message."""
+    # Keep this import local: ``routes.session`` also depends on event-route
+    # helpers during application setup.  New/resumed sessions already bind
+    # Computer Use there; a message sent to an existing session must do the
+    # same before its query task starts.
+    from crabcode_gateway.routes.session import _bind_computer_use
+
     event_bus: EventBus = ws.app.state.event_bus
     text = msg.get("text", "")
     max_turns = msg.get("max_turns", 0)

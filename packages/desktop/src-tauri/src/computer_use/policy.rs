@@ -11,8 +11,8 @@ pub(super) enum TargetScope {
 #[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum DeliveryPolicy {
-    #[default]
     StrictBackground,
+    #[default]
     AllowForeground,
 }
 

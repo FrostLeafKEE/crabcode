@@ -102,7 +102,7 @@ export function initialComputerUseState(hostId: string, enabled: boolean): Compu
     enabled,
     active: false,
     mode: "background_app",
-    deliveryPolicy: "strict_background",
+    deliveryPolicy: "allow_foreground",
     status: enabled ? "connecting" : "disabled",
     capabilities: null,
     previews: [],
@@ -435,8 +435,8 @@ export class ComputerUseChannel {
     const actionName = String(action.action || "unknown");
     const scope = message.target_scope ?? (message.mode === "foreground_desktop" ? "desktop" : "app_window");
     const mode = scope === "desktop" ? "foreground_desktop" : "background_app";
-    const policy = message.delivery_policy ?? "strict_background";
-    const deliveryPolicy = policy === "allow_foreground" ? "allow_foreground" : "strict_background";
+    const policy = message.delivery_policy ?? "allow_foreground";
+    const deliveryPolicy = policy === "strict_background" ? "strict_background" : "allow_foreground";
     const logId = requestId || randomUuid();
     const sessionId = typeof message.session_id === "string" ? message.session_id : undefined;
     const agentId = typeof message.agent_id === "string" ? message.agent_id : undefined;

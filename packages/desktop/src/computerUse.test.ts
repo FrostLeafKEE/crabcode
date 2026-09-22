@@ -144,7 +144,7 @@ describe("ComputerUseChannel", () => {
     });
 
     await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("computer_use_execute", {
-      request: { mode: "background_app", target_scope: "app_window", delivery_policy: "strict_background", action: { action: "list_windows" } },
+      request: { mode: "background_app", target_scope: "app_window", delivery_policy: "allow_foreground", action: { action: "list_windows" } },
     }));
     channel.dispose();
   });

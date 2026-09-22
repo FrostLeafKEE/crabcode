@@ -156,7 +156,7 @@ class ComputerUseBroker:
             "agent_id": pending.lease[2],
             "mode": previous.get("mode", "background_app"),
             "target_scope": previous.get("target_scope", "app_window"),
-            "delivery_policy": previous.get("delivery_policy", "strict_background"),
+            "delivery_policy": previous.get("delivery_policy", "allow_foreground"),
             "status": "error" if result.get("ok") is False else "ready",
             "action": str(result.get("action") or previous.get("action") or "unknown"),
             "summary": str(
@@ -235,7 +235,7 @@ class ComputerUseBroker:
         action: dict[str, Any],
         mode: str | None = None,
         target_scope: str | None = None,
-        delivery_policy: str = "strict_background",
+        delivery_policy: str = "allow_foreground",
     ) -> dict[str, Any]:
         host = self._hosts.get(host_id)
         if host is None or not host.enabled or not host.gui_available:
