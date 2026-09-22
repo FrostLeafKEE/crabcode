@@ -69,6 +69,32 @@ describe("Gateway event reducer", () => {
     current = applyGatewayEvent(current, { type: "stream_text", text: "recovered" });
     expect(current.items).toHaveLength(2);
     expect(current.items[1]).toMatchObject({ text: "recovered", status: "running" });
+    expect(current.currentStep?.label).toBe("生成回复");
+  });
+
+  it.each([
+    ["stream_text", "response", "生成回复"],
+    ["thinking", "thinking", "思考中"],
+  ] as const)("clears retry status when %s resumes", (type, kind, label) => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    let current = applyGatewayEvent(state(), { type: "stream_text", text: "partial" });
+    clock.mockReturnValue(2_000);
+    current = applyGatewayEvent(current, {
+      type: "stream_retry", message: "模型连接中断，正在重试 1/3",
+    });
+    expect(current.currentStep).toEqual({
+      kind: "retry", label: "模型连接中断，正在重试 1/3", startedAt: 2_000,
+    });
+
+    clock.mockReturnValue(3_000);
+    current = applyGatewayEvent(current, { type, text: "recovered" });
+    expect(current.currentStep).toEqual({ kind, label, startedAt: 3_000 });
+    expect(current.busy).toBe(true);
+    expect(current.runStartedAt).toBe(1_000);
+
+    clock.mockReturnValue(4_000);
+    current = applyGatewayEvent(current, { type, text: " more" });
+    expect(current.currentStep).toEqual({ kind, label, startedAt: 3_000 });
   });
 
   it("resolves tool and permission cards by tool id", () => {

@@ -675,7 +675,7 @@ export interface ChatItem {
 }
 
 export interface SessionCurrentStep {
-  kind: "response" | "thinking" | "tool" | "permission" | "choice" | "document";
+  kind: "response" | "retry" | "thinking" | "tool" | "permission" | "choice" | "document";
   label: string;
   startedAt: number;
 }

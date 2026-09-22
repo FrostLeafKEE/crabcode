@@ -378,7 +378,7 @@ export function applyGatewayEvent(
         busy: true,
         runStartedAt: state.runStartedAt ?? now,
         currentStep: {
-          kind: "response",
+          kind: "retry",
           label: event.message ?? "Reconnecting...",
           startedAt: now,
         },
