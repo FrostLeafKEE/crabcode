@@ -140,7 +140,8 @@ class AnthropicAdapter(APIAdapter):
         if config.http_headers:
             kwargs["default_headers"] = config.http_headers
 
-        self.client = anthropic.AsyncAnthropic(**kwargs)
+        from crabcode_core.api.network import sdk_options
+        self.client = anthropic.AsyncAnthropic(**kwargs, **sdk_options(config))
         self._api_key = api_key
 
     def _messages_url(self) -> str | None:
@@ -183,11 +184,12 @@ class AnthropicAdapter(APIAdapter):
 
         timeout = httpx.Timeout(
             float(self.config.timeout),
-            connect=min(float(self.config.timeout), 30.0),
+            connect=min(float(self.config.timeout), 10.0),
             read=float(self.config.timeout),
             write=float(self.config.timeout),
         )
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        from crabcode_core.api.network import http_options
+        async with httpx.AsyncClient(timeout=timeout, **http_options(self.config)) as client:
             async with client.stream(
                 "POST",
                 url,
@@ -614,15 +616,18 @@ class BedrockAdapter(AnthropicAdapter):
 
     def __init__(self, config: ApiConfig):
         self.config = config
-        self.client = anthropic.AsyncAnthropicBedrock()
+        from crabcode_core.api.network import sdk_options
+        self.client = anthropic.AsyncAnthropicBedrock(**sdk_options(config))
 
 
 class VertexAdapter(AnthropicAdapter):
     """Adapter for Anthropic via Google Vertex AI."""
 
     def __init__(self, config: ApiConfig):
+        from crabcode_core.api.network import sdk_options
         self.config = config
         self.client = anthropic.AsyncAnthropicVertex(
             region=os.environ.get("CLOUD_ML_REGION", "us-east5"),
             project_id=os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID"),
+            **sdk_options(config),
         )

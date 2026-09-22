@@ -4338,13 +4338,13 @@ mod tests {
     }
 
     #[test]
-    fn computer_use_mode_defaults_to_background_and_rejects_unknown_values() {
+    fn computer_use_mode_uses_foreground_default_and_rejects_unknown_values() {
         let request: ExecuteRequest = serde_json::from_value(json!({
             "action": { "action": "list_windows" }
         }))
         .unwrap();
         assert_eq!(request.mode, None);
-        assert_eq!(request.delivery_policy, DeliveryPolicy::StrictBackground);
+        assert_eq!(request.delivery_policy, DeliveryPolicy::AllowForeground);
         assert!(serde_json::from_value::<ExecuteRequest>(json!({
             "mode": "automatic",
             "action": { "action": "list_windows" }

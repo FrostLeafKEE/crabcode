@@ -189,7 +189,8 @@ class OpenAIAdapter(APIAdapter):
         if config.http_headers:
             kwargs["default_headers"] = config.http_headers
 
-        return openai.AsyncOpenAI(**kwargs)
+        from crabcode_core.api.network import sdk_options
+        return openai.AsyncOpenAI(**kwargs, **sdk_options(config))
 
     def _resolve_model(self, config: ModelConfig) -> str:
         """Resolve the model name for the API call.  Override in subclasses."""

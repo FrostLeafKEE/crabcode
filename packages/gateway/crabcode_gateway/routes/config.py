@@ -8,12 +8,15 @@ import json
 import os
 import stat
 import tempfile
+import inspect
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from crabcode_core.config.manager import ConfigManager
 from crabcode_core.filesystem import replace_with_retry
@@ -45,6 +48,95 @@ from crabcode_gateway.schemas import (
 from crabcode_gateway.task_registry import SessionOperationRejected, run_session_operation
 
 router = APIRouter(tags=["config"])
+
+
+class ModelTestRequest(BaseModel):
+    name: str
+    cwd: str | None = None
+
+
+def _model_test_error(exc: Exception) -> str:
+    # Do not return raw provider messages: they may contain keys, headers or URLs.
+    from crabcode_core.api.network import certificate_failure
+    if certificate_failure(exc):
+        return "证书校验失败，请检查证书或网络拦截；未自动重试"
+    status = getattr(exc, "status_code", None)
+    if status:
+        reason = {
+            400: "请求参数或 API 格式不兼容",
+            401: "认证失败，请检查 API Key",
+            403: "没有访问权限，请检查密钥权限或服务区域限制",
+            404: "模型或 API 地址不存在，请检查模型 ID 和 Base URL",
+            429: "请求限流或额度不足，请检查服务商额度",
+        }.get(status, "模型服务返回错误，请检查服务商状态与配置")
+        return f"HTTP {status}：{reason}"
+    name = type(exc).__name__
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)) or "Timeout" in name:
+        return "测试超时（最多 30 秒），请检查网络、代理和模型服务状态"
+    if "Connection" in name or isinstance(exc, OSError):
+        return "连接失败，请检查 Base URL、网络、代理和 TLS 证书"
+    if "credential" in str(exc).lower() or "api_key" in str(exc).lower():
+        return "缺少认证信息，请检查 API Key 环境变量是否已配置，并重启 Gateway"
+    if str(exc) == "Empty model response":
+        return "连接已建立，但模型没有返回文本，请检查模型能力和 API 格式"
+    return f"模型初始化或响应失败（{name}），请检查 Provider、API 格式和模型配置"
+
+
+async def _probe_model(config: Any) -> None:
+    from crabcode_core.api import ModelConfig, create_adapter
+    from crabcode_core.types.message import create_user_message
+
+    adapter = None
+    stream = None
+    try:
+        config.request_max_retries = 0
+        config.max_retries = 0
+        config.unbounded_connection_retries = False
+        config.timeout = 30
+        adapter = create_adapter(config)
+        client = getattr(adapter, "client", None)
+        if callable(getattr(client, "with_options", None)):
+            adapter.client = client.with_options(max_retries=0, timeout=30)
+        stream = adapter.stream_message(
+            messages=[create_user_message("Reply with OK.")],
+            system=[], tools=[],
+            config=ModelConfig(model=config.model, max_tokens=256,
+                               thinking_enabled=False, thinking_budget=0, timeout=30),
+        )
+        async for chunk in stream:
+            if chunk.type == "error":
+                raise RuntimeError(chunk.error or "Model stream error")
+            if chunk.type == "text" and chunk.text.strip():
+                return
+        raise RuntimeError("Empty model response")
+    finally:
+        for resource in (stream, getattr(adapter, "client", None)):
+            close = getattr(resource, "aclose", None) or getattr(resource, "close", None)
+            if callable(close):
+                try:
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await asyncio.wait_for(result, timeout=2)
+                except Exception:
+                    pass
+
+
+@router.post("/config/test-model")
+async def test_model(req: ModelTestRequest, request: Request) -> dict[str, Any]:
+    cwd = _resolve_model_settings_cwd(request, req.cwd)
+    settings = ConfigManager(cwd=cwd).load()
+    if req.name not in settings.models:
+        raise HTTPException(status_code=404, detail="模型配置不存在，请刷新模型目录")
+    config = settings.get_api_config(req.name).model_copy(deep=True)
+    if not config.model:
+        return {"ok": False, "message": "未配置模型 ID"}
+    started = time.monotonic()
+    try:
+        await asyncio.wait_for(_probe_model(config), timeout=30)
+    except Exception as exc:
+        return {"ok": False, "message": _model_test_error(exc)}
+    return {"ok": True, "message": "连接成功，已收到模型回复",
+            "elapsed_ms": round((time.monotonic() - started) * 1000)}
 
 
 async def _switch_model(session: Any, name: str) -> bool:
@@ -120,9 +212,9 @@ def _get_session(request: Request, session_id: str | None = None):
     return sessions[sid]
 
 
-def _list_models_from_settings() -> list[ModelInfo]:
+def _list_models_from_settings(cwd: str = ".") -> list[ModelInfo]:
     """Read model list directly from settings (works without a session)."""
-    settings = ConfigManager().get()
+    settings = ConfigManager(cwd=cwd).load()
     result: list[ModelInfo] = []
     for name in settings.models:
         cfg = settings.get_api_config(name)
@@ -672,12 +764,17 @@ def _mutate_runtime_settings(
 async def list_models(
     request: Request,
     session_id: str | None = None,
+    cwd: str | None = None,
 ) -> list[ModelInfo]:
     """List available named models.
 
-    Tries the active session first; falls back to reading settings
-    directly so the endpoint works even before a session is created.
+    An explicit cwd reads that project's catalog independently of sessions.
+    Legacy callers try the active session first, then process-cwd settings.
     """
+    if cwd is not None:
+        if session_id is not None:
+            raise HTTPException(status_code=400, detail="Specify cwd or session_id, not both")
+        return _list_models_from_settings(_resolve_model_settings_cwd(request, cwd))
     async with get_session_lock(request.app.state):
         session = _get_session(request, session_id)
         if session_id is not None and session is None:

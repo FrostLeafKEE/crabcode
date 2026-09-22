@@ -15,7 +15,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type {
   ConnectionPreset,
   GatewayViewState,
@@ -35,6 +35,7 @@ interface ModelSettingsPanelProps {
   error: string | null;
   onRefresh: () => void;
   onMutate?: (mutation: ModelSettingsMutation) => Promise<void>;
+  onTest?: (name: string) => Promise<{ ok: boolean; message: string; elapsed_ms?: number }>;
 }
 
 interface ModelGroupView {
@@ -55,6 +56,8 @@ const DETAIL_FIELDS: Array<{ key: string; label: string }> = [
   { key: "provider", label: "Provider" },
   { key: "model", label: "模型 ID" },
   { key: "base_url", label: "Base URL" },
+  { key: "network_mode", label: "网络策略" },
+  { key: "proxy_url", label: "代理地址" },
   { key: "format", label: "API 格式" },
   { key: "api_key_env", label: "API Key 环境变量" },
   { key: "codex_auth_path", label: "Codex 认证文件" },
@@ -79,6 +82,12 @@ const EDIT_FIELDS: Array<{
   { key: "model", label: "模型 ID" },
   { key: "base_url", label: "Base URL" },
   { key: "format", label: "API 格式", type: "select", options: FORMAT_OPTIONS },
+  { key: "network_mode", label: "网络策略（保存后重新选择模型生效）", type: "select", options: [
+    { value: "inherit", label: "继承进程环境（环境变量修改需重启 Gateway）" },
+    { value: "direct", label: "直连（不使用应用层代理）" },
+    { value: "proxy", label: "指定 HTTP(S) 代理" },
+  ] },
+  { key: "proxy_url", label: "代理地址（HTTP(S)，不含账号密码）" },
   { key: "api_key_env", label: "API Key 环境变量" },
   { key: "codex_auth_path", label: "Codex 认证文件" },
   { key: "reasoning_effort", label: "推理强度", type: "select", options: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] },
@@ -415,6 +424,7 @@ export function ModelSettingsPanel({
   error,
   onRefresh,
   onMutate,
+  onTest,
 }: ModelSettingsPanelProps) {
   const [query, setQuery] = useState("");
   const [selectedName, setSelectedName] = useState<string | null>(null);
@@ -425,6 +435,33 @@ export function ModelSettingsPanel({
   );
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [mutationBusy, setMutationBusy] = useState(false);
+  const [testBusy, setTestBusy] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const testGeneration = useRef(0);
+  useEffect(() => {
+    testGeneration.current += 1;
+    setTestBusy(false);
+    setTestResult(null);
+    return () => { testGeneration.current += 1; };
+  }, [selectedName, activeConnection?.id, activeProject?.path, data]);
+
+  const testModel = async () => {
+    if (!onTest || !selectedName || testBusy) return;
+    const generation = ++testGeneration.current;
+    setTestBusy(true);
+    setTestResult(null);
+    try {
+      const result = await onTest(selectedName);
+      if (generation === testGeneration.current) setTestResult({
+        ok: result.ok,
+        message: result.message + (result.ok && result.elapsed_ms !== undefined ? `（${(result.elapsed_ms / 1000).toFixed(1)} 秒）` : ""),
+      });
+    } catch (reason) {
+      if (generation === testGeneration.current) setTestResult({ ok: false, message: reason instanceof Error ? reason.message : String(reason) });
+    } finally {
+      if (generation === testGeneration.current) setTestBusy(false);
+    }
+  };
   const grouped = useMemo(() => data ? groupModelSettings(data, query) : [], [data, query]);
   const visibleModels = grouped.flatMap((group) => group.models);
   const sourceOptions = editableSources(data);
@@ -671,10 +708,16 @@ export function ModelSettingsPanel({
                     </span>}
                   </header>
 
-                  {canEdit && <div className="model-detail-commands">
-                    {selected.is_default
+                  <div className="model-detail-commands">
+                    <button className="settings-command" type="button" disabled={!online || !onTest || testBusy || mutationBusy || loading} onClick={() => void testModel()} title="使用已保存配置发送简短请求，可能产生少量模型费用">
+                      {testBusy ? <LoaderCircle className="spin" /> : <Bot />}<span>{testBusy ? "测试中…" : "测试模型"}</span>
+                    </button>
+                    {canEdit && (selected.is_default
                       ? <button className="settings-command" type="button" disabled={mutationBusy} onClick={() => void setDefaultModel(null)}><X /><span>取消默认模型</span></button>
-                      : <button className="settings-command" type="button" disabled={mutationBusy} onClick={() => void setDefaultModel(selected.name)}><Check /><span>设为默认模型</span></button>}
+                      : <button className="settings-command" type="button" disabled={mutationBusy} onClick={() => void setDefaultModel(selected.name)}><Check /><span>设为默认模型</span></button>)}
+                  </div>
+                  {testResult && <div role="status" className={`settings-inline-note ${testResult.ok ? "model-test-success" : "model-settings-error"}`}>
+                    {testResult.ok ? <Check /> : <AlertTriangle />}{testResult.message}
                   </div>}
 
                   <div className="model-detail-meta">

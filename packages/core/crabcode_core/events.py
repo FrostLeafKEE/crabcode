@@ -3847,22 +3847,26 @@ class CoreSession:
         Returns True on success, False if the name is not found.
         Must be called after initialize().
         """
-        if name not in self.settings.models:
-            return False
-
         from crabcode_core.api import create_adapter
+        from crabcode_core.config.manager import ConfigManager
 
-        api_config = self.settings.get_api_config(name)
-        if self._reasoning_effort_override is not None:
-            api_config.reasoning_effort = self._reasoning_effort_override
         # Build the replacement before mutating session state.  A malformed
         # provider configuration should leave the currently usable model in
         # place instead of advertising a switch that cannot make API calls.
         try:
+            catalog = self._merge_project_settings(ConfigManager(cwd=self.cwd).load())
+            if name not in catalog.models:
+                return False
+            api_config = catalog.get_api_config(name)
+            if self._reasoning_effort_override is not None:
+                api_config.reasoning_effort = self._reasoning_effort_override
             adapter = create_adapter(api_config)
         except Exception:
             logger.warning("Failed to create adapter for model profile %s", name, exc_info=True)
             return False
+        self.settings.models = catalog.models
+        self.settings.groups = catalog.groups
+        self.settings.default_model = catalog.default_model
         self._api_adapter = adapter
         self._current_model_name = name
         self._context_token_tracker.reset()

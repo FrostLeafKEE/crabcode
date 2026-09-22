@@ -334,14 +334,25 @@ export class GatewayApi {
     return this.request("/session/stats");
   }
 
-  models(sessionId?: string): Promise<GatewayModel[]> {
-    const query = sessionId ? `?${new URLSearchParams({ session_id: sessionId })}` : "";
+  models(sessionId?: string, cwd?: string): Promise<GatewayModel[]> {
+    const params = new URLSearchParams();
+    if (sessionId) params.set("session_id", sessionId);
+    if (cwd) params.set("cwd", cwd);
+    const query = params.size ? `?${params}` : "";
     return this.request(`/config/models${query}`);
   }
 
   modelSettings(cwd?: string): Promise<ModelSettingsResponse> {
     const query = cwd ? `?${new URLSearchParams({ cwd })}` : "";
     return this.request(`/config/model-settings${query}`);
+  }
+
+  testModel(name: string, cwd?: string): Promise<{ ok: boolean; message: string; elapsed_ms?: number }> {
+    return this.request("/config/test-model", {
+      method: "POST",
+      body: JSON.stringify({ name, cwd }),
+      signal: AbortSignal.timeout(40_000),
+    });
   }
 
   mutateModelSettings(mutation: ModelSettingsMutation): Promise<ModelSettingsResponse> {
@@ -586,7 +597,7 @@ export class SessionChannel {
         if (this.disposed) return;
         this.options.onState(
           false,
-          event.code === 1008 ? "Gateway 认证已失效，正在重新认证" : undefined,
+          event.code === 1008 ? "Gateway 认证已失效，正在重新认证" : "Gateway 连接中断，正在重连（不是模型连接错误）",
         );
         if (event.code === 1008) {
           void this.api.refreshAuthentication()

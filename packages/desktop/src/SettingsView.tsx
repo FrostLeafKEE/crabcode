@@ -279,6 +279,7 @@ interface SettingsViewProps {
   modelSettingsError?: string | null;
   onRefreshModelSettings?: () => void;
   onMutateModelSettings?: (mutation: ModelSettingsMutation) => Promise<void>;
+  onTestModel?: (name: string) => Promise<{ ok: boolean; message: string; elapsed_ms?: number }>;
   runtimeSettings?: RuntimeSettingsResponse | null;
   runtimeSettingsLoading?: boolean;
   runtimeSettingsError?: string | null;
@@ -553,6 +554,7 @@ export function SettingsView({
   modelSettingsError = null,
   onRefreshModelSettings = () => {},
   onMutateModelSettings,
+  onTestModel,
   runtimeSettings = null,
   runtimeSettingsLoading = false,
   runtimeSettingsError = null,
@@ -1649,6 +1651,7 @@ export function SettingsView({
                 error={modelSettingsError}
                 onRefresh={onRefreshModelSettings}
                 onMutate={onMutateModelSettings}
+                onTest={onTestModel}
               />
             )}
 
