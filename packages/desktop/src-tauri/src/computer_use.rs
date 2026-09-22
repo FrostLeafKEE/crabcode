@@ -1868,6 +1868,91 @@ fn add_scroll_receipt(result: &mut Value, action: &ComputerAction) {
 }
 
 #[cfg(target_os = "macos")]
+fn mac_keyboard_focus_matches(application: &CFType, target: WindowTarget) -> bool {
+    // Follow AX ownership, not overlapping rectangles: another document from
+    // the same process is not an acceptable keyboard destination. Starting at
+    // the responder also preserves a sheet/popover's field editor.
+    for attribute in ["AXFocusedUIElement", "AXFocusedWindow"] {
+        let Ok(mut element) = mac_ax_copy_attribute(application, attribute) else {
+            continue;
+        };
+        for _ in 0..32 {
+            if mac_ax_window_id(&element) == Ok(target.window_id) {
+                return true;
+            }
+            let Ok(parent) = mac_ax_copy_attribute(&element, "AXParent") else {
+                break;
+            };
+            element = parent;
+        }
+        // If a focused responder exists but belongs elsewhere, do not accept
+        // the document merely because AXFocusedWindow still names its parent.
+        if attribute == "AXFocusedUIElement" {
+            return false;
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn mac_verify_keyboard_focus(target: WindowTarget, require_foreground: bool) -> Result<(), String> {
+    let application_ref = unsafe { AXUIElementCreateApplication(target.pid) };
+    if application_ref.is_null() {
+        return Err("Unable to inspect keyboard focus".to_string());
+    }
+    let application = unsafe { CFType::wrap_under_create_rule(application_ref) };
+    if !mac_keyboard_focus_matches(&application, target) {
+        return Err("Keyboard target is not the focused window/responder; observe and focus the intended window before retrying".to_string());
+    }
+    if require_foreground
+        && mac_front_process_serial_number()? != mac_process_serial_number(target.pid)?
+    {
+        return Err("Keyboard target is no longer the foreground application".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_prepare_keyboard(target: WindowTarget, policy: DeliveryPolicy) -> Result<(), String> {
+    if policy == DeliveryPolicy::StrictBackground {
+        // PID delivery cannot select a window. Refuse rather than typing into
+        // an unrelated document or activating the application in strict mode.
+        return mac_verify_keyboard_focus(target, false);
+    }
+    if mac_verify_keyboard_focus(target, true).is_ok() {
+        return Ok(());
+    }
+    if mac_verify_keyboard_focus(target, false).is_ok() {
+        // Activate without raising the document over its active popover.
+        let application_ref = unsafe { AXUIElementCreateApplication(target.pid) };
+        if application_ref.is_null() {
+            return Err("Unable to activate keyboard target".to_string());
+        }
+        let application = unsafe { CFType::wrap_under_create_rule(application_ref) };
+        let attribute = CFString::new("AXFrontmost");
+        let status = unsafe {
+            AXUIElementSetAttributeValue(
+                application.as_CFTypeRef(),
+                attribute.as_concrete_TypeRef(),
+                CFBoolean::true_value().as_CFTypeRef(),
+            )
+        };
+        if status != AX_ERROR_SUCCESS {
+            return Err(mac_ax_error("Activating keyboard target", status));
+        }
+    } else {
+        mac_prepare_mouse_window(target).map_err(|failure| failure.reason)?;
+    }
+    for _ in 0..25 {
+        if mac_verify_keyboard_focus(target, true).is_ok() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    mac_verify_keyboard_focus(target, true)
+}
+
+#[cfg(target_os = "macos")]
 fn mac_keycode(name: &str) -> Option<u16> {
     Some(match name.trim().to_ascii_uppercase().as_str() {
         "A" => KeyCode::ANSI_A,
@@ -1929,7 +2014,7 @@ fn mac_keycode(name: &str) -> Option<u16> {
 }
 
 #[cfg(target_os = "macos")]
-fn mac_press_keys(pid: i32, names: &[String]) -> Result<(), String> {
+fn mac_key_combination(names: &[String]) -> Result<(u16, CGEventFlags), String> {
     if names.is_empty() {
         return Err("keys cannot be empty".to_string());
     }
@@ -1947,24 +2032,75 @@ fn mac_press_keys(pid: i32, names: &[String]) -> Result<(), String> {
     }
     let name = key_name.ok_or_else(|| "keypress requires a non-modifier key".to_string())?;
     let keycode = mac_keycode(name).ok_or_else(|| format!("Unknown macOS key: {name}"))?;
+    Ok((keycode, flags))
+}
+
+#[cfg(target_os = "macos")]
+fn mac_post_keyboard(event: &CGEvent, target: WindowTarget) -> Result<(), String> {
+    // Do not send global input if the user switched applications/windows
+    // while a sequence was being sent. No retry after partial delivery.
+    mac_verify_keyboard_focus(target, true)?;
+    event.post(CGEventTapLocation::HID);
+    thread::sleep(Duration::from_millis(10));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_press_keys(pid: i32, names: &[String]) -> Result<(), String> {
+    mac_send_keys(pid, names, None)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_send_keys(
+    pid: i32,
+    names: &[String],
+    foreground: Option<WindowTarget>,
+) -> Result<(), String> {
+    let (keycode, flags) = mac_key_combination(names)?;
+    let source = mac_event_source()?;
     for down in [true, false] {
-        let event = CGEvent::new_keyboard_event(mac_event_source()?, keycode, down)
+        let event = CGEvent::new_keyboard_event(source.clone(), keycode, down)
             .map_err(|_| "Unable to create a macOS keyboard event".to_string())?;
         event.set_flags(flags);
-        event.post_to_pid(pid);
+        if let Some(target) = foreground {
+            if down {
+                mac_post_keyboard(&event, target)?;
+            } else {
+                // Always balance a global key-down on the same event route,
+                // even when the shortcut closed the window or changed focus.
+                event.post(CGEventTapLocation::HID);
+            }
+        } else {
+            event.post_to_pid(pid);
+        }
     }
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
 fn mac_type_text(pid: i32, text: &str) -> Result<(), String> {
+    mac_send_text(pid, text, None)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_send_text(pid: i32, text: &str, foreground: Option<WindowTarget>) -> Result<(), String> {
+    let source = mac_event_source()?;
     for character in text.chars() {
         let value = character.to_string();
         for down in [true, false] {
-            let event = CGEvent::new_keyboard_event(mac_event_source()?, 0, down)
+            let event = CGEvent::new_keyboard_event(source.clone(), 0, down)
                 .map_err(|_| "Unable to create a macOS text event".to_string())?;
+            event.set_flags(CGEventFlags::CGEventFlagNull);
             event.set_string(&value);
-            event.post_to_pid(pid);
+            if let Some(target) = foreground {
+                if down {
+                    mac_post_keyboard(&event, target)?;
+                } else {
+                    event.post(CGEventTapLocation::HID);
+                }
+            } else {
+                event.post_to_pid(pid);
+            }
         }
     }
     Ok(())
@@ -3037,18 +3173,28 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
         }
         "type" => {
             let target = background_target(action)?;
-            mac_type_text(
-                target.pid,
-                action
-                    .text
-                    .as_deref()
-                    .ok_or_else(|| "text is required".to_string())?,
-            )?;
+            let text = action
+                .text
+                .as_deref()
+                .ok_or_else(|| "text is required".to_string())?;
+            mac_prepare_keyboard(target, delivery_policy)?;
+            if delivery_policy == DeliveryPolicy::AllowForeground {
+                mac_send_text(target.pid, text, Some(target))?;
+            } else {
+                mac_type_text(target.pid, text)?;
+            }
             "Typed into application window".to_string()
         }
         "keypress" => {
             let target = background_target(action)?;
-            mac_press_keys(target.pid, action.keys.as_deref().unwrap_or_default())?;
+            let keys = action.keys.as_deref().unwrap_or_default();
+            mac_key_combination(keys)?;
+            mac_prepare_keyboard(target, delivery_policy)?;
+            if delivery_policy == DeliveryPolicy::AllowForeground {
+                mac_send_keys(target.pid, keys, Some(target))?;
+            } else {
+                mac_press_keys(target.pid, keys)?;
+            }
             "Pressed keys in application window".to_string()
         }
         "open_app" => {
@@ -3069,15 +3215,8 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
         }
         "focus_window" => {
             let target = background_target(action)?;
-            let name = Window::all()
-                .map_err(|error| error.to_string())?
-                .iter()
-                .find(|window| window.id().ok() == Some(target.window_id))
-                .ok_or_else(|| "Target window is no longer available".to_string())?
-                .app_name()
-                .map_err(|error| error.to_string())?;
-            focus_app(&name)?;
-            format!("Focused {name}; observe the target window before further input")
+            mac_prepare_keyboard(target, delivery_policy)?;
+            format!("Verified keyboard focus for window {}", target.window_id)
         }
         "wait" => {
             thread::sleep(Duration::from_millis(
@@ -3099,6 +3238,16 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
     add_scroll_receipt(&mut result, action);
     if action.action == "list_windows" {
         result["windows"] = Value::Array(window_list()?);
+    }
+
+    if matches!(action.action.as_str(), "type" | "keypress") {
+        result["delivery_route"] = json!(if delivery_policy == DeliveryPolicy::AllowForeground {
+            "verified_foreground_keyboard"
+        } else {
+            "pid_targeted_keyboard"
+        });
+        result["effect_verified"] = json!(false);
+        result["verification_hint"] = json!("Keyboard events were sent after checking the target responder; the requested operation is not verified. Do not retry solely because the screenshot is unchanged.");
     }
 
     let capture = action.action == "observe"
@@ -4624,6 +4773,82 @@ mod tests {
             error.contains("does not expose the full desktop")
                 || error.contains("background_app mode is unavailable")
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_keyboard_shortcuts_preserve_command_and_validate_before_focus() {
+        let (code, flags) = mac_key_combination(&["CMD".into(), "C".into()]).unwrap();
+        assert_eq!(code, KeyCode::ANSI_C);
+        assert_eq!(flags, CGEventFlags::CGEventFlagCommand);
+        let (_, flags) =
+            mac_key_combination(&["command".into(), "shift".into(), "N".into()]).unwrap();
+        assert_eq!(
+            flags,
+            CGEventFlags::CGEventFlagCommand | CGEventFlags::CGEventFlagShift
+        );
+        assert!(mac_key_combination(&[]).is_err());
+        assert!(mac_key_combination(&["CMD".into()]).is_err());
+        assert!(mac_key_combination(&["C".into(), "V".into()]).is_err());
+        assert!(mac_key_combination(&["unknown".into()]).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires Accessibility; activates only isolated keyboard fixture windows"]
+    fn macos_keyboard_routes_windows_and_name_panel() {
+        mac_require_input_permission().expect("Accessibility permission required");
+        let host = MacInputTestHost::start_fixture("tests/fixtures/keyboard_host.swift", &[]);
+        let wait = |field: &str, expected: Value| {
+            for _ in 0..100 {
+                if let Some(state) = host.state() {
+                    if state[field] == expected {
+                        return state;
+                    }
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            panic!(
+                "fixture did not reach {field}={expected}: {:?}",
+                host.state()
+            );
+        };
+        let state = wait("phase", json!("ready"));
+        let send = |id: &Value, action: &str, value: Value| {
+            let mut request =
+                json!({"action": action, "window_id": id.to_string(), "include_screenshot": false});
+            if action == "type" {
+                request["text"] = value;
+            } else if action == "keypress" {
+                request["keys"] = value;
+            }
+            execute_background(ExecuteRequest {
+                mode: Some(ComputerUseMode::BackgroundApp),
+                target_scope: Some(TargetScope::AppWindow),
+                delivery_policy: DeliveryPolicy::AllowForeground,
+                action: serde_json::from_value(request).unwrap(),
+            })
+            .unwrap();
+        };
+        send(&state["second"], "focus_window", Value::Null);
+        send(&state["first"], "focus_window", Value::Null);
+        send(&state["first"], "keypress", json!(["CMD", "A"]));
+        send(&state["first"], "type", json!("report"));
+        let after = wait("first_text", json!("report"));
+        assert_eq!(after["second_text"], "second");
+        send(&state["first"], "keypress", json!(["CMD", "C"]));
+        wait("copies", json!(1));
+        std::fs::write(host.state_path.with_extension("command"), "panel").unwrap();
+        let panel = wait("phase", json!("panel"));
+        send(&panel["panel"], "type", json!("report.txt"));
+        wait("name", json!("report.txt"));
+        send(&panel["panel"], "keypress", json!(["CMD", "A"]));
+        send(&panel["panel"], "type", json!("backup.txt"));
+        wait("name", json!("backup.txt"));
+        let unrelated = window_target(&state["second"].to_string()).unwrap();
+        let before = mac_front_process_serial_number().unwrap();
+        assert!(mac_prepare_keyboard(unrelated, DeliveryPolicy::StrictBackground).is_err());
+        assert_eq!(before, mac_front_process_serial_number().unwrap());
     }
 
     #[cfg(target_os = "macos")]
