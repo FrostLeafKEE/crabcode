@@ -99,8 +99,10 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
     setExpanded(false);
     toggleRef.current?.focus();
   };
+  const strictInputUnavailable = computerUse?.deliveryPolicy === "strict_background"
+    && computerUse.capabilities?.strict_background_input_available === false;
   const computerStatusLabel = computerUse?.status === "ready"
-    ? computerUse.capabilities?.input_available === false ? "有限可用" : "可用"
+    ? computerUse.capabilities?.input_available === false || strictInputUnavailable ? "有限可用" : "可用"
     : computerUse?.status === "busy" ? "Agent 正在操作"
       : computerUse?.status === "connecting" ? "正在连接"
         : computerUse?.status === "unavailable" ? "不可用"
@@ -151,7 +153,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
             <strong><MonitorUp />Computer Use</strong>
             <span className="computer-use-mode">{previews.length > 1
               ? `${previews.length} 个活动预览`
-              : computerUse.mode === "background_app" ? "后台应用" : "前台桌面"}</span>
+              : computerUseLabel(computerUse.mode, computerUse.deliveryPolicy)}</span>
             <span className={`computer-use-state ${computerUse.status}`}>{computerStatusLabel}</span>
             <button
               className={`computer-use-power ${computerUse.enabled ? "enabled" : ""}`}
@@ -172,7 +174,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                 <section className={`computer-use-preview-card ${preview.status}`} key={preview.key} aria-label={`${identity} Computer Use 预览`}>
                   <header>
                     <strong title={preview.agentId || preview.sessionId}>{identity}</strong>
-                    <span>{preview.mode === "background_app" ? "后台应用" : "前台桌面"}</span>
+                    <span>{computerUseLabel(preview.mode, preview.deliveryPolicy)}</span>
                     <code>{preview.action}</code>
                     <em>{preview.status === "busy" ? "正在操作" : preview.status === "error" ? "失败" : "等待后续"}</em>
                   </header>
@@ -222,7 +224,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
               <AlertTriangle />
               <div>
                 <strong>需要开启辅助功能权限</strong>
-                <span>请在 macOS“系统设置 → 隐私与安全性 → 辅助功能”中允许 Crab Desktop，Agent 才能点击、输入和滚动。当前仍可查看屏幕和启动应用。</span>
+                <span>点击、输入和滚动需要在 macOS“系统设置 → 隐私与安全性 → 辅助功能”中允许 Crab Desktop，同时需要前台权限策略支持。当前仍可查看屏幕。</span>
               </div>
               <div className="computer-use-permission-actions">
                 <button type="button" onClick={onComputerUseOpenInputSettings}>打开系统设置</button>
@@ -231,7 +233,10 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
             </section>
           )}
           {computerUse.enabled && computerUse.capabilities?.input_available === false && !needsMacInputPermission && (
-            <p className="computer-use-warning">{computerUse.capabilities.reason || "桌面输入权限不可用；Agent 仍可查看屏幕和启动应用。"}</p>
+            <p className="computer-use-warning">{computerUse.capabilities.reason || "桌面输入权限不可用；Agent 仍可查看屏幕。"}</p>
+          )}
+          {computerUse.enabled && strictInputUnavailable && (
+            <p className="computer-use-warning">当前宿主尚不支持严格后台输入；可以查看窗口，点击、输入等动作会被拒绝。若需要现有输入功能，请在设置中显式选择允许前台操作。</p>
           )}
           <div className="computer-use-log" aria-label="Agent 操作记录">
             {computerUse.logs.length ? [...computerUse.logs].reverse().map((entry) => (
@@ -303,7 +308,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                 <span>{computerDetail.summary}</span>
               </div>
               <div className="computer-use-detail-badges">
-                <span>{computerDetail.mode === "background_app" ? "后台应用" : "前台桌面"}</span>
+                <span>{computerUseLabel(computerDetail.mode, computerDetail.deliveryPolicy)}</span>
                 <code>{computerDetail.action}</code>
                 <em className={computerDetail.status}>{computerDetail.status === "busy" ? "正在操作" : computerDetail.status === "error" ? "失败" : "等待后续"}</em>
               </div>
@@ -359,4 +364,8 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
       )}
     </footer>
   );
+}
+function computerUseLabel(mode: string, policy?: string): string {
+  const scope = mode === "background_app" ? "指定窗口" : "整个桌面";
+  return `${scope} · ${policy === "allow_foreground" ? "允许前台" : policy === "strict_background" ? "严格后台" : "权限未声明"}`;
 }

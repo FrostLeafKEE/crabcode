@@ -155,6 +155,8 @@ class ComputerUseBroker:
             "session_id": pending.lease[1],
             "agent_id": pending.lease[2],
             "mode": previous.get("mode", "background_app"),
+            "target_scope": previous.get("target_scope", "app_window"),
+            "delivery_policy": previous.get("delivery_policy", "strict_background"),
             "status": "error" if result.get("ok") is False else "ready",
             "action": str(result.get("action") or previous.get("action") or "unknown"),
             "summary": str(
@@ -231,55 +233,88 @@ class ComputerUseBroker:
         session_id: str,
         agent_id: str | None,
         action: dict[str, Any],
-        mode: str = "background_app",
+        mode: str | None = None,
+        target_scope: str | None = None,
+        delivery_policy: str = "strict_background",
     ) -> dict[str, Any]:
         host = self._hosts.get(host_id)
         if host is None or not host.enabled or not host.gui_available:
             raise RuntimeError("Computer Use is unavailable or disabled")
-        supported_modes = host.capabilities.get("supported_modes")
-        if not isinstance(supported_modes, list):
-            supported_modes = ["foreground_desktop"]
-        if mode not in supported_modes:
-            raise RuntimeError(f"Computer Use mode '{mode}' is unavailable on this host")
+        if target_scope is None:
+            target_scope = "desktop" if mode == "foreground_desktop" else "app_window"
+        if target_scope not in ("app_window", "desktop") or delivery_policy not in (
+            "strict_background", "allow_foreground"
+        ):
+            raise ValueError("Invalid Computer Use target scope or delivery policy")
+        expected_mode = "foreground_desktop" if target_scope == "desktop" else "background_app"
+        if mode is None:
+            mode = expected_mode
+        if mode != expected_mode:
+            raise ValueError("Conflicting Computer Use mode and target scope")
+        read_only = action.get("action") in ("observe", "list_windows", "list_displays", "wait")
 
         async with host.action_lock:
-            # State may have changed while this request waited for the host.
-            if self._hosts.get(host_id) is not host or not host.enabled or not host.gui_available:
-                raise RuntimeError("Computer Use became unavailable")
             request_id = str(uuid.uuid4())
-            future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
-            lease = (host_id, session_id, agent_id)
-            self._pending[request_id] = PendingComputerUseRequest(
-                host_id=host_id,
-                future=future,
-                lease=lease,
-            )
             try:
-                self._purge_expired_previews()
-                self._active_leases.add(lease)
-                previous = self._lease_previews.get(lease, {})
-                self._lease_previews[lease] = {
-                    **previous,
-                    "session_id": session_id,
-                    "agent_id": agent_id,
-                    "mode": mode,
-                    "status": "busy",
-                    "action": str(action.get("action") or "unknown"),
-                    "summary": "正在执行…",
-                    "updated_at_ms": self._now_ms(),
-                    "release_deadline_ms": None,
-                }
                 async with host.send_lock:
+                    # Recheck immediately before sending: either lock can wait
+                    # while the host disconnects or changes its capabilities.
+                    if self._hosts.get(host_id) is not host or not host.enabled or not host.gui_available:
+                        raise RuntimeError("Computer Use became unavailable")
+                    supported_modes = host.capabilities.get("supported_modes")
+                    if not isinstance(supported_modes, list):
+                        supported_modes = ["foreground_desktop"]
+                    if mode not in supported_modes:
+                        raise RuntimeError(f"Computer Use mode '{mode}' is unavailable on this host")
+                    error = None
+                    if delivery_policy == "strict_background" and target_scope == "desktop":
+                        error = "Desktop scope requires allow_foreground"
+                    elif not read_only and host.capabilities.get("delivery_policy_version") != 1:
+                        # Old hosts can silently ignore unknown policy fields.
+                        error = "This host must be upgraded before it can enforce delivery policy"
+                    if error:
+                        return {
+                            "ok": False, "action": action.get("action"), "error": error, "summary": error,
+                            "error_code": "background_delivery_unsupported", "action_dispatched": False,
+                            "dispatch_succeeded": False, "effect_verified": False, "retry_safe": True,
+                            "target_scope": target_scope, "delivery_policy": delivery_policy,
+                            "focus_isolation": "unavailable",
+                        }
+                    future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+                    lease = (host_id, session_id, agent_id)
+                    self._pending[request_id] = PendingComputerUseRequest(
+                        host_id=host_id,
+                        future=future,
+                        lease=lease,
+                    )
+                    self._purge_expired_previews()
+                    self._active_leases.add(lease)
+                    previous = self._lease_previews.get(lease, {})
+                    self._lease_previews[lease] = {
+                        **previous,
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "mode": mode,
+                        "target_scope": target_scope,
+                        "delivery_policy": delivery_policy,
+                        "status": "busy",
+                        "action": str(action.get("action") or "unknown"),
+                        "summary": "正在执行…",
+                        "updated_at_ms": self._now_ms(),
+                        "release_deadline_ms": None,
+                    }
                     await host.websocket.send_json({
                         "type": "computer_use_request",
                         "request_id": request_id,
                         "session_id": session_id,
                         "agent_id": agent_id,
                         "mode": mode,
+                        "target_scope": target_scope,
+                        "delivery_policy": delivery_policy,
                         "action": action,
                     })
                 return await asyncio.wait_for(future, timeout=self.timeout_seconds)
             except asyncio.TimeoutError as exc:
-                raise RuntimeError("Computer Use host timed out") from exc
+                raise RuntimeError("Computer Use host timed out; input may have arrived. Observe before retrying.") from exc
             finally:
                 self._pending.pop(request_id, None)

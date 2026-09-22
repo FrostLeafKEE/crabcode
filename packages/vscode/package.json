@@ -161,7 +161,22 @@
           "default": "enter",
           "description": "CrabCode 聊天输入框的发送快捷键"
         },
+        "crabcode.computerUseTargetScope": {
+          "type": "string",
+          "enum": ["app_window", "desktop"],
+          "enumDescriptions": ["Operate a specific macOS window.", "Operate the entire desktop; requires allow_foreground."],
+          "default": "app_window",
+          "description": "Computer Use target. Explicit values override the Gateway setting."
+        },
+        "crabcode.computerUseDeliveryPolicy": {
+          "type": "string",
+          "enum": ["strict_background", "allow_foreground"],
+          "enumDescriptions": ["Reject input when foreground and typing focus isolation cannot be guaranteed.", "Allow activation and foreground interaction; may interrupt your work."],
+          "default": "strict_background",
+          "description": "Computer Use foreground permission. The agent cannot override this in an action."
+        },
         "crabcode.computerUseMode": {
+          "deprecationMessage": "Use computerUseTargetScope and computerUseDeliveryPolicy. This legacy setting never grants foreground permission.",
           "type": "string",
           "enum": [
             "background_app",

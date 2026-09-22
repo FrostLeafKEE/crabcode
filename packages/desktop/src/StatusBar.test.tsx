@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StatusBar } from "./StatusBar";
 import { updateGatewayStartup } from "./gatewayStartup";
 import type { ComputerUseState } from "./computerUse";
+import { initialComputerUseState } from "./computerUse";
 import type { ConnectionPreset, GatewayViewState } from "./types";
 
 const connection = { id: "local", name: "Local", base_url: "http://127.0.0.1:4096" } as ConnectionPreset;
@@ -148,6 +149,28 @@ describe("desktop status bar", () => {
       />,
     ));
     expect(container.querySelector(".computer-use-console")).toBeNull();
+  });
+
+  it("distinguishes strict background input unavailability from macOS permissions", () => {
+    const computerUse: ComputerUseState = {
+      ...initialComputerUseState("desktop-test", true),
+      active: true,
+      status: "ready",
+      capabilities: {
+        gui_available: true, input_available: true, platform: "macos", displays: [],
+        supported_modes: ["background_app", "foreground_desktop"],
+        delivery_policy_version: 1, strict_background_input_available: false,
+      },
+    };
+    act(() => root.render(<StatusBar computerUse={computerUse} />));
+    act(() => container.querySelector<HTMLButtonElement>(".status-computer-use")!.click());
+    expect(container.querySelector(".computer-use-console")?.textContent).toContain("有限可用");
+    expect(container.querySelector(".computer-use-mode")?.textContent).toContain("严格后台");
+    expect(container.querySelector(".computer-use-warning")?.textContent).toContain("尚不支持严格后台输入");
+    expect(container.querySelector(".computer-use-permission")).toBeNull();
+    act(() => root.render(<StatusBar computerUse={{ ...computerUse, deliveryPolicy: "allow_foreground" }} />));
+    expect(container.querySelector(".computer-use-warning")).toBeNull();
+    expect(container.querySelector(".computer-use-mode")?.textContent).toContain("允许前台");
   });
 
   it.each([

@@ -140,54 +140,67 @@ class ComputerUseTool(Tool):
         backend, host_id, enabled, _mode = self._binding()
         return bool(enabled and backend and host_id and backend.is_available(host_id, _mode))
 
+    def _delivery_policy(self) -> str:
+        policy = getattr(self._session, "computer_use_delivery_policy", "strict_background")
+        return policy if policy in ("strict_background", "allow_foreground") else "strict_background"
+
     async def get_prompt(self, **kwargs: Any) -> str:
         _backend, _host_id, _enabled, mode = self._binding()
-        scroll_guidance = (
-            " For scroll, provide x/y over the intended scroll area (required in background_app). "
-            "On macOS both modes use pixels: positive delta_y scrolls down, negative scrolls up; "
-            "positive delta_x scrolls right. Other platforms use wheel steps. "
-            "A successful call confirms input dispatch, not that the application scrolled. Compare "
-            "the target area's content before/after; observe again if uncertain. An unchanged image "
-            "does not establish that all messages/history are visible or a boundary was reached."
+        policy = self._delivery_policy()
+        target = "app_window" if mode == "background_app" else "desktop"
+        guidance = (
+            f"ComputerUse target_scope={target}, delivery_policy={policy}. "
+            "These are user/session settings; actions cannot override them. "
+            "Never change configuration or use another tool to bypass a denied delivery policy. "
+            "Prefer one deliberate action per call. action_dispatched reports submission, not UI success. "
+            "effect_verified/visual_change_detected describe screenshot differences, not business success. "
+            "Observe again to judge the intended effect; never repeat an action solely because pixels did not change. "
+            "Uncertain dispatch, focus_isolation_violated, timeouts, or disconnects may occur after input arrived; "
+            "do not retry automatically. retry_safe=false requires observation before another decision. "
+            "background_delivery_unsupported means no business input was sent; explain the limitation to the user. "
         )
-        if mode == "background_app":
-            return (
-                "Use ComputerUse in background_app mode to inspect and operate one macOS application window. "
-                "The target application is allowed to become foreground; this mode does not guarantee focus isolation. "
-                "Start with list_windows, then pass window_id to observe, focus_window, "
-                "and every pointer or keyboard action. Pointer coordinates are window-local screenshot coordinates: "
-                "the image top-left is (0,0), and you must not add origin_x/origin_y. Full-desktop capture, display "
-                "selection, and automatic switching to foreground_desktop are unavailable in this mode. "
-                "Use focus_window when the target needs activation, then observe again before further input. "
-                "Single left clicks prefer accessibility actions and fall back to window-targeted mouse events when "
-                "unsupported. Before mouse fallback the host activates the selected window so inactive content "
-                "can receive the click; if activation changes the target layout, no click is sent and you must "
-                "observe again. Double-click, right-click, and middle-click also use window-targeted mouse events. "
-                "ok and dispatch_succeeded report whether click dispatch succeeded, not whether the intended UI "
-                "effect occurred. effect_verified and visual_change_detected are screenshot-based evidence only. "
-                "When effect_verified is false, verification_warning is informational, not a dispatch failure: "
-                "inspect the returned screenshot or observe again and judge whether the intended action took effect. "
-                "Do not repeat a click solely because its effect was not verified. foreground_activated is diagnostic only: "
-                "focus changes are allowed and are not a reason to stop using ComputerUse. "
-                "background_click_unsupported means no supported background action was dispatched, and "
-                "background_click_dispatch_unverified means dispatch itself was not acknowledged; the action may "
-                "still have arrived, so observe before deciding whether another action is needed. A hidden "
-                "auxiliary window is not clicked from stale pixels; use focus_window and observe again. Prefer one "
-                "deliberate action per call and observe again after navigation or any uncertain action. The host "
-                "composites AX-confirmed same-process auxiliary windows over the selected root window; stale hidden "
-                "backing stores are ignored. If an observation reports "
-                "background_observation_limited, the app ordered an auxiliary window off-screen while backgrounded; "
-                "do not infer or click content that is absent from its retained pixels."
-            ) + scroll_guidance
-        return (
-            "Use ComputerUse in foreground_desktop mode to inspect and operate the graphical desktop when a task "
-            "requires native UI interaction. The coordinate space is the full desktop and may include multiple "
-            "displays. Start with observe or list_displays/list_windows, then use the returned image dimensions and "
-            "origin for coordinates. This mode controls the visible pointer and keyboard and may interrupt the user. "
-            "Prefer one deliberate action per call and observe again after uncertain navigation."
-        ) + scroll_guidance
+        if policy == "strict_background":
+            guidance += (
+                "Only delivery that can preserve the user's foreground and typing focus is permitted. "
+                "focus_window and desktop control are prohibited. The host may reject even AX actions when "
+                "focus suppression is unavailable. Do not activate the target or automatically switch policy. "
+                "Observation remains available for app windows when input is unsupported. "
+            )
+        else:
+            guidance += (
+                "The target application is allowed to become foreground; focus changes are allowed. "
+                "Use focus_window when activation is needed, then observe again. "
+                "Single left clicks prefer accessibility actions and fall back to window-targeted mouse events "
+                "only when AX is unsupported. Before mouse fallback the host activates the selected window; "
+                "if its geometry or window routing changes, no click is sent. "
+                "An acknowledged or uncertain AX action is never retried via a mouse event. "
+            )
+        if target == "app_window":
+            guidance += (
+                "Start with list_windows. window_id is required for observe and every input action. "
+                "Use window-local screenshot coordinates: the image top-left is (0,0); "
+                "you must not add origin_x/origin_y. Full-desktop capture and list_displays are unavailable. "
+                "The host composites AX-confirmed same-process auxiliary windows over the root window; "
+                "stale hidden backing stores are ignored. When background_observation_limited is reported, "
+                "do not infer or click content absent from the captured pixels. "
+                "A hidden auxiliary window is not clicked from stale pixels. "
+            )
+        else:
+            guidance += (
+                "Coordinates are absolute desktop coordinates, possibly across multiple displays. "
+                "Start with observe or list_displays and use the image dimensions and origin. "
+                "Desktop control moves the visible pointer and keyboard and may interrupt the user. "
+            )
+        return guidance + (
+            "For scroll, provide x/y over the intended scroll area (required for app_window). "
+            "On macOS both scopes use pixels: positive delta_y scrolls down, negative up; "
+            "positive delta_x scrolls right. Other platforms use wheel steps. "
+            "Dispatch does not prove scrolling or that a history boundary was reached."
+        )
 
     async def validate_input(self, tool_input: dict[str, Any]) -> str | None:
+        if any(key not in self.input_schema["properties"] for key in tool_input):
+            return "Unknown ComputerUse action field; target scope and delivery policy are session settings"
         action = str(tool_input.get("action", "")).strip()
         if action not in _ACTIONS:
             return f"action must be one of: {', '.join(sorted(_ACTIONS))}"
@@ -244,7 +257,8 @@ class ComputerUseTool(Tool):
         return None
 
     def get_permission_key(self, tool_input: dict[str, Any]) -> str:
-        return f"{self.name}:{str(tool_input.get('action', 'unknown')).strip() or 'unknown'}"
+        mode = self._binding()[3]
+        return f"{self.name}:{mode}:{self._delivery_policy()}:{str(tool_input.get('action', 'unknown')).strip() or 'unknown'}"
 
     async def check_permissions(
         self,
@@ -263,6 +277,9 @@ class ComputerUseTool(Tool):
 
     async def call(self, tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         backend, host_id, enabled, mode = self._binding()
+        validation_error = await self.validate_input(tool_input)
+        if validation_error:
+            return ToolResult(result_for_model=validation_error, result_for_display=validation_error, is_error=True)
         if not enabled or not backend or not host_id or not backend.is_available(host_id, mode):
             return ToolResult(
                 result_for_model="Computer Use is unavailable or has been disabled by the user.",
@@ -270,6 +287,7 @@ class ComputerUseTool(Tool):
                 is_error=True,
             )
 
+        policy = self._delivery_policy()
         try:
             result = await backend.execute(
                 host_id,
@@ -277,13 +295,26 @@ class ComputerUseTool(Tool):
                 agent_id=context.agent_id,
                 action=dict(tool_input),
                 mode=mode,
+                target_scope="desktop" if mode == "foreground_desktop" else "app_window",
+                delivery_policy=policy,
             )
         except Exception as exc:
-            return ToolResult(
-                result_for_model=f"Computer Use failed: {exc}",
-                result_for_display=f"Computer Use 失败：{exc}",
-                is_error=True,
-            )
+            read_only = tool_input.get("action") in ("observe", "list_windows", "list_displays", "wait")
+            # Transport failure does not tell us whether the native action ran.
+            # Preserve uncertainty through the same structured result path.
+            result = {
+                "ok": False,
+                "action": tool_input.get("action"),
+                "error": str(exc),
+                "error_code": "computer_use_transport_error",
+                "summary": f"Computer Use 失败：{exc}",
+                "action_dispatched": False if read_only else None,
+                "effect_verified": False,
+                "retry_safe": read_only,
+                "focus_isolation": "unavailable",
+                "target_scope": "desktop" if mode == "foreground_desktop" else "app_window",
+                "delivery_policy": policy,
+            }
 
         model_result = dict(result)
         screenshot = model_result.pop("screenshot", None)

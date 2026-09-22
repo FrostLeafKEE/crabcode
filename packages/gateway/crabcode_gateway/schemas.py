@@ -65,6 +65,8 @@ class SendMessageRequest(BaseModel):
     images: list[ImageAttachment] = Field(default_factory=list)
     computer_use_enabled: bool | None = None
     computer_use_mode: Literal["background_app", "foreground_desktop"] | None = None
+    computer_use_target_scope: Literal["app_window", "desktop"] | None = None
+    computer_use_delivery_policy: Literal["strict_background", "allow_foreground"] | None = None
 
     @model_validator(mode="after")
     def validate_content(self) -> "SendMessageRequest":
@@ -95,6 +97,8 @@ class NewSessionRequest(BaseModel):
     computer_use_host_id: str | None = Field(default=None, min_length=1, max_length=200)
     computer_use_enabled: bool | None = None
     computer_use_mode: Literal["background_app", "foreground_desktop"] | None = None
+    computer_use_target_scope: Literal["app_window", "desktop"] | None = None
+    computer_use_delivery_policy: Literal["strict_background", "allow_foreground"] | None = None
 
 
 class ResumeSessionRequest(BaseModel):
@@ -108,6 +112,8 @@ class ResumeSessionRequest(BaseModel):
     computer_use_host_id: str | None = Field(default=None, min_length=1, max_length=200)
     computer_use_enabled: bool | None = None
     computer_use_mode: Literal["background_app", "foreground_desktop"] | None = None
+    computer_use_target_scope: Literal["app_window", "desktop"] | None = None
+    computer_use_delivery_policy: Literal["strict_background", "allow_foreground"] | None = None
 
 
 class ForkSessionRequest(BaseModel):
@@ -256,6 +262,7 @@ class RuntimeSettingsMutationRequest(BaseModel):
     action: Literal[
         "set_snapshot",
         "set_computer_use_mode",
+        "set_computer_use_options",
         "add_extra_tool",
         "remove_extra_tool",
     ]
@@ -264,6 +271,8 @@ class RuntimeSettingsMutationRequest(BaseModel):
     snapshot_enabled: bool | None = None
     snapshot_max_size_mb: int | None = Field(default=None, ge=1, le=1_048_576)
     computer_use_mode: Literal["background_app", "foreground_desktop"] | None = None
+    computer_use_target_scope: Literal["app_window", "desktop"] | None = None
+    computer_use_delivery_policy: Literal["strict_background", "allow_foreground"] | None = None
     tool_path: str | None = None
 
     @model_validator(mode="after")
@@ -271,9 +280,13 @@ class RuntimeSettingsMutationRequest(BaseModel):
         if self.action == "set_snapshot":
             if self.snapshot_enabled is None and self.snapshot_max_size_mb is None:
                 raise ValueError("snapshot_enabled or snapshot_max_size_mb is required")
-        elif self.action == "set_computer_use_mode":
-            if self.computer_use_mode is None:
+        elif self.action in {"set_computer_use_mode", "set_computer_use_options"}:
+            if self.action == "set_computer_use_mode" and self.computer_use_mode is None:
                 raise ValueError("computer_use_mode is required")
+            if self.action == "set_computer_use_options" and (
+                self.computer_use_target_scope is None and self.computer_use_delivery_policy is None
+            ):
+                raise ValueError("computer_use_target_scope or computer_use_delivery_policy is required")
         else:
             if self.tool_path is None or not self.tool_path.strip():
                 raise ValueError("tool_path is required for extra tool mutations")
@@ -1008,6 +1021,8 @@ class RuntimeSettingsResponse(BaseModel):
     snapshot_enabled: bool = True
     snapshot_max_size_mb: int = 1024
     computer_use_mode: Literal["background_app", "foreground_desktop"] = "background_app"
+    computer_use_target_scope: Literal["app_window", "desktop"] = "app_window"
+    computer_use_delivery_policy: Literal["strict_background", "allow_foreground"] = "strict_background"
     extra_tools: list[str] = Field(default_factory=list)
     extra_tools_by_source: dict[str, list[str]] = Field(default_factory=dict)
     sources: list[str] = Field(default_factory=list)

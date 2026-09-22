@@ -37,6 +37,53 @@ describe("ComputerUseChannel", () => {
     window.sessionStorage.clear();
   });
 
+  it.each(["strict_background", "allow_foreground"] as const)("forwards session permission outside the action (%s)", async (policy) => {
+    invokeMock.mockResolvedValueOnce({
+      gui_available: true, input_available: true, platform: "macos", displays: [],
+      supported_modes: ["background_app", "foreground_desktop"], delivery_policy_version: 1,
+    }).mockResolvedValueOnce({ ok: false, action_dispatched: false, retry_safe: true });
+    const channel = new ComputerUseChannel({
+      authenticate: vi.fn().mockResolvedValue(undefined), computerUseWebSocketUrl: () => "ws://localhost/test",
+    } as unknown as GatewayApi, "h", true, vi.fn());
+    await channel.connect();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit("open");
+    const action = { action: "click", window_id: "42", x: 1, y: 2 };
+    socket.emit("message", { data: JSON.stringify({
+      type: "computer_use_request", request_id: "r", target_scope: "app_window", delivery_policy: policy, action,
+    }) });
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("computer_use_execute", {
+      request: { mode: "background_app", target_scope: "app_window", delivery_policy: policy, action },
+    }));
+    expect(invokeMock.mock.calls.filter(([name]) => name === "computer_use_execute")).toHaveLength(1);
+    channel.dispose();
+  });
+
+  it.each([
+    { policy: undefined, scope: "app_window" },
+    { policy: "automatic", scope: "app_window" },
+    { policy: "strict_background", scope: "desktop" },
+  ])("rejects legacy input or invalid policy combinations ($scope, $policy)", async ({ policy, scope }) => {
+    invokeMock.mockResolvedValueOnce({
+      gui_available: true, input_available: true, platform: "macos", displays: [],
+      supported_modes: ["background_app", "foreground_desktop"],
+      ...(policy ? { delivery_policy_version: 1 } : {}),
+    });
+    const publish = vi.fn();
+    const channel = new ComputerUseChannel({
+      authenticate: vi.fn().mockResolvedValue(undefined), computerUseWebSocketUrl: () => "ws://localhost/test",
+    } as unknown as GatewayApi, "h", true, publish);
+    await channel.connect();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit("open");
+    socket.emit("message", { data: JSON.stringify({ type: "computer_use_request", request_id: "r",
+      target_scope: scope, delivery_policy: policy, action: { action: "click", window_id: "42", x: 1, y: 2 },
+    }) });
+    await vi.waitFor(() => expect(publish).toHaveBeenLastCalledWith(expect.objectContaining({ status: "error" })));
+    expect(invokeMock.mock.calls.filter(([name]) => name === "computer_use_execute")).toHaveLength(0);
+    channel.dispose();
+  });
+
   it("keeps one host id in the current webview across reloads", () => {
     const first = computerUseHostId();
     const second = computerUseHostId();
@@ -51,6 +98,7 @@ describe("ComputerUseChannel", () => {
       platform: "macos",
       displays: [],
       supported_modes: ["background_app", "foreground_desktop"],
+        delivery_policy_version: 1,
     });
     const api = {
       authenticate: vi.fn().mockResolvedValue(undefined),
@@ -74,6 +122,7 @@ describe("ComputerUseChannel", () => {
         platform: "macos",
         displays: [],
         supported_modes: ["background_app", "foreground_desktop"],
+        delivery_policy_version: 1,
       })
       .mockResolvedValueOnce({ ok: true, action: "list_windows", windows: [] });
     const api = {
@@ -95,7 +144,7 @@ describe("ComputerUseChannel", () => {
     });
 
     await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("computer_use_execute", {
-      request: { mode: "background_app", action: { action: "list_windows" } },
+      request: { mode: "background_app", target_scope: "app_window", delivery_policy: "strict_background", action: { action: "list_windows" } },
     }));
     channel.dispose();
   });
@@ -108,6 +157,7 @@ describe("ComputerUseChannel", () => {
         platform: "macos",
         displays: [],
         supported_modes: ["background_app", "foreground_desktop"],
+        delivery_policy_version: 1,
       })
       .mockResolvedValueOnce({
         ok: dispatched,
@@ -163,6 +213,7 @@ describe("ComputerUseChannel", () => {
           platform: "macos",
           displays: [],
           supported_modes: ["background_app", "foreground_desktop"],
+        delivery_policy_version: 1,
         })
         .mockResolvedValueOnce({
           ok: true,
@@ -228,6 +279,7 @@ describe("ComputerUseChannel", () => {
           platform: "macos",
           displays: [],
           supported_modes: ["background_app", "foreground_desktop"],
+        delivery_policy_version: 1,
         })
         .mockResolvedValueOnce({
           ok: true,
@@ -288,6 +340,7 @@ describe("ComputerUseChannel", () => {
         platform: "macos",
         displays: [],
         supported_modes: ["background_app", "foreground_desktop"],
+        delivery_policy_version: 1,
       });
       const states: ComputerUseState[] = [];
       const api = {
@@ -306,6 +359,7 @@ describe("ComputerUseChannel", () => {
           previews: [{
             session_id: "session-restored",
             mode: "background_app",
+            delivery_policy: "allow_foreground",
             status: "ready",
             action: "observe",
             summary: "Observed window",
@@ -315,7 +369,8 @@ describe("ComputerUseChannel", () => {
         }),
       });
 
-      expect(states.at(-1)).toMatchObject({ active: true });
+      expect(states.at(-1)).toMatchObject({ active: true, deliveryPolicy: "allow_foreground" });
+      expect(states.at(-1)?.previews[0]?.deliveryPolicy).toBe("allow_foreground");
       expect(states.at(-1)?.previews[0]?.frame?.frame_id).toBe("restored-frame");
       await vi.advanceTimersByTimeAsync(COMPUTER_USE_RELEASE_RETENTION_MS - 1);
       expect(states.at(-1)).toMatchObject({ active: true });
@@ -338,6 +393,7 @@ describe("ComputerUseChannel", () => {
           platform: "macos",
           displays: [],
           supported_modes: ["background_app", "foreground_desktop"],
+        delivery_policy_version: 1,
         })
         .mockReturnValueOnce(new Promise((resolve) => { finishAction = resolve; }));
       const states: ComputerUseState[] = [];

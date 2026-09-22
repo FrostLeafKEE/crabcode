@@ -512,6 +512,8 @@ export interface RuntimeSettingsResponse {
   snapshot_enabled: boolean;
   snapshot_max_size_mb: number;
   computer_use_mode?: ComputerUseMode;
+  computer_use_target_scope?: ComputerUseTargetScope;
+  computer_use_delivery_policy?: ComputerUseDeliveryPolicy;
   extra_tools: string[];
   extra_tools_by_source: Record<string, string[]>;
   sources: string[];
@@ -522,10 +524,13 @@ export interface RuntimeSettingsResponse {
 export type RuntimeSettingsMutationAction =
   | "set_snapshot"
   | "set_computer_use_mode"
+  | "set_computer_use_options"
   | "add_extra_tool"
   | "remove_extra_tool";
 
 export type ComputerUseMode = "background_app" | "foreground_desktop";
+export type ComputerUseTargetScope = "app_window" | "desktop";
+export type ComputerUseDeliveryPolicy = "strict_background" | "allow_foreground";
 
 export interface RuntimeSettingsMutation {
   action: RuntimeSettingsMutationAction;
@@ -534,6 +539,8 @@ export interface RuntimeSettingsMutation {
   snapshot_enabled?: boolean;
   snapshot_max_size_mb?: number;
   computer_use_mode?: ComputerUseMode;
+  computer_use_target_scope?: ComputerUseTargetScope;
+  computer_use_delivery_policy?: ComputerUseDeliveryPolicy;
   tool_path?: string;
 }
 

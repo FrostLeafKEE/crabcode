@@ -113,6 +113,9 @@ class CoreSession:
         self.computer_use_enabled: bool = False
         self.computer_use_mode: str = self.settings.computer_use.mode
         self._computer_use_mode_override: str | None = None
+        self.computer_use_target_scope = self.settings.computer_use.target_scope
+        self.computer_use_delivery_policy = self.settings.computer_use.delivery_policy
+        self._computer_use_delivery_policy_override: str | None = None
         # Instances loaded from project ``extra_tools`` are tracked so a
         # cross-project resume can close/remove the old set before loading the
         # target project's extensions.
@@ -473,6 +476,12 @@ class CoreSession:
         self.settings = merged
         self.computer_use_mode = (
             self._computer_use_mode_override or merged.computer_use.mode
+        )
+        self.computer_use_target_scope = (
+            "desktop" if self.computer_use_mode == "foreground_desktop" else "app_window"
+        )
+        self.computer_use_delivery_policy = (
+            self._computer_use_delivery_policy_override or merged.computer_use.delivery_policy
         )
 
         for key, val in merged.env.items():
@@ -2174,6 +2183,12 @@ class CoreSession:
         self.settings = merged
         self.computer_use_mode = (
             self._computer_use_mode_override or merged.computer_use.mode
+        )
+        self.computer_use_target_scope = (
+            "desktop" if self.computer_use_mode == "foreground_desktop" else "app_window"
+        )
+        self.computer_use_delivery_policy = (
+            self._computer_use_delivery_policy_override or merged.computer_use.delivery_policy
         )
         if self._schedule_manager is not None:
             if self._schedule_manager.settings.persist != merged.schedule.persist:

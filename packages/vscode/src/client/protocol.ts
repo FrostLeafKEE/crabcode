@@ -30,6 +30,8 @@ export interface SendMessageCommand {
   operation_id?: string;
   images?: ImageAttachment[];
   computer_use_mode?: "background_app" | "foreground_desktop";
+  computer_use_target_scope?: "app_window" | "desktop";
+  computer_use_delivery_policy?: "strict_background" | "allow_foreground";
 }
 
 /** Add user guidance to the foreground turn at its next safe tool boundary. */
@@ -153,6 +155,8 @@ export function buildSendMessageCommand(
     operationId?: string;
     images?: ImageAttachment[];
     computerUseMode?: "background_app" | "foreground_desktop";
+    computerUseTargetScope?: "app_window" | "desktop";
+    computerUseDeliveryPolicy?: "strict_background" | "allow_foreground";
   } = {},
 ): SendMessageCommand {
   const cmd: SendMessageCommand = {
@@ -166,6 +170,8 @@ export function buildSendMessageCommand(
     cmd.images = options.images;
   }
   if (options.computerUseMode) cmd.computer_use_mode = options.computerUseMode;
+  if (options.computerUseTargetScope) cmd.computer_use_target_scope = options.computerUseTargetScope;
+  if (options.computerUseDeliveryPolicy) cmd.computer_use_delivery_policy = options.computerUseDeliveryPolicy;
   return cmd;
 }
 

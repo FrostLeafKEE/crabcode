@@ -9,6 +9,7 @@ import {
   type SettingsSectionId,
 } from "./SettingsView";
 import { composerModifierLabel } from "./ComposerEditor";
+import { RuntimeSettingsPanel } from "./RuntimeSettingsPanel";
 import { BUILTIN_THEMES } from "./theme";
 import type { DocumentEngineInstallProgress } from "./native";
 import type {
@@ -475,6 +476,8 @@ describe("SettingsView", () => {
       snapshot_enabled: true,
       snapshot_max_size_mb: 1024,
       computer_use_mode: "background_app",
+      computer_use_target_scope: "app_window",
+      computer_use_delivery_policy: "allow_foreground",
       extra_tools: ["pkg.UserTool"],
       extra_tools_by_source: { userSettings: ["pkg.UserTool"] },
       sources: ["/Users/test/.crabcode/settings.json"],
@@ -499,8 +502,8 @@ describe("SettingsView", () => {
       />,
     ));
 
-    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Computer Use 操作模式"] button'))
-      .find((button) => button.textContent === "前台桌面")!.click());
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Computer Use 操作目标"] button'))
+      .find((button) => button.textContent === "整个桌面")!.click());
     act(() => container.querySelector<HTMLButtonElement>('[aria-label="启用文件快照"]')!.click());
     const size = container.querySelector<HTMLInputElement>('[aria-label="快照最大大小（MiB）"]')!;
     act(() => changeInput(size, "2048"));
@@ -511,11 +514,44 @@ describe("SettingsView", () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="移除额外工具 pkg.UserTool"]')!.click());
 
     expect(handlers.onMutateRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({ action: "set_snapshot", snapshot_enabled: false, source: "projectSettings" }));
-    expect(handlers.onMutateRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({ action: "set_computer_use_mode", computer_use_mode: "foreground_desktop", source: "projectSettings" }));
+    expect(handlers.onMutateRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({ action: "set_computer_use_options", computer_use_target_scope: "desktop", source: "projectSettings" }));
     expect(handlers.onMutateRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({ action: "set_snapshot", snapshot_max_size_mb: 2048, source: "projectSettings" }));
     expect(handlers.onMutateRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({ action: "add_extra_tool", tool_path: "pkg.ProjectTool", source: "projectSettings" }));
     expect(handlers.onMutateRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({ action: "remove_extra_tool", tool_path: "pkg.UserTool", source: "userSettings" }));
     confirm.mockRestore();
+  });
+
+  it("requires explicit foreground permission and revokes desktop scope atomically", async () => {
+    const onMutate = vi.fn().mockResolvedValue(undefined);
+    const data: RuntimeSettingsResponse = {
+      cwd: "/work/crabcode", snapshot_enabled: true, snapshot_max_size_mb: 1024,
+      computer_use_target_scope: "app_window", computer_use_delivery_policy: "strict_background",
+      extra_tools: [], extra_tools_by_source: {}, sources: [], warnings: [],
+      editable_sources: [{ id: "projectSettings", label: "项目配置", path: "/work/crabcode/.crabcode/settings.json", exists: true, writable: true }],
+    };
+    const render = (value: RuntimeSettingsResponse) => root.render(
+      <RuntimeSettingsPanel
+        activeConnection={settings.connections[0]} activeProject={settings.connections[0].projects[0]}
+        gateway={onlineGateway} data={value} loading={false} error={null}
+        onRefresh={vi.fn()} onMutate={onMutate}
+      />,
+    );
+    const button = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((item) => item.textContent === label)!;
+    act(() => render(data));
+    expect(button("整个桌面").disabled).toBe(true);
+    expect(container.textContent).toContain("点击、输入等动作尚未开放");
+    await act(async () => button("允许前台操作").click());
+    expect(onMutate).toHaveBeenLastCalledWith(expect.objectContaining({
+      computer_use_delivery_policy: "allow_foreground",
+    }));
+    act(() => render({ ...data, computer_use_target_scope: "desktop", computer_use_delivery_policy: "allow_foreground" }));
+    expect(button("整个桌面").disabled).toBe(false);
+    await act(async () => button("严格后台").click());
+    expect(onMutate).toHaveBeenLastCalledWith(expect.objectContaining({
+      computer_use_delivery_policy: "strict_background", computer_use_target_scope: "app_window",
+    }));
+    expect(onMutate).toHaveBeenCalledTimes(2);
   });
 
   it("shows a host-side command instead of remote execution for remote gateways", () => {

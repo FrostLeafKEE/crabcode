@@ -208,6 +208,8 @@ export class CrabCodeConnection implements vscode.Disposable {
       operationId,
       images: options?.images,
       computerUseMode: this.computerUseModeOverride(),
+      computerUseTargetScope: this.computerUseTargetScopeOverride(),
+      computerUseDeliveryPolicy: this.computerUseDeliveryPolicyOverride(),
     });
     if (sessionId) this.activeForegroundOperations.set(sessionId, operationId);
     this.sendCommand(cmd);
@@ -307,6 +309,8 @@ export class CrabCodeConnection implements vscode.Disposable {
     const computerUseMode = this.computerUseModeOverride();
     this.sendRaw(serializeCommand(buildNewSessionCommand(cwd, {
       ...(computerUseMode ? { computer_use_mode: computerUseMode } : {}),
+      computer_use_target_scope: this.computerUseTargetScopeOverride(),
+      computer_use_delivery_policy: this.computerUseDeliveryPolicyOverride(),
       ...overrides,
     })));
   }
@@ -317,6 +321,8 @@ export class CrabCodeConnection implements vscode.Disposable {
     const computerUseMode = this.computerUseModeOverride();
     this.sendRaw(serializeCommand(buildResumeSessionCommand(sessionId, {
       ...(computerUseMode ? { computer_use_mode: computerUseMode } : {}),
+      computer_use_target_scope: this.computerUseTargetScopeOverride(),
+      computer_use_delivery_policy: this.computerUseDeliveryPolicyOverride(),
       ...overrides,
     })));
   }
@@ -513,9 +519,22 @@ export class CrabCodeConnection implements vscode.Disposable {
   }
 
   private computerUseModeOverride(): "background_app" | "foreground_desktop" | undefined {
+    if (this.computerUseTargetScopeOverride()) return undefined;
     const inspect = this.config.inspect?.<string>("computerUseMode");
     const value = inspect?.workspaceFolderValue ?? inspect?.workspaceValue ?? inspect?.globalValue;
     return value === "background_app" || value === "foreground_desktop" ? value : undefined;
+  }
+
+  private computerUseTargetScopeOverride(): "app_window" | "desktop" | undefined {
+    const inspect = this.config.inspect?.<string>("computerUseTargetScope");
+    const value = inspect?.workspaceFolderValue ?? inspect?.workspaceValue ?? inspect?.globalValue;
+    return value === "app_window" || value === "desktop" ? value : undefined;
+  }
+
+  private computerUseDeliveryPolicyOverride(): "strict_background" | "allow_foreground" | undefined {
+    const inspect = this.config.inspect?.<string>("computerUseDeliveryPolicy");
+    const value = inspect?.workspaceFolderValue ?? inspect?.workspaceValue ?? inspect?.globalValue;
+    return value === "strict_background" || value === "allow_foreground" ? value : undefined;
   }
 
   private logRawPayload(direction: "send" | "recv", raw: string): void {

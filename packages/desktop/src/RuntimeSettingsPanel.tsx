@@ -60,6 +60,9 @@ export function RuntimeSettingsPanel({
   const writableSources = useMemo(() => sourceOptions.filter((item) => item.writable), [sourceOptions]);
   const online = gateway?.status === "online";
   const canEdit = online && Boolean(onMutate) && writableSources.length > 0;
+  const computerUseTarget = data?.computer_use_target_scope
+    ?? (data?.computer_use_mode === "foreground_desktop" ? "desktop" : "app_window");
+  const computerUsePolicy = data?.computer_use_delivery_policy ?? "strict_background";
 
   useEffect(() => {
     setSnapshotSizeDraft(data ? String(data.snapshot_max_size_mb) : "");
@@ -96,13 +99,15 @@ export function RuntimeSettingsPanel({
     }
   };
 
-  const saveComputerUseMode = async (mode: "background_app" | "foreground_desktop") => {
+  const saveComputerUseOptions = async (
+    changes: Pick<RuntimeSettingsMutation, "computer_use_target_scope" | "computer_use_delivery_policy">,
+  ) => {
     try {
       await mutate({
-        action: "set_computer_use_mode",
+        action: "set_computer_use_options",
         source,
         cwd: activeProject?.path,
-        computer_use_mode: mode,
+        ...changes,
       });
     } catch {
       // The mutation banner contains the remote error.
@@ -250,28 +255,51 @@ export function RuntimeSettingsPanel({
             </div>
             <div className="settings-row compact">
               <div className="settings-row-copy">
-                <strong>操作模式</strong>
+                <strong>操作目标</strong>
                 <span>
-                  后台应用模式按指定窗口操作，允许应用切到前台；前台桌面模式会控制真实鼠标和键盘。
+                  指定窗口使用窗口内坐标；整个桌面会控制真实鼠标和键盘。
                 </span>
               </div>
-              <div className="settings-segmented" aria-label="Computer Use 操作模式">
-                {(["background_app", "foreground_desktop"] as const).map((mode) => (
+              <div className="settings-segmented" aria-label="Computer Use 操作目标">
+                {(["app_window", "desktop"] as const).map((scope) => (
                   <button
-                    key={mode}
+                    key={scope}
                     type="button"
-                    className={(data.computer_use_mode ?? "background_app") === mode ? "active" : ""}
-                    aria-pressed={(data.computer_use_mode ?? "background_app") === mode}
-                    disabled={!canEdit || mutationBusy}
-                    onClick={() => void saveComputerUseMode(mode)}
+                    className={computerUseTarget === scope ? "active" : ""}
+                    aria-pressed={computerUseTarget === scope}
+                    disabled={!canEdit || mutationBusy || (scope === "desktop" && computerUsePolicy !== "allow_foreground")}
+                    onClick={() => void saveComputerUseOptions({ computer_use_target_scope: scope })}
                   >
-                    {mode === "background_app" ? "后台应用" : "前台桌面"}
+                    {scope === "app_window" ? "指定窗口" : "整个桌面"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="settings-row compact">
+              <div className="settings-row-copy">
+                <strong>前台权限</strong>
+                <span>严格后台无法执行的动作会明确返回不支持；允许前台可能打断你正在进行的操作。</span>
+              </div>
+              <div className="settings-segmented" aria-label="Computer Use 前台权限">
+                {(["strict_background", "allow_foreground"] as const).map((policy) => (
+                  <button
+                    key={policy}
+                    type="button"
+                    className={computerUsePolicy === policy ? "active" : ""}
+                    aria-pressed={computerUsePolicy === policy}
+                    disabled={!canEdit || mutationBusy}
+                    onClick={() => void saveComputerUseOptions({
+                      computer_use_delivery_policy: policy,
+                      ...(policy === "strict_background" ? { computer_use_target_scope: "app_window" as const } : {}),
+                    })}
+                  >
+                    {policy === "strict_background" ? "严格后台" : "允许前台操作"}
                   </button>
                 ))}
               </div>
             </div>
             <div className="runtime-settings-note">
-              后台应用模式当前仅在 macOS 可用；不支持整张桌面、系统级界面或缺少目标窗口的操作。
+              指定窗口目前仅支持 macOS。当前版本的严格后台仅支持查看窗口，点击、输入等动作尚未开放；使用现有输入功能或整个桌面前，请显式选择允许前台操作。
             </div>
           </section>
 

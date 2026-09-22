@@ -70,16 +70,23 @@ Open **Settings** and search for `CrabCode`, or add settings such as:
   "crabcode.gatewayAutoInstall": true,
   "crabcode.pythonPath": "",
   "crabcode.showDiffOnFileChange": false,
-  "crabcode.computerUseMode": "background_app"
+  "crabcode.computerUseTargetScope": "app_window",
+  "crabcode.computerUseDeliveryPolicy": "strict_background"
 }
 ```
 
-`crabcode.computerUseMode` accepts `background_app` and
-`foreground_desktop`. A value explicitly saved in VS Code overrides the
-Gateway's `computer_use.mode` for sessions created or resumed by the extension.
-Background mode targets an application window and allows it to become foreground,
-including through `focus_window`. Coordinates remain window-local; it does not
-automatically switch to full-desktop control.
+Explicit VS Code values override the Gateway's `computer_use.target_scope`
+and `computer_use.delivery_policy` when creating, resuming or sending to a
+session. Merely inheriting an extension default does not override Gateway settings.
+Targets are `app_window` and `desktop`; policies are `strict_background`
+and `allow_foreground`. Desktop scope requires explicit foreground permission.
+
+Strict background currently allows observation but refuses input until the host
+has a verified focus-isolation provider. Select `allow_foreground` to use the
+existing activation-assisted window input; it can interrupt your foreground app.
+The model cannot set this permission inside a ComputerUse action.
+Legacy `crabcode.computerUseMode` remains a target alias only and grants no
+foreground permission. The new target setting takes precedence over that alias.
 
 Installing a suite provides its Python package and dependencies. Search and
 Debugger remain disabled until their import paths are added to the Gateway's

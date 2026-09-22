@@ -256,13 +256,21 @@ def _bind_computer_use(
     host_id: str | None,
     enabled: bool | None = None,
     mode: str | None = None,
+    target_scope: str | None = None,
+    delivery_policy: str | None = None,
 ) -> None:
     """Bind a session to a Desktop host before tools are initialized."""
     if enabled is not None:
         session.computer_use_enabled = enabled
+    if target_scope is not None:
+        mode = "foreground_desktop" if target_scope == "desktop" else "background_app"
     if mode is not None:
         session._computer_use_mode_override = mode
         session.computer_use_mode = mode
+        session.computer_use_target_scope = "desktop" if mode == "foreground_desktop" else "app_window"
+    if delivery_policy is not None:
+        session._computer_use_delivery_policy_override = delivery_policy
+        session.computer_use_delivery_policy = delivery_policy
     if host_id is None:
         return
     session.computer_use_backend = state.computer_use_broker
@@ -304,6 +312,8 @@ async def new_session(req: NewSessionRequest, request: Request) -> SessionInfo:
             req.computer_use_host_id,
             req.computer_use_enabled,
             req.computer_use_mode,
+            target_scope=req.computer_use_target_scope,
+            delivery_policy=req.computer_use_delivery_policy,
         )
         _attach_event_bus(session, request.app.state.event_bus)
         await session.initialize()
@@ -414,6 +424,8 @@ async def resume_session(req: ResumeSessionRequest, request: Request) -> Session
                 req.computer_use_host_id,
                 req.computer_use_enabled,
                 req.computer_use_mode,
+                target_scope=req.computer_use_target_scope,
+                delivery_policy=req.computer_use_delivery_policy,
             )
 
     if session is None:
@@ -445,6 +457,8 @@ async def resume_session(req: ResumeSessionRequest, request: Request) -> Session
                     req.computer_use_host_id,
                     req.computer_use_enabled,
                     req.computer_use_mode,
+                    target_scope=req.computer_use_target_scope,
+                    delivery_policy=req.computer_use_delivery_policy,
                 )
                 _attach_event_bus(candidate, request.app.state.event_bus)
                 try:
@@ -526,6 +540,8 @@ async def resume_session(req: ResumeSessionRequest, request: Request) -> Session
             req.computer_use_host_id,
             req.computer_use_enabled,
             req.computer_use_mode,
+            target_scope=req.computer_use_target_scope,
+            delivery_policy=req.computer_use_delivery_policy,
         )
 
     # Capture the primitive count while the installed object is still fenced
@@ -831,11 +847,10 @@ async def send_message(req: SendMessageRequest, request: Request):
         session = _get_session(request, req.session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        if req.computer_use_enabled is not None:
-            session.computer_use_enabled = req.computer_use_enabled
-        if req.computer_use_mode is not None:
-            session._computer_use_mode_override = req.computer_use_mode
-            session.computer_use_mode = req.computer_use_mode
+        _bind_computer_use(
+            session, request.app.state, None, req.computer_use_enabled, req.computer_use_mode,
+            req.computer_use_target_scope, req.computer_use_delivery_policy,
+        )
         operation_id = req.operation_id or uuid.uuid4().hex
         if req.operation_id is None:
             while operation_is_registered(

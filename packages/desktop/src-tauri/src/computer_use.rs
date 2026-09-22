@@ -53,6 +53,11 @@ use core_graphics::window::{
 #[cfg(target_os = "macos")]
 use foreign_types::ForeignType;
 
+#[cfg(all(test, target_os = "macos"))]
+mod background_experiment;
+mod policy;
+use policy::{DeliveryPolicy, TargetScope};
+
 const MAX_SCREENSHOT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_SCROLL_DELTA: i32 = 10_000;
 #[cfg(target_os = "macos")]
@@ -79,13 +84,21 @@ pub struct ComputerUseCapabilities {
     platform: &'static str,
     displays: Vec<DisplayInfo>,
     supported_modes: Vec<&'static str>,
+    delivery_policy_version: u8,
+    strict_background_input_available: bool,
+    strict_background_reason: &'static str,
     reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecuteRequest {
     #[serde(default)]
-    mode: ComputerUseMode,
+    mode: Option<ComputerUseMode>,
+    #[serde(default)]
+    target_scope: Option<TargetScope>,
+    #[serde(default)]
+    delivery_policy: DeliveryPolicy,
     action: ComputerAction,
 }
 
@@ -103,6 +116,7 @@ impl Default for ComputerUseMode {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ComputerAction {
     action: String,
     x: Option<i32>,
@@ -163,6 +177,9 @@ fn detect_capabilities() -> ComputerUseCapabilities {
                 platform: std::env::consts::OS,
                 displays: Vec::new(),
                 supported_modes: supported_modes(),
+                delivery_policy_version: 1,
+                strict_background_input_available: false,
+                strict_background_reason: "No verified preventive focus provider",
                 reason: Some("No graphical displays were detected".to_string()),
             }
         }
@@ -173,6 +190,9 @@ fn detect_capabilities() -> ComputerUseCapabilities {
                 platform: std::env::consts::OS,
                 displays: Vec::new(),
                 supported_modes: supported_modes(),
+                delivery_policy_version: 1,
+                strict_background_input_available: false,
+                strict_background_reason: "No verified preventive focus provider",
                 reason: Some(error),
             }
         }
@@ -202,6 +222,9 @@ fn detect_capabilities() -> ComputerUseCapabilities {
         platform: std::env::consts::OS,
         displays,
         supported_modes: supported_modes(),
+        delivery_policy_version: 1,
+        strict_background_input_available: false,
+        strict_background_reason: "No verified preventive focus provider",
         reason,
     }
 }
@@ -216,6 +239,9 @@ pub async fn computer_use_capabilities() -> ComputerUseCapabilities {
             platform: std::env::consts::OS,
             displays: Vec::new(),
             supported_modes: supported_modes(),
+            delivery_policy_version: 1,
+            strict_background_input_available: false,
+            strict_background_reason: "No verified preventive focus provider",
             reason: Some(format!("Computer Use capability detection failed: {error}")),
         })
 }
@@ -1164,7 +1190,7 @@ fn mac_ax_click_target(
             }
         }
     }
-    
+
     let mut remaining = 1024;
     mac_ax_pressable_at_point(
         window?,
@@ -1558,7 +1584,10 @@ fn mac_prepare_mouse_window(target: WindowTarget) -> Result<(), String> {
                 AXUIElementPerformAction(window.as_CFTypeRef(), raise.as_concrete_TypeRef())
             };
             if status != AX_ERROR_SUCCESS {
-                return Err(mac_ax_error("Preparing the selected window for mouse input", status));
+                return Err(mac_ax_error(
+                    "Preparing the selected window for mouse input",
+                    status,
+                ));
             }
         }
     }
@@ -1571,7 +1600,10 @@ fn mac_prepare_mouse_window(target: WindowTarget) -> Result<(), String> {
         )
     };
     if status != AX_ERROR_SUCCESS {
-        return Err(mac_ax_error("Activating the target for mouse input", status));
+        return Err(mac_ax_error(
+            "Activating the target for mouse input",
+            status,
+        ));
     }
     let process = mac_process_serial_number(target.pid)?;
     for _ in 0..25 {
@@ -1585,7 +1617,10 @@ fn mac_prepare_mouse_window(target: WindowTarget) -> Result<(), String> {
         }
         thread::sleep(Duration::from_millis(10));
     }
-    Err("The target did not remain active for mouse input; observe again before clicking".to_string())
+    Err(
+        "The target did not remain active for mouse input; observe again before clicking"
+            .to_string(),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -1596,7 +1631,9 @@ fn mac_validate_mouse_layout(
 ) -> Result<(), String> {
     let windows = mac_all_window_info()?;
     let stable = [root, event_target].iter().all(|target| {
-        windows.iter().any(|window| window.target == *target && window.on_screen)
+        windows
+            .iter()
+            .any(|window| window.target == *target && window.on_screen)
     });
     let interactive = mac_ax_application_interactive_window_ids(root.pid).unwrap_or_default();
     let group = mac_window_group_from_info(root, &windows, &interactive);
@@ -2643,7 +2680,11 @@ fn execute_background_click(action: &ComputerAction) -> Result<Value, String> {
                     &mut result,
                     foreground_monitor.and_then(MacForegroundMonitor::finish),
                 );
-                return Ok(finish_background_click(action, result, capture_screenshot(action)));
+                return Ok(finish_background_click(
+                    action,
+                    result,
+                    capture_screenshot(action),
+                ));
             }
         }
         mac_click(
@@ -2901,10 +2942,76 @@ fn execute_background(_request: ExecuteRequest) -> Result<Value, String> {
 }
 
 fn execute(request: ExecuteRequest) -> Result<Value, String> {
-    match request.mode {
-        ComputerUseMode::BackgroundApp => execute_background(request),
-        ComputerUseMode::ForegroundDesktop => execute_foreground(request),
+    // This gate precedes permission probes, AX writes, application launch and
+    // every native dispatch path. Direct Tauri calls receive the same policy.
+    let legacy_scope = request.mode.map(|mode| match mode {
+        ComputerUseMode::BackgroundApp => TargetScope::AppWindow,
+        ComputerUseMode::ForegroundDesktop => TargetScope::Desktop,
+    });
+    if let (Some(legacy), Some(scope)) = (legacy_scope, request.target_scope) {
+        if legacy != scope {
+            return Err("Conflicting Computer Use mode and target_scope".to_string());
+        }
     }
+    let scope = request
+        .target_scope
+        .or(legacy_scope)
+        .unwrap_or(TargetScope::AppWindow);
+    let policy = request.delivery_policy;
+    let action_name = request.action.action.clone();
+    if let Some(reason) = policy::rejection(scope, policy, &action_name) {
+        return Ok(json!({
+            "ok": false, "action": action_name,
+            "target_scope": scope, "delivery_policy": policy,
+            "error_code": "background_delivery_unsupported",
+            "error": reason, "summary": "此动作不支持严格后台；未发送输入",
+            "action_dispatched": false, "dispatch_succeeded": false,
+            "effect_verified": false, "retry_safe": true,
+            "focus_isolation": "unavailable", "foreground_activated": false,
+            "input_method": "none", "required_delivery_policy": "allow_foreground",
+        }));
+    }
+    let read_only = policy::observation_only(&action_name);
+    let outcome = match scope {
+        TargetScope::AppWindow => execute_background(request),
+        TargetScope::Desktop => execute_foreground(request),
+    };
+    let mut result = match outcome {
+        Ok(result) => result,
+        Err(error) => json!({
+            "ok": false, "action": action_name, "error": error,
+            "summary": "Computer Use execution failed",
+            // An exception can occur after a down event or AX action. Never
+            // turn that uncertainty into a safe-to-retry no-dispatch receipt.
+            "action_dispatched": if read_only { Some(false) } else { None },
+            "retry_safe": read_only, "effect_verified": false,
+        }),
+    };
+    result["target_scope"] = json!(scope);
+    result["delivery_policy"] = json!(policy);
+    result["focus_isolation"] = json!(if read_only {
+        "preserved"
+    } else {
+        "unavailable"
+    });
+    if result.get("action_dispatched").is_none() {
+        result["action_dispatched"] = if read_only {
+            json!(false)
+        } else if result["error_code"] == "background_click_dispatch_unverified" {
+            Value::Null
+        } else {
+            result
+                .get("dispatch_succeeded")
+                .cloned()
+                .unwrap_or(json!(true))
+        };
+    }
+    // Retrying a delivered input is not safe even when pixels did not change.
+    result["retry_safe"] = json!(result["action_dispatched"] == false);
+    if result.get("effect_verified").is_none() {
+        result["effect_verified"] = json!(false);
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2918,8 +3025,56 @@ pub async fn computer_use_execute(request: ExecuteRequest) -> Result<Value, Stri
 mod tests {
     use super::*;
 
+    #[test]
+    fn default_and_explicit_strict_requests_cannot_reach_native_input() {
+        // Deliberately omit window IDs and coordinates. Rejection must occur
+        // before resolving a window, probing AX permission or emitting events.
+        for action in [
+            "click",
+            "double_click",
+            "move",
+            "drag",
+            "scroll",
+            "type",
+            "keypress",
+            "focus_window",
+            "open_app",
+        ] {
+            for options in [
+                json!({}),
+                json!({"target_scope": "app_window", "delivery_policy": "strict_background"}),
+            ] {
+                let mut payload = options;
+                payload["action"] = json!({"action": action});
+                let result = execute(serde_json::from_value(payload).unwrap()).unwrap();
+                assert_eq!(
+                    result["error_code"], "background_delivery_unsupported",
+                    "{result}"
+                );
+                assert_eq!(result["action_dispatched"], false);
+                assert_eq!(result["retry_safe"], true);
+            }
+        }
+        let result = execute(
+            serde_json::from_value(json!({
+                "mode": "foreground_desktop", "action": {"action": "click"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result["action_dispatched"], false);
+        assert!(serde_json::from_value::<ExecuteRequest>(json!({
+            "action": {"action": "click", "delivery_policy": "allow_foreground"}
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<ExecuteRequest>(json!({
+            "delivery_policy": "automatic", "action": {"action": "wait"}
+        }))
+        .is_err());
+    }
+
     #[cfg(target_os = "macos")]
-    struct MacInputTestHost {
+    pub(super) struct MacInputTestHost {
         launch: std::process::Child,
         state_path: std::path::PathBuf,
         _directory: tempfile::TempDir,
@@ -2931,7 +3086,7 @@ mod tests {
             Self::start_fixture("tests/fixtures/scroll_host.swift", &[])
         }
 
-        fn start_fixture(source: &str, args: &[&str]) -> Self {
+        pub(super) fn start_fixture(source: &str, args: &[&str]) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let bundle = directory.path().join("InputFixture.app");
             let binaries = bundle.join("Contents/MacOS");
@@ -2972,7 +3127,7 @@ mod tests {
             }
         }
 
-        fn state(&self) -> Option<Value> {
+        pub(super) fn state(&self) -> Option<Value> {
             serde_json::from_slice(&std::fs::read(&self.state_path).ok()?).ok()
         }
     }
@@ -3120,7 +3275,7 @@ mod tests {
                 assert!((point.y - (f64::from(y) + 690.0) / zoom).abs() < 1.0);
             }
         }
-        
+
         let target = WindowTarget {
             window_id: 42,
             pid: 123,
@@ -3360,7 +3515,9 @@ mod tests {
             windows[1].layer = layer;
             let group = mac_window_group_from_info(root, &windows, &HashSet::from([107, 8676]));
             assert_eq!(
-                mac_event_target_from_group(group, root, (450, 250)).target.window_id,
+                mac_event_target_from_group(group, root, (450, 250))
+                    .target
+                    .window_id,
                 8676
             );
         }
@@ -3684,19 +3841,35 @@ mod tests {
         // Reproduce the failure: an ordinary PID-routed click is received by
         // the selected process/window, but inactive content discards it.
         mac_click(target, point.0, point.1, Some("left"), 1).unwrap();
-        thread::sleep(Duration::from_millis(150));
-        let dropped = host.state().unwrap();
-        assert_eq!(dropped["decoy_dropped_clicks"], 1);
+        let dropped = (0..40)
+            .find_map(|_| {
+                let state = host.state()?;
+                if state["decoy_dropped_clicks"] != 0 || state["decoy_clicks"] != 0 {
+                    Some(state)
+                } else {
+                    thread::sleep(Duration::from_millis(50));
+                    None
+                }
+            })
+            .unwrap_or_else(|| host.state().unwrap());
+        assert_eq!(
+            dropped["decoy_dropped_clicks"], 1,
+            "initial={initial}; target={target:?}; point={point:?}; after={dropped}"
+        );
         assert_eq!(dropped["decoy_clicks"], 0);
 
-        let result = execute(serde_json::from_value(json!({
-            "mode": "background_app",
-            "action": {
-                "action": "click", "window_id": target.window_id.to_string(),
-                "x": point.0 - target.x, "y": point.1 - target.y,
-                "include_screenshot": false,
-            },
-        })).unwrap()).unwrap();
+        let result = execute(
+            serde_json::from_value(json!({
+                "mode": "background_app", "delivery_policy": "allow_foreground",
+                "action": {
+                    "action": "click", "window_id": target.window_id.to_string(),
+                    "x": point.0 - target.x, "y": point.1 - target.y,
+                    "include_screenshot": false,
+                },
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let after = host.state().unwrap();
         assert_eq!(result["input_method"], "quartz_event", "{result}");
         assert_eq!(result["dispatch_succeeded"], true, "{result}");
@@ -3706,9 +3879,15 @@ mod tests {
         assert_eq!(after["target_clicks"], 0);
         assert_eq!(after["modifiers"], json!([]));
         // A moved observation or a vanished target must not pass preflight.
-        let stale = WindowTarget { x: target.x + 1, ..target };
+        let stale = WindowTarget {
+            x: target.x + 1,
+            ..target
+        };
         assert!(mac_validate_mouse_layout(stale, target, point).is_err());
-        let missing = WindowTarget { window_id: u32::MAX, ..target };
+        let missing = WindowTarget {
+            window_id: u32::MAX,
+            ..target
+        };
         assert!(mac_validate_mouse_layout(target, missing, point).is_err());
     }
 
@@ -3717,15 +3896,25 @@ mod tests {
     #[ignore = "sends one live click; explicitly set CRABCODE_TEST_WINDOW_ID, X, Y and CAPTURE_OUTPUT"]
     fn macos_background_click_at_explicit_live_point() {
         let window_id = std::env::var("CRABCODE_TEST_WINDOW_ID").unwrap();
-        let x = std::env::var("CRABCODE_TEST_X").unwrap().parse::<i32>().unwrap();
-        let y = std::env::var("CRABCODE_TEST_Y").unwrap().parse::<i32>().unwrap();
+        let x = std::env::var("CRABCODE_TEST_X")
+            .unwrap()
+            .parse::<i32>()
+            .unwrap();
+        let y = std::env::var("CRABCODE_TEST_Y")
+            .unwrap()
+            .parse::<i32>()
+            .unwrap();
         let output = std::env::var("CRABCODE_TEST_CAPTURE_OUTPUT").unwrap();
-        let result = execute(serde_json::from_value(json!({
-            "mode": "background_app",
-            "action": {
-                "action": "click", "window_id": window_id, "x": x, "y": y,
-            },
-        })).unwrap()).unwrap();
+        let result = execute(
+            serde_json::from_value(json!({
+                "mode": "background_app", "delivery_policy": "allow_foreground",
+                "action": {
+                    "action": "click", "window_id": window_id, "x": x, "y": y,
+                },
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let mut receipt = result.clone();
         receipt.as_object_mut().unwrap().remove("screenshot");
         eprintln!("{receipt}");
@@ -3964,7 +4153,7 @@ mod tests {
         });
         let result = execute(
             serde_json::from_value(json!({
-                "mode": "background_app", "action": click,
+                "mode": "background_app", "delivery_policy": "allow_foreground", "action": click,
             }))
             .unwrap(),
         )
@@ -3998,7 +4187,7 @@ mod tests {
             json!(initial["activating_button_y"].as_i64().unwrap() - i64::from(target.y));
         let result = execute(
             serde_json::from_value(json!({
-                "mode": "background_app", "action": activating_click,
+                "mode": "background_app", "delivery_policy": "allow_foreground", "action": activating_click,
             }))
             .unwrap(),
         )
@@ -4038,7 +4227,7 @@ mod tests {
         ] {
             let result = execute(
                 serde_json::from_value(json!({
-                    "mode": "background_app", "action": action,
+                    "mode": "background_app", "delivery_policy": "allow_foreground", "action": action,
                 }))
                 .unwrap(),
             )
@@ -4058,7 +4247,7 @@ mod tests {
         }
         let focus = execute(
             serde_json::from_value(json!({
-                "mode": "background_app", "action": {
+                "mode": "background_app", "delivery_policy": "allow_foreground", "action": {
                     "action": "focus_window", "window_id": decoy_target.window_id.to_string(),
                     "include_screenshot": false,
                 },
@@ -4084,7 +4273,8 @@ mod tests {
             "action": { "action": "list_windows" }
         }))
         .unwrap();
-        assert_eq!(request.mode, ComputerUseMode::BackgroundApp);
+        assert_eq!(request.mode, None);
+        assert_eq!(request.delivery_policy, DeliveryPolicy::StrictBackground);
         assert!(serde_json::from_value::<ExecuteRequest>(json!({
             "mode": "automatic",
             "action": { "action": "list_windows" }
@@ -4099,7 +4289,10 @@ mod tests {
             "action": { "action": "list_displays" }
         }))
         .unwrap();
-        let error = execute(request).unwrap_err();
+        let result = execute(request).unwrap();
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["action_dispatched"], false);
+        let error = result["error"].as_str().unwrap();
         assert!(
             error.contains("does not expose the full desktop")
                 || error.contains("background_app mode is unavailable")

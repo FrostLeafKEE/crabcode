@@ -45,6 +45,7 @@ class SessionBinding:
         self.computer_use_host_id = "desktop-test"
         self.computer_use_enabled = True
         self.computer_use_mode = "foreground_desktop"
+        self.computer_use_delivery_policy = "allow_foreground"
 
 
 class RecordingAdapter:
@@ -137,7 +138,7 @@ def test_background_mode_allows_focus_changes_but_keeps_window_coordinates():
     context.session.computer_use_mode = "background_app"
     prompt = asyncio.run(tool.get_prompt())
     assert "allowed to become foreground" in prompt
-    assert "background_click_unsupported" in prompt
+    assert "background_delivery_unsupported" in prompt
     assert "window-local screenshot coordinates" in prompt
     assert "must not add origin_x/origin_y" in prompt
     assert "composites AX-confirmed same-process auxiliary windows" in prompt
@@ -147,9 +148,9 @@ def test_background_mode_allows_focus_changes_but_keeps_window_coordinates():
     assert "background_click_foreground_violation" not in prompt
     assert "fall back to window-targeted mouse events" in prompt
     assert "focus changes are allowed" in prompt
-    assert "verification_warning is informational, not a dispatch failure" in prompt
-    assert "observe again and judge whether the intended action took effect" in prompt
-    assert "background_click_dispatch_unverified" in prompt
+    assert "action_dispatched reports submission, not UI success" in prompt
+    assert "Observe again to judge the intended effect" in prompt
+    assert "Uncertain dispatch" in prompt
     assert "A click succeeds when ok and effect_verified are true" not in prompt
     assert asyncio.run(tool.validate_input({"action": "observe"})) == (
         "window_id is required in background_app mode; call list_windows first"

@@ -10,6 +10,7 @@ from typing import Any
 from crabcode_core.logging_utils import get_logger
 from crabcode_core.text_io import read_utf8_text, write_utf8_text
 from crabcode_core.types.config import (
+    ComputerUseSettings,
     CrabCodeSettings,
     GatewaySecuritySettings,
     GatewayWorkspaceSettings,
@@ -31,6 +32,14 @@ def _merge_settings(base: dict[str, Any], override: dict[str, Any]) -> dict[str,
     """Deep merge two settings dicts. Arrays are concatenated and deduped."""
     result = deepcopy(base)
     for key, value in override.items():
+        # Normalize each layer before merging: a higher-priority legacy mode
+        # must override a lower-priority target_scope without granting input.
+        if (
+            key == "computer_use"
+            and isinstance(value, dict)
+            and value.get("mode") in ("background_app", "foreground_desktop")
+        ):
+            value = ComputerUseSettings.migrate_mode(value)
         if key in result:
             if isinstance(result[key], list) and isinstance(value, list):
                 seen: set[str] = set()

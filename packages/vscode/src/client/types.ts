@@ -157,6 +157,8 @@ export interface SendMessageRequest {
   images?: ImageAttachment[];
   computer_use_enabled?: boolean | null;
   computer_use_mode?: "background_app" | "foreground_desktop" | null;
+  computer_use_target_scope?: "app_window" | "desktop" | null;
+  computer_use_delivery_policy?: "strict_background" | "allow_foreground" | null;
 }
 
 export interface NewSessionRequest {
@@ -170,6 +172,8 @@ export interface NewSessionRequest {
   computer_use_host_id?: string | null;
   computer_use_enabled?: boolean | null;
   computer_use_mode?: "background_app" | "foreground_desktop" | null;
+  computer_use_target_scope?: "app_window" | "desktop" | null;
+  computer_use_delivery_policy?: "strict_background" | "allow_foreground" | null;
 }
 
 export interface ResumeSessionRequest {
@@ -183,6 +187,8 @@ export interface ResumeSessionRequest {
   computer_use_host_id?: string | null;
   computer_use_enabled?: boolean | null;
   computer_use_mode?: "background_app" | "foreground_desktop" | null;
+  computer_use_target_scope?: "app_window" | "desktop" | null;
+  computer_use_delivery_policy?: "strict_background" | "allow_foreground" | null;
 }
 
 export interface ForkSessionRequest {
@@ -282,12 +288,14 @@ export interface ModelSettingsMutationRequest {
 
 /** A focused mutation for runtime, Computer Use, and extra-tool settings. */
 export interface RuntimeSettingsMutationRequest {
-  action: "set_snapshot" | "set_computer_use_mode" | "add_extra_tool" | "remove_extra_tool";
+  action: "set_snapshot" | "set_computer_use_mode" | "set_computer_use_options" | "add_extra_tool" | "remove_extra_tool";
   source?: "userSettings" | "projectSettings" | "localSettings";
   cwd?: string | null;
   snapshot_enabled?: boolean | null;
   snapshot_max_size_mb?: number | null;
   computer_use_mode?: "background_app" | "foreground_desktop" | null;
+  computer_use_target_scope?: "app_window" | "desktop" | null;
+  computer_use_delivery_policy?: "strict_background" | "allow_foreground" | null;
   tool_path?: string | null;
 }
 
@@ -759,6 +767,8 @@ export interface RuntimeSettingsResponse {
   snapshot_enabled?: boolean;
   snapshot_max_size_mb?: number;
   computer_use_mode?: "background_app" | "foreground_desktop";
+  computer_use_target_scope?: "app_window" | "desktop";
+  computer_use_delivery_policy?: "strict_background" | "allow_foreground";
   extra_tools?: string[];
   extra_tools_by_source?: Record<string, string[]>;
   sources?: string[];

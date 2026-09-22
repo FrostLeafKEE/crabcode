@@ -218,7 +218,24 @@ class SnapshotSettings(BaseModel):
 class ComputerUseSettings(BaseModel):
     """Controls how a connected Computer Use host operates the GUI."""
 
-    mode: Literal["background_app", "foreground_desktop"] = "background_app"
+    target_scope: Literal["app_window", "desktop"] = "app_window"
+    delivery_policy: Literal["strict_background", "allow_foreground"] = "strict_background"
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_mode(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "mode" in value:
+            value = dict(value)
+            mode = value.pop("mode")
+            if mode not in ("background_app", "foreground_desktop"):
+                raise ValueError("Unknown Computer Use mode")
+            value.setdefault("target_scope", "desktop" if mode == "foreground_desktop" else "app_window")
+        return value
+
+    @property
+    def mode(self) -> str:
+        """Legacy routing alias. It never grants foreground permission."""
+        return "foreground_desktop" if self.target_scope == "desktop" else "background_app"
 
 
 class GatewaySecuritySettings(BaseModel):

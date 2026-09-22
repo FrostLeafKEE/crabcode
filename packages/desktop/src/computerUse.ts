@@ -13,6 +13,9 @@ export interface ComputerUseCapabilities {
   platform: string;
   displays: Array<{ id: string; name: string; x: number; y: number; width: number; height: number; primary: boolean }>;
   supported_modes: Array<"background_app" | "foreground_desktop">;
+  delivery_policy_version?: number;
+  strict_background_input_available?: boolean;
+  strict_background_reason?: string;
   reason?: string | null;
 }
 
@@ -36,6 +39,7 @@ export interface ComputerUsePreview {
   sessionId?: string;
   agentId?: string;
   mode: "background_app" | "foreground_desktop";
+  deliveryPolicy?: "strict_background" | "allow_foreground";
   status: "busy" | "ready" | "error";
   action: string;
   summary: string;
@@ -59,6 +63,7 @@ export interface ComputerUseState {
   enabled: boolean;
   active: boolean;
   mode: "background_app" | "foreground_desktop";
+  deliveryPolicy?: "strict_background" | "allow_foreground";
   status: ComputerUseStatus;
   capabilities: ComputerUseCapabilities | null;
   previews: ComputerUsePreview[];
@@ -97,6 +102,7 @@ export function initialComputerUseState(hostId: string, enabled: boolean): Compu
     enabled,
     active: false,
     mode: "background_app",
+    deliveryPolicy: "strict_background",
     status: enabled ? "connecting" : "disabled",
     capabilities: null,
     previews: [],
@@ -350,6 +356,8 @@ export class ComputerUseChannel {
         sessionId,
         agentId,
         mode: item.mode === "foreground_desktop" ? "foreground_desktop" : "background_app",
+        deliveryPolicy: item.delivery_policy === "allow_foreground" ? "allow_foreground"
+          : item.delivery_policy === "strict_background" ? "strict_background" : undefined,
         status,
         action: String(item.action || "unknown"),
         summary: String(item.summary || (status === "busy" ? "正在执行…" : item.action || "Computer Use")),
@@ -365,8 +373,11 @@ export class ComputerUseChannel {
       ...this.state.previews.filter((preview) => !keys.has(preview.key)),
       ...restored,
     ];
+    const latest = previews.reduce((a, b) => b.updatedAt > a.updatedAt ? b : a);
     this.publish({
       active: true,
+      mode: latest.mode,
+      deliveryPolicy: latest.deliveryPolicy,
       previews,
       status: previews.some((preview) => preview.status === "busy")
         ? "busy"
@@ -422,7 +433,10 @@ export class ComputerUseChannel {
       ? message.action as Record<string, unknown>
       : {};
     const actionName = String(action.action || "unknown");
-    const mode = message.mode === "foreground_desktop" ? "foreground_desktop" : "background_app";
+    const scope = message.target_scope ?? (message.mode === "foreground_desktop" ? "desktop" : "app_window");
+    const mode = scope === "desktop" ? "foreground_desktop" : "background_app";
+    const policy = message.delivery_policy ?? "strict_background";
+    const deliveryPolicy = policy === "allow_foreground" ? "allow_foreground" : "strict_background";
     const logId = requestId || randomUuid();
     const sessionId = typeof message.session_id === "string" ? message.session_id : undefined;
     const agentId = typeof message.agent_id === "string" ? message.agent_id : undefined;
@@ -436,6 +450,7 @@ export class ComputerUseChannel {
       sessionId,
       agentId,
       mode,
+      deliveryPolicy,
       status: "busy",
       action: actionName,
       summary: "正在执行…",
@@ -447,6 +462,7 @@ export class ComputerUseChannel {
       status: "busy",
       active: true,
       mode,
+      deliveryPolicy,
       error: null,
       previews: [...this.state.previews.filter((preview) => preview.key !== previewKey), busyPreview],
       logs: [...this.state.logs, {
@@ -460,11 +476,23 @@ export class ComputerUseChannel {
       }].slice(-100),
     });
     let result: HostResult;
+    let invoked = false;
     try {
       if (!this.enabled || !this.capabilities?.gui_available) throw new Error("Computer Use 已关闭或图形界面不可用");
-      result = await invoke<HostResult>("computer_use_execute", { request: { mode, action } });
+      if (scope !== "app_window" && scope !== "desktop") throw new Error("Invalid target scope");
+      if (policy !== "strict_background" && policy !== "allow_foreground") throw new Error("Invalid delivery policy");
+      if (scope === "desktop" && policy === "strict_background") throw new Error("整个桌面需要显式允许前台操作");
+      if (message.mode !== undefined && message.mode !== mode) throw new Error("Conflicting target scope and mode");
+      if (!["observe", "list_windows", "list_displays", "wait"].includes(actionName)
+        && this.capabilities.delivery_policy_version !== 1) throw new Error("宿主需要升级才能执行前台权限策略");
+      invoked = true;
+      result = await invoke<HostResult>("computer_use_execute", {
+        request: { mode, target_scope: scope, delivery_policy: policy, action },
+      });
     } catch (error) {
-      result = { ok: false, action: actionName, error: error instanceof Error ? error.message : String(error) };
+      result = { ok: false, action: actionName, error: error instanceof Error ? error.message : String(error),
+        action_dispatched: invoked ? null : false, retry_safe: !invoked, focus_isolation: "unavailable",
+        target_scope: scope, delivery_policy: policy };
     }
 
     const entry: ComputerUseLogEntry = {
@@ -485,6 +513,7 @@ export class ComputerUseChannel {
       sessionId,
       agentId,
       mode,
+      deliveryPolicy,
       status: result.ok === false ? "error" : "ready",
       action: String(result.action || actionName),
       summary: String(result.summary || result.error || actionName),

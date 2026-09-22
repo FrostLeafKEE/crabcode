@@ -71,17 +71,35 @@ The Models settings section queries the active Gateway for raw named-model
 fields, group inheritance, and effective configuration, and can create, edit,
 delete, or set the default model in the selected user, project, or local
 settings layer.
-The Runtime & Tools settings section edits the two Computer Use modes
-(`background_app` and `foreground_desktop`), remote file-snapshot behavior,
-and the `extra_tools` import-path list in the selected layer. Background mode
-is the default and never falls back automatically to foreground control. Disabling file
-snapshots does not disable conversation checkpoints; changes apply to new or
-reconnected sessions.
+The Runtime & Tools settings section edits Computer Use's independent
+`target_scope` (`app_window` / `desktop`) and `delivery_policy`
+(`strict_background` / `allow_foreground`), file snapshots, and extra tools.
+Defaults are `app_window + strict_background`. Desktop scope requires explicit
+`allow_foreground`. These are user/session settings, not model action arguments.
+
+Strict background currently supports window observation, listing and waiting.
+Input (including AX actions and app launch) returns
+`background_delivery_unsupported` before dispatch because a preventive focus
+provider has not yet been verified. To use the existing activation-assisted
+clicks, typing and dragging, explicitly select **允许前台操作**.
+This can interrupt the user's foreground app. There is no automatic escalation.
+
+Legacy `computer_use.mode` values migrate only the target scope, never the
+foreground permission. Old Desktop hosts must be upgraded before input can be
+sent. Policy is preserved across session binding and preview reconnection.
+Disabling file snapshots does not disable conversation checkpoints; changes
+apply to new or reconnected sessions.
+
+The native action receipt separates `action_dispatched` (true/false/null),
+`effect_verified`, `focus_isolation`, and `retry_safe`. Null dispatch means
+input may have arrived; a transport failure is not permission to click again.
+See [the implementation and experiment notes](../../docs/computer-use-delivery-policy.md).
 
 On macOS, background pointer events carry a window ID and window-local position.
 The position uses the private `CGEventSetWindowLocation` symbol, resolved at runtime;
-if it is unavailable, background pointer input returns an error without switching
-to foreground control. Compatibility can change with macOS or the target app.
+if it is unavailable, window-targeted pointer input returns an error without
+falling back to full-desktop input. Under `allow_foreground`, the target might
+already have been activated during preparation. Compatibility can change with macOS or the target app.
 Scroll results confirm dispatch only (`effect_verified: false`); the agent must
 check the target area in the observation. Both macOS modes now use pixels with
 positive deltas down/right, rather than the old mixed units and signs.

@@ -310,9 +310,11 @@ def _model_settings_from_files(cwd: str) -> ModelSettingsResponse:
     )
 
 
-def _runtime_settings_from_files(cwd: str) -> RuntimeSettingsResponse:
+def _runtime_settings_from_files(
+    cwd: str, pending: tuple[str, dict[str, Any]] | None = None,
+) -> RuntimeSettingsResponse:
     """Read effective snapshot and extra-tool settings by configuration layer."""
-    from crabcode_core.config.manager import SETTING_SOURCES
+    from crabcode_core.config.manager import SETTING_SOURCES, _merge_settings
     from crabcode_core.types.config import CrabCodeSettings
     from pydantic import ValidationError
 
@@ -322,7 +324,10 @@ def _runtime_settings_from_files(cwd: str) -> RuntimeSettingsResponse:
     extra_tools_by_source: dict[str, list[str]] = {}
 
     for source_name in SETTING_SOURCES:
-        raw = manager.get_settings_for_source(source_name)
+        raw = (
+            pending[1] if pending is not None and pending[0] == source_name
+            else manager.get_settings_for_source(source_name)
+        )
         if raw is None:
             continue
         relevant = {
@@ -340,7 +345,7 @@ def _runtime_settings_from_files(cwd: str) -> RuntimeSettingsResponse:
             extra_tools_by_source[source_name] = [
                 item for item in raw_tools if isinstance(item, str)
             ]
-        merged = _merge_model_settings(merged, relevant)
+        merged = _merge_settings(merged, relevant)
 
     try:
         settings = CrabCodeSettings.model_validate(merged)
@@ -380,6 +385,8 @@ def _runtime_settings_from_files(cwd: str) -> RuntimeSettingsResponse:
         snapshot_enabled=settings.snapshot.enabled,
         snapshot_max_size_mb=settings.snapshot.max_size_mb,
         computer_use_mode=settings.computer_use.mode,
+        computer_use_target_scope=settings.computer_use.target_scope,
+        computer_use_delivery_policy=settings.computer_use.delivery_policy,
         extra_tools=list(settings.extra_tools),
         extra_tools_by_source=extra_tools_by_source,
         sources=sources,
@@ -601,14 +608,26 @@ def _mutate_runtime_settings(
             SnapshotSettings.model_validate(snapshot)
         except Exception as exc:
             raise HTTPException(status_code=422, detail=f"快照配置无效：{exc}") from exc
-    elif req.action == "set_computer_use_mode":
+    elif req.action in {"set_computer_use_mode", "set_computer_use_options"}:
         computer_use = current.get("computer_use")
         if computer_use is None:
             computer_use = {}
             current["computer_use"] = computer_use
         if not isinstance(computer_use, dict):
             raise HTTPException(status_code=422, detail="computer_use must be a JSON object")
-        computer_use["mode"] = req.computer_use_mode
+        if req.computer_use_mode is not None:
+            computer_use["target_scope"] = (
+                "desktop" if req.computer_use_mode == "foreground_desktop" else "app_window"
+            )
+        if req.computer_use_target_scope is not None:
+            computer_use["target_scope"] = req.computer_use_target_scope
+        if req.computer_use_delivery_policy is not None:
+            computer_use["delivery_policy"] = req.computer_use_delivery_policy
+        if "mode" in computer_use:
+            computer_use.setdefault(
+                "target_scope", "desktop" if computer_use["mode"] == "foreground_desktop" else "app_window"
+            )
+            computer_use.pop("mode")
         try:
             from crabcode_core.types.config import ComputerUseSettings
 
@@ -634,6 +653,13 @@ def _mutate_runtime_settings(
             if not extra_tools:
                 current.pop("extra_tools", None)
 
+    if req.action in {"set_computer_use_mode", "set_computer_use_options"}:
+        effective = _runtime_settings_from_files(cwd, pending=(req.source, current))
+        if (
+            effective.computer_use_target_scope == "desktop"
+            and effective.computer_use_delivery_policy == "strict_background"
+        ):
+            raise HTTPException(status_code=422, detail="整个桌面需要显式选择允许前台操作；严格后台仅支持指定窗口。")
     _atomic_write_settings(path, current)
     ConfigManager(cwd=cwd).reset_cache()
     return _runtime_settings_from_files(cwd)
