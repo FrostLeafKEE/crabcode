@@ -2608,9 +2608,9 @@ fn record_click_outcome(result: &mut Value, dispatched: bool, changed: bool) {
     result["effect_verified"] = json!(changed);
     result["visual_change_detected"] = json!(changed);
     result["summary"] = json!(if dispatched {
-        "点击已发送"
+        "Click dispatched"
     } else {
-        "点击派发状态未确认"
+        "Click dispatch was not acknowledged"
     });
     if !changed {
         result["verification_warning"] = json!(
@@ -2964,7 +2964,7 @@ fn execute(request: ExecuteRequest) -> Result<Value, String> {
             "ok": false, "action": action_name,
             "target_scope": scope, "delivery_policy": policy,
             "error_code": "background_delivery_unsupported",
-            "error": reason, "summary": "此动作不支持严格后台；未发送输入",
+            "error": reason, "summary": "This action is not supported in strict background mode; no input was sent.",
             "action_dispatched": false, "dispatch_succeeded": false,
             "effect_verified": false, "retry_safe": true,
             "focus_isolation": "unavailable", "foreground_activated": false,
@@ -3059,6 +3059,11 @@ mod tests {
             .unwrap();
             assert_eq!(
                 result["error_code"], "background_delivery_unsupported",
+                "{result}"
+            );
+            assert_eq!(
+                result["summary"],
+                "This action is not supported in strict background mode; no input was sent.",
                 "{result}"
             );
             assert_eq!(result["action_dispatched"], false);
@@ -3165,7 +3170,7 @@ mod tests {
                 assert_eq!(result["dispatch_succeeded"], dispatched);
                 assert_eq!(result["verification_warning"].is_string(), !changed);
                 if dispatched {
-                    assert_eq!(result["summary"], "点击已发送");
+                    assert_eq!(result["summary"], "Click dispatched");
                     assert!(result["error_code"].is_null());
                     assert!(result["error"].is_null());
                 } else {
@@ -4170,7 +4175,7 @@ mod tests {
         // reports successful dispatch with a warning if pixels have not changed.
         assert_eq!(result["dispatch_succeeded"], true, "{result}");
         assert_eq!(result["ok"], true, "{result}");
-        assert_eq!(result["summary"], "点击已发送", "{result}");
+        assert_eq!(result["summary"], "Click dispatched", "{result}");
         assert!(result["error_code"].is_null(), "{result}");
         if result["visual_change_detected"] == false {
             assert_eq!(result["effect_verified"], false, "{result}");

@@ -633,7 +633,7 @@ def _mutate_runtime_settings(
 
             ComputerUseSettings.model_validate(computer_use)
         except Exception as exc:
-            raise HTTPException(status_code=422, detail=f"Computer Use 配置无效：{exc}") from exc
+            raise HTTPException(status_code=422, detail=f"Invalid Computer Use configuration: {exc}") from exc
     else:
         tool_path = _validate_extra_tool_path(req.tool_path)
         extra_tools = current.get("extra_tools")
@@ -659,7 +659,10 @@ def _mutate_runtime_settings(
             effective.computer_use_target_scope == "desktop"
             and effective.computer_use_delivery_policy == "strict_background"
         ):
-            raise HTTPException(status_code=422, detail="整个桌面需要显式选择允许前台操作；严格后台仅支持指定窗口。")
+            raise HTTPException(
+                status_code=422,
+                detail="Desktop scope requires allow_foreground; strict_background supports app-window scope only.",
+            )
     _atomic_write_settings(path, current)
     ConfigManager(cwd=cwd).reset_cache()
     return _runtime_settings_from_files(cwd)

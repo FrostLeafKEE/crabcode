@@ -293,6 +293,9 @@ def test_runtime_settings_mutation_is_atomic_and_uses_the_effective_layers(tmp_p
     with pytest.raises(HTTPException) as exc:
         mutate(computer_use_target_scope="desktop")
     assert exc.value.status_code == 422
+    assert exc.value.detail == (
+        "Desktop scope requires allow_foreground; strict_background supports app-window scope only."
+    )
     assert project.read_bytes() == initial
     response = mutate(computer_use_delivery_policy="allow_foreground")
     assert response.computer_use_target_scope == "app_window"
@@ -358,6 +361,7 @@ def test_transport_failure_keeps_input_dispatch_uncertain_and_does_not_retry():
         await tool.setup(context)
         result = await tool.call({"action": "click", "window_id": "1", "x": 1, "y": 1}, context)
         assert result.is_error
+        assert result.result_for_display == "Computer Use failed: host disconnected"
         assert result.data["action_dispatched"] is None
         assert result.data["retry_safe"] is False
         assert result.data["delivery_policy"] == "allow_foreground"

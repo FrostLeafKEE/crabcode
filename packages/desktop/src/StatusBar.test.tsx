@@ -156,6 +156,7 @@ describe("desktop status bar", () => {
       ...initialComputerUseState("desktop-test", true),
       active: true,
       status: "ready",
+      deliveryPolicy: "strict_background",
       capabilities: {
         gui_available: true, input_available: true, platform: "macos", displays: [],
         supported_modes: ["background_app", "foreground_desktop"],

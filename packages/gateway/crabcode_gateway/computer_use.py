@@ -299,7 +299,7 @@ class ComputerUseBroker:
                         "delivery_policy": delivery_policy,
                         "status": "busy",
                         "action": str(action.get("action") or "unknown"),
-                        "summary": "正在执行…",
+                        "summary": "Executing…",
                         "updated_at_ms": self._now_ms(),
                         "release_deadline_ms": None,
                     }

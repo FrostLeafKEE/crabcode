@@ -298,7 +298,7 @@ class ComputerUseTool(Tool):
         if not enabled or not backend or not host_id or not backend.is_available(host_id, mode):
             return ToolResult(
                 result_for_model="Computer Use is unavailable or has been disabled by the user.",
-                result_for_display="Computer Use 不可用或已被用户关闭",
+                result_for_display="Computer Use is unavailable or has been disabled by the user.",
                 is_error=True,
             )
 
@@ -322,7 +322,7 @@ class ComputerUseTool(Tool):
                 "action": tool_input.get("action"),
                 "error": str(exc),
                 "error_code": "computer_use_transport_error",
-                "summary": f"Computer Use 失败：{exc}",
+                "summary": f"Computer Use failed: {exc}",
                 "action_dispatched": False if read_only else None,
                 "effect_verified": False,
                 "retry_safe": read_only,

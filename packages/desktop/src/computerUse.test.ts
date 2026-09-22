@@ -162,7 +162,7 @@ describe("ComputerUseChannel", () => {
       .mockResolvedValueOnce({
         ok: dispatched,
         action: "click",
-        summary: dispatched ? "点击已发送" : "点击派发状态未确认",
+        summary: dispatched ? "Click dispatched" : "Click dispatch was not acknowledged",
         dispatch_succeeded: dispatched,
         effect_verified: false,
         verification_warning: "Click effect is unverified; observe again",
@@ -187,7 +187,7 @@ describe("ComputerUseChannel", () => {
           action: { action: "click", window_id: "42", x: 100, y: 100 },
         }),
       });
-      const summary = dispatched ? "点击已发送" : "点击派发状态未确认";
+      const summary = dispatched ? "Click dispatched" : "Click dispatch was not acknowledged";
       await vi.waitFor(() => expect(states.at(-1)?.logs.at(-1)?.summary).toBe(summary));
       expect(states.at(-1)).toMatchObject({
         status: dispatched ? "ready" : "error",

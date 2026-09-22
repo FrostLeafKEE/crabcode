@@ -112,7 +112,7 @@ export function initialComputerUseState(hostId: string, enabled: boolean): Compu
 }
 
 export async function openComputerUseInputSettings(): Promise<void> {
-  if (!isDesktopShell()) throw new Error("辅助功能权限设置只能从 Crab Desktop 打开");
+  if (!isDesktopShell()) throw new Error("Accessibility settings can only be opened from Crab Desktop");
   await invoke("computer_use_open_input_settings");
 }
 
@@ -173,7 +173,7 @@ export class ComputerUseChannel {
         }
       });
       socket.addEventListener("error", () => {
-        if (this.socket === socket) this.publish({ status: "error", error: "Computer Use Host 连接失败" });
+        if (this.socket === socket) this.publish({ status: "error", error: "Computer Use Host connection failed" });
       });
     } catch (error) {
       this.publish({ status: "error", error: error instanceof Error ? error.message : String(error) });
@@ -191,7 +191,7 @@ export class ComputerUseChannel {
         platform: "browser",
         displays: [],
         supported_modes: [],
-        reason: "Computer Use 需要 Crab Desktop 原生应用",
+        reason: "Computer Use requires the Crab Desktop native app",
       };
     } else {
       try {
@@ -360,7 +360,7 @@ export class ComputerUseChannel {
           : item.delivery_policy === "strict_background" ? "strict_background" : undefined,
         status,
         action: String(item.action || "unknown"),
-        summary: String(item.summary || (status === "busy" ? "正在执行…" : item.action || "Computer Use")),
+        summary: String(item.summary || (status === "busy" ? "Executing…" : item.action || "Computer Use")),
         frame: item.frame && typeof item.frame === "object" ? item.frame as ComputerUseFrame : null,
         cursor: item.cursor && typeof item.cursor === "object" ? item.cursor as ComputerUseCursor : null,
         updatedAt: typeof item.updated_at_ms === "number" ? item.updated_at_ms : Date.now(),
@@ -393,7 +393,7 @@ export class ComputerUseChannel {
     try {
       message = JSON.parse(raw) as Record<string, unknown>;
     } catch {
-      this.publish({ status: "error", error: "Computer Use Host 收到无效消息" });
+      this.publish({ status: "error", error: "Computer Use Host received an invalid message" });
       return;
     }
     if (message.type === "computer_use_host_registered" || message.type === "computer_use_host_state_ack") {
@@ -406,7 +406,7 @@ export class ComputerUseChannel {
       return;
     }
     if (message.type === "computer_use_error") {
-      this.publish({ status: "error", error: String(message.error || "Computer Use Host 错误") });
+      this.publish({ status: "error", error: String(message.error || "Computer Use Host error") });
       return;
     }
     if (message.type === "computer_use_release") {
@@ -453,7 +453,7 @@ export class ComputerUseChannel {
       deliveryPolicy,
       status: "busy",
       action: actionName,
-      summary: "正在执行…",
+      summary: "Executing…",
       frame: previousPreview?.frame ?? null,
       cursor: previousPreview?.cursor ?? null,
       updatedAt: Date.now(),
@@ -469,7 +469,7 @@ export class ComputerUseChannel {
         id: logId,
         time: Date.now(),
         action: actionName,
-        summary: "正在执行…",
+        summary: "Executing…",
         ok: true,
         sessionId,
         agentId,
@@ -478,13 +478,13 @@ export class ComputerUseChannel {
     let result: HostResult;
     let invoked = false;
     try {
-      if (!this.enabled || !this.capabilities?.gui_available) throw new Error("Computer Use 已关闭或图形界面不可用");
+      if (!this.enabled || !this.capabilities?.gui_available) throw new Error("Computer Use is disabled or a graphical desktop is unavailable");
       if (scope !== "app_window" && scope !== "desktop") throw new Error("Invalid target scope");
       if (policy !== "strict_background" && policy !== "allow_foreground") throw new Error("Invalid delivery policy");
-      if (scope === "desktop" && policy === "strict_background") throw new Error("整个桌面需要显式允许前台操作");
+      if (scope === "desktop" && policy === "strict_background") throw new Error("Desktop scope requires allow_foreground");
       if (message.mode !== undefined && message.mode !== mode) throw new Error("Conflicting target scope and mode");
       if (!["observe", "list_windows", "list_displays", "wait"].includes(actionName)
-        && this.capabilities.delivery_policy_version !== 1) throw new Error("宿主需要升级才能执行前台权限策略");
+        && this.capabilities.delivery_policy_version !== 1) throw new Error("The host must be upgraded before it can enforce the foreground-delivery policy");
       invoked = true;
       result = await invoke<HostResult>("computer_use_execute", {
         request: { mode, target_scope: scope, delivery_policy: policy, action },
