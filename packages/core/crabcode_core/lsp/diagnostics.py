@@ -6,6 +6,7 @@ so the LLM can see compilation/type errors immediately after writing code.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
@@ -13,6 +14,10 @@ from typing import Any
 MAX_PROJECT_DIAGNOSTICS_FILES = 5
 # Maximum diagnostics per file
 MAX_DIAGNOSTICS_PER_FILE = 20
+# Diagnostics are advisory and run after a write has already succeeded. Never
+# keep a completed file tool in the "Running" state because an LSP server is
+# slow to start, fails to initialize, or stops responding.
+LSP_DIAGNOSTICS_TIMEOUT_SECONDS = 5.0
 
 # LSP DiagnosticSeverity enum values
 _SEVERITY_ERROR = 1
@@ -65,6 +70,21 @@ async def collect_and_format_diagnostics(
 
     Returns a string to append to the tool result, or empty string if no errors.
     """
+    try:
+        return await asyncio.wait_for(
+            _collect_and_format_diagnostics(lsp_manager, file_path),
+            timeout=LSP_DIAGNOSTICS_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        # Diagnostics are best-effort. In particular, a hung LSP must not hide
+        # the successful result of an Edit, Write, or apply_patch operation.
+        return ""
+
+
+async def _collect_and_format_diagnostics(
+    lsp_manager: Any,
+    file_path: str,
+) -> str:
     from crabcode_core.lsp.client import _path_to_uri, _uri_to_path
 
     try:

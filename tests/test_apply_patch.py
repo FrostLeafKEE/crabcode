@@ -5,8 +5,9 @@ import codecs
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from crabcode_core.api.base import StreamChunk
 from crabcode_core.permissions.manager import PermissionManager
@@ -16,7 +17,7 @@ from crabcode_core.tools.apply_patch import ApplyPatchTool, PatchError, parse_pa
 from crabcode_core.types.config import ApiConfig, PermissionRule, PermissionsSettings
 from crabcode_core.types.event import PermissionRequestEvent, ToolResultEvent
 from crabcode_core.types.message import create_user_message
-from crabcode_core.types.tool import PermissionBehavior, ToolContext
+from crabcode_core.types.tool import PermissionBehavior, ToolContext, ToolResult
 from crabcode_gateway.acp.types import to_locations, to_tool_kind
 
 
@@ -229,6 +230,36 @@ class ApplyPatchToolTests(unittest.IsolatedAsyncioTestCase):
                 action="patch",
             )
             file_snapshot.assert_not_called()
+
+    async def test_hung_lsp_does_not_hold_completed_patch_result(self) -> None:
+        class HungLspManager:
+            async def touch_file(self, file_path: str) -> None:
+                await asyncio.Event().wait()
+
+        completed = ToolResult(
+            data={"files": [{"path": "changed.py", "action": "update"}]},
+            result_for_model="Applied patch to 1 file [+1/-1]",
+            result_for_display="Applied patch to 1 file [+1/-1]",
+        )
+        started = time.monotonic()
+        with (
+            patch(
+                "crabcode_core.tools.apply_patch.run_file_tool",
+                new=AsyncMock(return_value=completed),
+            ),
+            patch(
+                "crabcode_core.lsp.diagnostics.LSP_DIAGNOSTICS_TIMEOUT_SECONDS",
+                0.01,
+            ),
+        ):
+            result = await ApplyPatchTool().call(
+                {"patch": "unused"},
+                ToolContext(cwd=".", lsp_manager=HungLspManager()),
+            )
+
+        self.assertIs(result, completed)
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(result.result_for_model, "Applied patch to 1 file [+1/-1]")
 
     async def test_permission_input_includes_every_patch_path(self) -> None:
         tool = ApplyPatchTool()

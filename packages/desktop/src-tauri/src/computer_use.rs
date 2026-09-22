@@ -1589,10 +1589,11 @@ fn mac_post_prepared_mouse(event: &CGEvent, pid: i32) {
 }
 
 #[cfg(target_os = "macos")]
-fn mac_prepare_mouse_window(target: WindowTarget) -> Result<(), String> {
+fn mac_prepare_mouse_window(target: WindowTarget) -> Result<(), ClickPreparationFailure> {
     let application_ref = unsafe { AXUIElementCreateApplication(target.pid) };
     if application_ref.is_null() {
-        return Err("Unable to prepare the target application for mouse input".to_string());
+        return Err(ClickFailureStage::WindowPreparation
+            .failure("Unable to prepare the target application for mouse input".to_string()));
     }
     let application = unsafe { CFType::wrap_under_create_rule(application_ref) };
     let enabled = CFBoolean::true_value();
@@ -1617,10 +1618,10 @@ fn mac_prepare_mouse_window(target: WindowTarget) -> Result<(), String> {
                 AXUIElementPerformAction(window.as_CFTypeRef(), raise.as_concrete_TypeRef())
             };
             if status != AX_ERROR_SUCCESS {
-                return Err(mac_ax_error(
+                return Err(ClickFailureStage::WindowPreparation.failure(mac_ax_error(
                     "Preparing the selected window for mouse input",
                     status,
-                ));
+                )));
             }
         }
     }
@@ -1633,27 +1634,34 @@ fn mac_prepare_mouse_window(target: WindowTarget) -> Result<(), String> {
         )
     };
     if status != AX_ERROR_SUCCESS {
-        return Err(mac_ax_error(
+        return Err(ClickFailureStage::Activation.failure(mac_ax_error(
             "Activating the target for mouse input",
             status,
-        ));
+        )));
     }
-    let process = mac_process_serial_number(target.pid)?;
+    let process = mac_process_serial_number(target.pid)
+        .map_err(|reason| ClickFailureStage::Activation.failure(reason))?;
     for _ in 0..25 {
-        if mac_front_process_serial_number()? == process {
+        if mac_front_process_serial_number()
+            .map_err(|reason| ClickFailureStage::Activation.failure(reason))?
+            == process
+        {
             // The application still needs to consume its activation message.
             thread::sleep(Duration::from_millis(50));
-            if mac_front_process_serial_number()? == process {
+            if mac_front_process_serial_number()
+                .map_err(|reason| ClickFailureStage::Activation.failure(reason))?
+                == process
+            {
                 return Ok(());
             }
             break;
         }
         thread::sleep(Duration::from_millis(10));
     }
-    Err(
+    Err(ClickFailureStage::Activation.failure(
         "The target did not remain active for mouse input; observe again before clicking"
             .to_string(),
-    )
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -2597,20 +2605,80 @@ fn finish_background_click(
 }
 
 #[cfg(target_os = "macos")]
-fn unsupported_background_click(
+#[derive(Clone, Copy)]
+enum ClickFailureStage {
+    TargetVisibility,
+    WindowPreparation,
+    Activation,
+    LayoutValidation,
+    BaselineCapture,
+}
+
+#[cfg(target_os = "macos")]
+struct ClickPreparationFailure {
+    stage: ClickFailureStage,
+    reason: String,
+}
+
+#[cfg(target_os = "macos")]
+impl ClickFailureStage {
+    fn failure(self, reason: String) -> ClickPreparationFailure {
+        ClickPreparationFailure {
+            stage: self,
+            reason,
+        }
+    }
+
+    fn diagnostics(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::TargetVisibility => (
+                "target_visibility",
+                "background_click_target_offscreen",
+                "Target window is off-screen; no click was sent",
+            ),
+            Self::WindowPreparation => (
+                "window_preparation",
+                "background_click_window_preparation_failed",
+                "Target window preparation failed; no mouse click was sent",
+            ),
+            Self::Activation => (
+                "activation",
+                "background_click_activation_failed",
+                "Target activation could not be confirmed or maintained; no mouse click was sent",
+            ),
+            Self::LayoutValidation => (
+                "layout_validation",
+                "background_click_layout_validation_failed",
+                "Window layout validation failed; no mouse click was sent",
+            ),
+            Self::BaselineCapture => (
+                "baseline_capture",
+                "background_click_baseline_capture_failed",
+                "Pre-click screenshot capture failed; no mouse click was sent",
+            ),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn failed_background_click_preparation(
     action: &ComputerAction,
     target: WindowTarget,
     event_target: WindowTarget,
     point: (i32, i32),
-    reason: String,
+    failure: ClickPreparationFailure,
 ) -> Value {
+    let (stage, error_code, summary) = failure.stage.diagnostics();
     json!({
         "ok": false,
         "mode": "background_app",
         "action": action.action,
-        "summary": "Background click is unsupported by the target control",
-        "error_code": "background_click_unsupported",
-        "error": reason,
+        "summary": summary,
+        "error_code": error_code,
+        "error": failure.reason,
+        "failure_stage": stage,
+        "dispatch_status": "not_sent",
+        "effect_status": "not_checked",
         "cursor": { "x": point.0, "y": point.1 },
         "coordinate_space": "window",
         "window_origin": { "x": target.x, "y": target.y },
@@ -2619,7 +2687,7 @@ fn unsupported_background_click(
         "effect_verified": false,
         "visual_change_detected": false,
         "input_method": "none",
-        "verification_method": "preflight_accessibility",
+        "verification_method": "not_performed",
         "foreground_activated": false,
         "foreground_verification": "not_dispatched",
         "real_cursor_moved": false,
@@ -2644,17 +2712,26 @@ fn record_click_foreground_change(result: &mut Value, verification: Result<bool,
 }
 
 #[cfg(target_os = "macos")]
-fn record_click_outcome(result: &mut Value, dispatched: bool, changed: bool) {
+fn record_click_outcome(result: &mut Value, dispatched: bool, visual_change: Option<bool>) {
+    let changed = visual_change.unwrap_or(false);
     // Dispatch is the execution result. Pixel changes are only evidence for
     // the model to interpret, not a prerequisite for a successful tool call.
     result["ok"] = json!(dispatched);
     result["dispatch_succeeded"] = json!(dispatched);
+    result["dispatch_status"] = json!(if dispatched { "sent" } else { "uncertain" });
+    result["effect_status"] = json!(if changed {
+        "change_detected"
+    } else {
+        "no_change_detected"
+    });
     result["effect_verified"] = json!(changed);
     result["visual_change_detected"] = json!(changed);
-    result["summary"] = json!(if dispatched {
+    result["summary"] = json!(if dispatched && changed {
         "Click dispatched"
+    } else if dispatched {
+        "Click dispatched; effect is unverified"
     } else {
-        "Click dispatch was not acknowledged"
+        "Click may have executed but was not acknowledged; observe before retrying"
     });
     if !changed {
         result["verification_warning"] = json!(
@@ -2662,10 +2739,21 @@ fn record_click_outcome(result: &mut Value, dispatched: bool, changed: bool) {
         );
     }
     if !dispatched {
+        result["failure_stage"] = json!("accessibility_dispatch");
         result["error_code"] = json!("background_click_dispatch_unverified");
         result["error"] = json!(
             "The accessibility action may have arrived but dispatch was not acknowledged; observe before deciding whether another action is needed"
         );
+    }
+    if visual_change.is_none() {
+        result["effect_status"] = json!("unavailable");
+        result["verification_method"] = json!("unavailable");
+        result["verification_warning"] = json!(
+            "Click effect could not be checked because result screenshots are unavailable or not comparable. Observe before deciding whether another action is needed."
+        );
+        if dispatched {
+            result["summary"] = json!("Click dispatched; effect verification is unavailable");
+        }
     }
 }
 
@@ -2679,7 +2767,18 @@ fn execute_background_click(
     let (x, y) = background_point(action, target)?;
     let event_window = mac_background_event_target(target, (x, y));
     let event_target = event_window.target;
-    let mut before = capture_screenshot(action)?;
+    let mut before = match capture_screenshot(action) {
+        Ok(frame) => frame,
+        Err(reason) => {
+            return Ok(failed_background_click_preparation(
+                action,
+                target,
+                event_target,
+                point,
+                ClickFailureStage::BaselineCapture.failure(reason),
+            ))
+        }
+    };
     let is_single_left_click = action.action == "click"
         && action
             .button
@@ -2696,7 +2795,13 @@ fn execute_background_click(
         };
         return Ok(finish_background_click(
             action,
-            unsupported_background_click(action, target, event_target, point, reason),
+            failed_background_click_preparation(
+                action,
+                target,
+                event_target,
+                point,
+                ClickFailureStage::TargetVisibility.failure(reason),
+            ),
             Ok(before),
         ));
     }
@@ -2722,16 +2827,22 @@ fn execute_background_click(
         );
     if uses_mouse {
         let preparation = if delivery_policy == DeliveryPolicy::StrictBackground {
-            mac_validate_mouse_layout(target, event_target, (x, y))?;
-            Ok(None)
+            mac_validate_mouse_layout(target, event_target, (x, y))
+                .map(|_| None)
+                .map_err(|reason| ClickFailureStage::LayoutValidation.failure(reason))
         } else {
             mac_prepare_mouse_window(event_target).and_then(|_| {
                 // Activation alone can change title-bar pixels. Compare the click
                 // against the prepared window, so that is not counted as its effect.
-                let baseline = capture_screenshot(action)?;
-                mac_validate_mouse_layout(target, event_target, (x, y))?;
-                if mac_front_process_serial_number()? != mac_process_serial_number(target.pid)? {
-                    return Err("The target lost activation before mouse input; no click was sent. Observe again before clicking".to_string());
+                let baseline = capture_screenshot(action)
+                    .map_err(|reason| ClickFailureStage::BaselineCapture.failure(reason))?;
+                mac_validate_mouse_layout(target, event_target, (x, y))
+                    .map_err(|reason| ClickFailureStage::LayoutValidation.failure(reason))?;
+                if mac_front_process_serial_number()
+                    .map_err(|reason| ClickFailureStage::Activation.failure(reason))?
+                    != mac_process_serial_number(target.pid)
+                        .map_err(|reason| ClickFailureStage::Activation.failure(reason))? {
+                    return Err(ClickFailureStage::Activation.failure("The target lost activation before mouse input; no click was sent. Observe again before clicking".to_string()));
                 }
                 Ok(Some(baseline))
             })
@@ -2739,9 +2850,14 @@ fn execute_background_click(
         match preparation {
             Ok(Some(baseline)) => before = baseline,
             Ok(None) => {}
-            Err(reason) => {
-                let mut result =
-                    unsupported_background_click(action, target, event_target, point, reason);
+            Err(failure) => {
+                let mut result = failed_background_click_preparation(
+                    action,
+                    target,
+                    event_target,
+                    point,
+                    failure,
+                );
                 record_click_foreground_change(
                     &mut result,
                     foreground_monitor.and_then(MacForegroundMonitor::finish),
@@ -2780,7 +2896,6 @@ fn execute_background_click(
             .ok()
             .and_then(|frame| screenshot_visual_change(&before, frame, (x, y)));
     }
-    let changed = visual_change.map(|change| change.detected).unwrap_or(false);
     let mut result = json!({
         "mode": "background_app",
         "action": action.action,
@@ -2807,7 +2922,7 @@ fn execute_background_click(
                 &semantic_dispatch,
                 Some(MacAxPressOutcome::Performed { .. })
             ),
-        changed,
+        visual_change.map(|change| change.detected),
     );
     match semantic_dispatch {
         None => {
@@ -3249,6 +3364,90 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn background_click_preparation_reports_each_failure_stage() {
+        let action = serde_json::from_value(json!({"action": "click"})).unwrap();
+        let target = WindowTarget {
+            window_id: 1,
+            pid: 2,
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
+        for (stage, name, code) in [
+            (
+                ClickFailureStage::TargetVisibility,
+                "target_visibility",
+                "background_click_target_offscreen",
+            ),
+            (
+                ClickFailureStage::WindowPreparation,
+                "window_preparation",
+                "background_click_window_preparation_failed",
+            ),
+            (
+                ClickFailureStage::Activation,
+                "activation",
+                "background_click_activation_failed",
+            ),
+            (
+                ClickFailureStage::LayoutValidation,
+                "layout_validation",
+                "background_click_layout_validation_failed",
+            ),
+            (
+                ClickFailureStage::BaselineCapture,
+                "baseline_capture",
+                "background_click_baseline_capture_failed",
+            ),
+        ] {
+            let result = failed_background_click_preparation(
+                &action,
+                target,
+                target,
+                (10, 10),
+                stage.failure("Native error detail".to_string()),
+            );
+            assert_eq!(result["failure_stage"], name);
+            assert_eq!(result["error_code"], code);
+            assert_eq!(result["error"], "Native error detail");
+            assert_eq!(result["ok"], false);
+            assert_eq!(result["dispatch_status"], "not_sent");
+            assert_eq!(result["effect_status"], "not_checked");
+            assert_eq!(result["verification_method"], "not_performed");
+            assert!(result["summary"].as_str().unwrap().contains("no "));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn background_click_unavailable_verification_preserves_dispatch() {
+        for dispatched in [true, false] {
+            let mut result = json!({});
+            record_click_outcome(&mut result, dispatched, None);
+            assert_eq!(result["ok"], dispatched);
+            assert_eq!(
+                result["dispatch_status"],
+                if dispatched { "sent" } else { "uncertain" }
+            );
+            assert_eq!(result["effect_status"], "unavailable");
+            assert_eq!(result["effect_verified"], false);
+            assert_eq!(result["verification_method"], "unavailable");
+            assert!(result["verification_warning"].is_string());
+            if dispatched {
+                assert_eq!(
+                    result["summary"],
+                    "Click dispatched; effect verification is unavailable"
+                );
+                assert!(result["error_code"].is_null());
+            } else {
+                assert_eq!(result["failure_stage"], "accessibility_dispatch");
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn background_click_receipt_separates_dispatch_effect_and_focus() {
         for verification in [
             Ok(false),
@@ -3259,15 +3458,34 @@ mod tests {
                 [(true, true), (true, false), (false, true), (false, false)]
             {
                 let mut result = json!({});
-                record_click_outcome(&mut result, dispatched, changed);
+                record_click_outcome(&mut result, dispatched, Some(changed));
                 record_click_foreground_change(&mut result, verification.clone());
                 assert_eq!(result["ok"], dispatched);
                 assert_eq!(result["effect_verified"], changed);
                 assert_eq!(result["visual_change_detected"], changed);
                 assert_eq!(result["dispatch_succeeded"], dispatched);
+                assert_eq!(
+                    result["dispatch_status"],
+                    if dispatched { "sent" } else { "uncertain" }
+                );
+                assert_eq!(
+                    result["effect_status"],
+                    if changed {
+                        "change_detected"
+                    } else {
+                        "no_change_detected"
+                    }
+                );
                 assert_eq!(result["verification_warning"].is_string(), !changed);
                 if dispatched {
-                    assert_eq!(result["summary"], "Click dispatched");
+                    assert_eq!(
+                        result["summary"],
+                        if changed {
+                            "Click dispatched"
+                        } else {
+                            "Click dispatched; effect is unverified"
+                        }
+                    );
                     assert!(result["error_code"].is_null());
                     assert!(result["error"].is_null());
                 } else {
@@ -4272,7 +4490,13 @@ mod tests {
         // reports successful dispatch with a warning if pixels have not changed.
         assert_eq!(result["dispatch_succeeded"], true, "{result}");
         assert_eq!(result["ok"], true, "{result}");
-        assert_eq!(result["summary"], "Click dispatched", "{result}");
+        assert!(
+            result["summary"]
+                .as_str()
+                .unwrap()
+                .starts_with("Click dispatched"),
+            "{result}"
+        );
         assert!(result["error_code"].is_null(), "{result}");
         if result["visual_change_detected"] == false {
             assert_eq!(result["effect_verified"], false, "{result}");
