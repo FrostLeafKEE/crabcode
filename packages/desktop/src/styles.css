@@ -10935,6 +10935,12 @@ html[data-theme="light"] .model-detail-field > small.default {
   height: 15px;
 }
 
+.settings-inline-note.model-test-success {
+  border-color: color-mix(in srgb, var(--green) 40%, transparent);
+  background: color-mix(in srgb, var(--green) 15%, transparent);
+  color: var(--green);
+}
+
 .settings-list-empty {
   min-height: 104px;
   display: grid;

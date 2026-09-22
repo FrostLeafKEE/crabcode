@@ -101,6 +101,7 @@ import {
   type FavoriteFolderDeleteMode,
 } from "./favorites";
 import { GatewayApi, SessionChannel } from "./gateway";
+import { useProjectModels } from "./useProjectModels";
 import {
   ComputerUseChannel,
   computerUseHostId,
@@ -799,10 +800,8 @@ function App() {
   const focusedSessionRef = useRef<FocusedSessionSnapshot | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const settingsRef = useRef<DesktopSettings | null>(null);
-  const gatewaysRef = useRef<GatewayMap>({});
   const documentAgentTransitionTimerRef = useRef<number | null>(null);
   settingsRef.current = settings;
-  gatewaysRef.current = gateways;
 
   useEffect(() => {
     const updateLayout = () => setWideProjectFilesLayout(shouldUseWideProjectFilesLayout(window.innerWidth));
@@ -824,13 +823,22 @@ function App() {
       ?? settings.connections[0]
       ?? null;
   }, [settings]);
-  const activeGateway = activeConnection ? gateways[activeConnection.id] : null;
+  const connectionGateway = activeConnection ? gateways[activeConnection.id] : null;
   const activeProject = activeConnection?.projects.find(
     (item) => item.id === activeConnection.last_project_id,
   ) ?? activeConnection?.projects.find(
     (item) => typeof activeConnection.last_project_path === "string"
       && projectPathKey(item.path) === projectPathKey(activeConnection.last_project_path),
   ) ?? activeConnection?.projects[0] ?? null;
+  const [modelCatalogRevision, setModelCatalogRevision] = useState(0);
+  const projectModels = useProjectModels(
+    activeConnection && connectionGateway?.status === "online" ? apiRef.current.get(activeConnection.id) : undefined,
+    activeProject?.path ?? connectionGateway?.workspace?.startup_cwd,
+    modelCatalogRevision,
+  );
+  const activeGateway = useMemo(() => connectionGateway
+    ? { ...connectionGateway, models: projectModels.models }
+    : null, [connectionGateway, projectModels.models]);
   useEffect(() => {
     setProjectFilesOpen(false);
     setProjectFileTreeOpen(false);
@@ -989,6 +997,7 @@ function App() {
     }));
     try {
       const data = await api.modelSettings(cwd);
+      setModelCatalogRevision(current => current + 1);
       setModelSettingsState((current) => current?.key === key
         ? { key, data, loading: false, error: null }
         : current);
@@ -1061,18 +1070,7 @@ function App() {
     }));
     try {
       const data = await api.mutateModelSettings(mutation);
-      const models = data.models.map((entry) => {
-        const provider = typeof entry.effective.provider === "string" ? entry.effective.provider : "";
-        const model = typeof entry.effective.model === "string" ? entry.effective.model : "";
-        return {
-          name: entry.name,
-          description: [provider, model].filter(Boolean).join("/") || entry.name,
-          group: entry.group ?? "default",
-        };
-      });
-      setGateways((current) => current[connectionId]
-        ? { ...current, [connectionId]: { ...current[connectionId], models } }
-        : current);
+      setModelCatalogRevision(current => current + 1);
       setModelSettingsState((current) => current?.key === key
         ? { key, data, loading: false, error: null }
         : current);
@@ -1433,7 +1431,8 @@ function App() {
     const inheritedPreferences = info ? undefined : connection.last_session_preferences;
     const rememberedModel = info
       ? undefined
-      : resolveRememberedModel(connection, gateways[connection.id]?.models ?? []);
+      : resolveRememberedModel(connection,
+          connection.id === activeConnection?.id && project.path === activeProject?.path ? projectModels.models : []);
     let key = sessionKey(connection.id, info?.session_id ?? `new-${randomUuid()}`);
     const existingChannel = channelRef.current.get(key);
     if (existingChannel && !existingChannel.isDisposed) {
@@ -1600,7 +1599,7 @@ function App() {
           }
           void updateSessionStatus(connection.id, key, id, true);
         } else {
-          void restoreSessionPreferences(
+          void api.models(undefined, project.path).then(models => isCurrentChannel() ? restoreSessionPreferences(
             connection.id,
             key,
             channel,
@@ -1609,8 +1608,10 @@ function App() {
               .find((item) => item.id === connection.id)
               ?.projects.find((item) => item.id === project.id)
               ?.session_preferences?.[id],
-            gatewaysRef.current[connection.id]?.models ?? [],
-          );
+            models,
+          ) : undefined).catch(error => {
+            if (isCurrentChannel()) setGlobalError(`加载会话模型列表失败：${String(error)}`);
+          });
         }
       },
       onState: (connected, error) => {
@@ -1632,7 +1633,9 @@ function App() {
     void channel.connect();
   }, [
     computerUseId,
-    gateways,
+    activeConnection?.id,
+    activeProject?.path,
+    projectModels.models,
     refreshProjectSessions,
     restoreSessionPreferences,
     updateConnection,
@@ -1738,25 +1741,12 @@ function App() {
       await api.authenticate();
       if (!isCurrentAttempt()) return;
       progress("loading_workspace", "正在加载工作区和模型");
-      const [workspace, models] = await Promise.all([
-        api.workspaceInfo().catch((error) => {
+      const workspace = await api.workspaceInfo().catch((error) => {
           const detail = error instanceof Error ? error.message : String(error);
           throw new Error(`加载工作区失败：${detail}`);
-        }),
-        api.models().catch((error) => {
-          const detail = error instanceof Error ? error.message : String(error);
-          throw new Error(`加载模型列表失败：${detail}`);
-        }),
-      ]);
+        });
       if (!isCurrentAttempt()) return;
       for (const detail of gatewayEnvironmentLog(workspace)) progress("environment", detail);
-      if (connection.last_model_profile && !resolveRememberedModel(connection, models)) {
-        updateConnection(connection.id, (current) => (
-          current.last_model_profile === connection.last_model_profile
-            ? { ...current, last_model_profile: null }
-            : current
-        ));
-      }
       const projects = connection.projects.length > 0
         ? connection.projects
         : [{
@@ -1783,7 +1773,7 @@ function App() {
           token: api.accessToken,
           tokenExpiresAt: api.tokenExpiresAt,
           workspace,
-          models,
+          models: [],
           sessionsByProject: Object.fromEntries(sessionEntries),
           runningCount: 0,
           pendingCount: 0,
@@ -3226,6 +3216,11 @@ function App() {
             if (!activeConnection) return Promise.reject(new Error("未选择 Gateway"));
             return mutateModelSettings(activeConnection.id, mutation);
           }}
+          onTestModel={(name) => {
+            const api = activeConnection ? apiRef.current.get(activeConnection.id) : null;
+            if (!api) return Promise.reject(new Error("Gateway 尚未连接"));
+            return api.testModel(name, activeProject?.path);
+          }}
           runtimeSettings={activeRuntimeSettingsState?.data ?? null}
           runtimeSettingsLoading={activeRuntimeSettingsState?.loading ?? false}
           runtimeSettingsError={activeRuntimeSettingsState?.error ?? null}
@@ -4003,9 +3998,13 @@ function App() {
                         models={activeGateway?.models ?? []}
                         value={activeModel}
                         fallback={activeSession.status?.model || "默认模型"}
-                        disabled={activeSession.loading || !activeSession.connected}
+                        disabled={activeSession.loading || !activeSession.connected || projectModels.loading}
                         onChange={selectModel}
                       />
+                      {projectModels.error && <button type="button" title={projectModels.error}
+                        onClick={() => setModelCatalogRevision(current => current + 1)}>
+                        模型列表加载失败，点击重试
+                      </button>}
                       <ReasoningEffortPicker
                         value={activeSession.status?.reasoning_effort}
                         disabled={activeSession.loading || !activeSession.connected}

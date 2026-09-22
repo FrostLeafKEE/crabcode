@@ -515,7 +515,8 @@ class CodexAdapter(APIAdapter):
         # Keep retry policy above the HTTP transport. Disable the SDK's
         # differing built-in policy (which also retries 429) and apply the
         # configured policy explicitly in _create_sdk_response_stream().
-        kwargs["max_retries"] = 0
+        from crabcode_core.api.network import sdk_options
+        kwargs.update(sdk_options(config))
         self.client = openai.AsyncOpenAI(**kwargs)
 
     async def resolve_context_window(self) -> int:
@@ -543,6 +544,9 @@ class CodexAdapter(APIAdapter):
     @staticmethod
     def _request_error_is_retryable(exc: BaseException) -> bool:
         """Retry transport failures and 5xx at this layer, but not 429."""
+        from crabcode_core.api.network import certificate_failure
+        if certificate_failure(exc):
+            return False
         pending: list[BaseException] = [exc]
         seen: set[int] = set()
         while pending:
@@ -594,8 +598,8 @@ class CodexAdapter(APIAdapter):
             )
             try:
                 response = await client.send(request, stream=True)
-            except httpx.TransportError:
-                if attempt >= max_retries:
+            except httpx.TransportError as exc:
+                if attempt >= max_retries or not self._request_error_is_retryable(exc):
                     raise
                 await asyncio.sleep(request_retry_backoff(attempt + 1))
                 continue
@@ -734,7 +738,8 @@ class CodexAdapter(APIAdapter):
                 raise RuntimeError(f"Unsupported generated image format: {output_format}")
             images[str(item.get("id") or result)] = {"media_type": media_type, "data": result}
 
-        async with httpx.AsyncClient(timeout=self.config.timeout) as client:
+        from crabcode_core.api.network import http_options, request_timeout
+        async with httpx.AsyncClient(timeout=request_timeout(self.config), **http_options(self.config)) as client:
             async with self._httpx_stream_with_retry(
                 client,
                 url=f"{self._base_url.rstrip('/')}/responses",
@@ -786,7 +791,8 @@ class CodexAdapter(APIAdapter):
         finalized_call_items: set[str] = set()
         saw_terminal_event = False
 
-        async with httpx.AsyncClient(timeout=self.config.timeout) as client:
+        from crabcode_core.api.network import http_options, request_timeout
+        async with httpx.AsyncClient(timeout=request_timeout(self.config), **http_options(self.config)) as client:
             async with self._httpx_stream_with_retry(
                 client,
                 url=url,

@@ -15,6 +15,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use xcap::image::{imageops::FilterType, DynamicImage, ImageFormat, RgbaImage};
 use xcap::{Monitor, Window};
 
+#[cfg(target_os = "windows")]
+mod windows_focus;
+
 #[cfg(target_os = "macos")]
 use core_foundation::array::{CFArray, CFArrayRef};
 #[cfg(target_os = "macos")]
@@ -413,6 +416,7 @@ fn activate_app(name: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn focus_app(name: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let status = Command::new("osascript")
@@ -423,17 +427,6 @@ fn focus_app(name: &str) -> Result<(), String> {
         ])
         .status();
 
-    #[cfg(target_os = "windows")]
-    let status = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "$ws=New-Object -ComObject WScript.Shell; if(-not $ws.AppActivate($args[0])){exit 1}",
-            name,
-        ])
-        .creation_flags(0x08000000)
-        .status();
-
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     return Err("Window focus is currently supported on macOS and Windows".to_string());
 
@@ -442,6 +435,34 @@ fn focus_app(name: &str) -> Result<(), String> {
         Ok(value) if value.success() => Ok(()),
         Ok(value) => Err(format!("Unable to focus app; process exited with {value}")),
         Err(error) => Err(format!("Unable to focus app: {error}")),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn select_focus_window(
+    windows: &[Value],
+    id: Option<&str>,
+    text: Option<&str>,
+) -> Result<u32, String> {
+    let matches: Vec<_> = windows
+        .iter()
+        .filter(|window| {
+            if let Some(id) = id {
+                window["id"].as_str() == Some(id)
+            } else if let Some(text) = text.filter(|text| !text.trim().is_empty()) {
+                window["title"].as_str() == Some(text) || window["app_name"].as_str() == Some(text)
+            } else {
+                false
+            }
+        })
+        .collect();
+    match matches.as_slice() {
+        [] => Err("Window not found; use list_windows and specify window_id".to_string()),
+        [window] => window["id"]
+            .as_str()
+            .and_then(|id| id.parse().ok())
+            .ok_or_else(|| "Invalid window_id".to_string()),
+        _ => Err("Multiple windows match; specify window_id from list_windows".to_string()),
     }
 }
 
@@ -2395,6 +2416,17 @@ fn perform_action(action: &ComputerAction, enigo: &mut Enigo) -> Result<String, 
             activate_app(name)?;
             Ok(format!("Opened {name}"))
         }
+        #[cfg(target_os = "windows")]
+        "focus_window" => {
+            let id = select_focus_window(
+                &window_list()?,
+                action.window_id.as_deref(),
+                action.text.as_deref(),
+            )?;
+            windows_focus::focus_window(id)?;
+            Ok(format!("Focused window {id}"))
+        }
+        #[cfg(not(target_os = "windows"))]
         "focus_window" => {
             let name = if let Some(name) = action.text.as_deref() {
                 name.to_string()
@@ -3110,6 +3142,38 @@ mod tests {
             "delivery_policy": "automatic", "action": {"action": "wait"}
         }))
         .is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_focus_selection_preserves_window_identity() {
+        let windows = vec![
+            json!({"id": "725632", "app_name": "Windows 资源管理器", "title": "PRTSNote - 文件资源管理器"}),
+            json!({"id": "2229786", "app_name": "Windows 资源管理器", "title": "desktop - 文件资源管理器"}),
+        ];
+        assert_eq!(
+            select_focus_window(&windows, Some("725632"), None),
+            Ok(725632)
+        );
+        // An explicit ID takes precedence, even if text names a different window.
+        assert_eq!(
+            select_focus_window(&windows, Some("725632"), Some("desktop - 文件资源管理器")),
+            Ok(725632)
+        );
+        assert_eq!(
+            select_focus_window(&windows, None, Some("desktop - 文件资源管理器")),
+            Ok(2229786)
+        );
+        assert!(
+            select_focus_window(&windows, None, Some("Windows 资源管理器"))
+                .unwrap_err()
+                .contains("Multiple windows")
+        );
+        assert!(
+            select_focus_window(&windows, Some("123"), Some("desktop - 文件资源管理器")).is_err()
+        );
+        assert!(select_focus_window(&windows, None, Some("")).is_err());
+        assert!(select_focus_window(&windows, None, None).is_err());
     }
 
     #[cfg(target_os = "macos")]
@@ -4307,7 +4371,7 @@ mod tests {
     }
 
     #[test]
-    fn computer_use_mode_defaults_to_background_and_rejects_unknown_values() {
+    fn computer_use_mode_uses_foreground_default_and_rejects_unknown_values() {
         let request: ExecuteRequest = serde_json::from_value(json!({
             "action": { "action": "list_windows" }
         }))
