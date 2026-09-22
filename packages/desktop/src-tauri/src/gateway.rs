@@ -160,8 +160,18 @@ pub struct EnsureGatewayResult {
     message: String,
 }
 
-fn client() -> Result<Client, String> {
-    Client::builder()
+fn bypass_gateway_proxy(base: &Url) -> bool {
+    matches!(base.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
+        || matches!(base.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback())
+        || base.host_str().is_some_and(|host| host.eq_ignore_ascii_case("localhost"))
+}
+
+fn client(base: &Url) -> Result<Client, String> {
+    let mut builder = Client::builder();
+    if bypass_gateway_proxy(base) {
+        builder = builder.no_proxy().redirect(reqwest::redirect::Policy::none());
+    }
+    builder
         .timeout(Duration::from_secs(3))
         .build()
         .map_err(|error| format!("Unable to create HTTP client: {error}"))
@@ -206,7 +216,7 @@ fn authenticate_connection_blocking(
     credential_ref: Option<String>,
 ) -> Result<AuthResult, String> {
     let base = parse_base_url(&base_url)?;
-    let http = client()?;
+    let http = client(&base)?;
     let info: AuthInfo = http
         .get(endpoint(&base, "auth/info")?)
         .send()
@@ -271,7 +281,7 @@ fn is_loopback(base: &Url) -> bool {
 }
 
 fn probe_health(base: &Url, credential_ref: Option<&str>) -> Result<Option<Value>, String> {
-    let http = client()?;
+    let http = client(base)?;
     let mut request = http.get(endpoint(base, "health")?);
     if let Some(reference) = credential_ref {
         if let Ok(password) = read_credential(reference) {
@@ -1932,6 +1942,16 @@ mod tests {
         assert!(!is_loopback(
             &parse_base_url("https://192.0.2.1:4096").unwrap()
         ));
+    }
+
+    #[test]
+    fn proxy_bypass_is_limited_to_literal_loopback() {
+        for url in ["http://localhost:4096", "http://127.0.0.1:4096", "http://[::1]:4096"] {
+            assert!(bypass_gateway_proxy(&parse_base_url(url).unwrap()));
+        }
+        for url in ["https://example.com", "http://192.168.1.2:4096", "http://localhost.example.com"] {
+            assert!(!bypass_gateway_proxy(&parse_base_url(url).unwrap()));
+        }
     }
 
     #[test]

@@ -106,8 +106,8 @@ def test_incomplete_chunked_read_retries_after_partial_text():
 
     assert len(adapter.requests) == 2
     retry = next(event for event in events if isinstance(event, StreamRetryEvent))
-    assert retry.message == "Reconnecting... 1/2"
-    assert "peer closed connection" in retry.error
+    assert retry.message == "模型连接中断，正在重试 1/2"
+    assert "ReadError" in retry.error
     assert retry.discarded_text_chars == len("partial")
     assert not any(isinstance(event, ErrorEvent) for event in events)
     assert [event.text for event in events if isinstance(event, StreamTextEvent)] == [
@@ -171,7 +171,7 @@ def test_connection_failure_uses_unbounded_budget_even_when_stream_budget_is_zer
     events, messages = run(adapter)
 
     retry = next(event for event in events if isinstance(event, StreamRetryEvent))
-    assert retry.message == "Reconnecting... waiting for network"
+    assert "持续重连已开启" in retry.message
     assert retry.unbounded is True
     assert retry.delay_seconds == 5.0
     assert len(adapter.requests) == 2
@@ -269,6 +269,7 @@ def test_retry_state_covers_backoff_unbounded_and_fallback():
             error="offline",
             max_retries=0,
             connection_failed=True,
+            unbounded_connection_retries=True,
         ).delay_seconds
         for _ in range(6)
     ]

@@ -48,7 +48,7 @@ class ResponsesStreamRetryState:
         max_retries: int,
         connection_failed: bool = False,
         retry_after: float | None = None,
-        unbounded_connection_retries: bool = True,
+        unbounded_connection_retries: bool = False,
         allow_unbounded_connection_retries: bool = True,
         try_transport_fallback: Callable[[], bool] | None = None,
     ) -> StreamRetry | None:
@@ -71,7 +71,7 @@ class ResponsesStreamRetryState:
                 MAX_CONNECTION_RETRY_DELAY_SECONDS,
             )
             return StreamRetry(
-                message="Reconnecting... waiting for network",
+                message="模型连接中断，正在等待网络恢复（持续重连已开启，可停止任务）",
                 error=error,
                 delay_seconds=delay,
                 retry_count=self.connection_retries,
@@ -101,7 +101,7 @@ class ResponsesStreamRetryState:
             else self._backoff(self.retries)
         )
         return StreamRetry(
-            message=f"Reconnecting... {self.retries}/{max_retries}",
+            message=f"模型连接中断，正在重试 {self.retries}/{max_retries}",
             error=error,
             delay_seconds=delay,
             retry_count=self.retries,

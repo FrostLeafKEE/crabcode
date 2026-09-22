@@ -170,6 +170,27 @@ class APIAdapter(ABC):
         """
         return False
 
+    async def reset_network_client(self) -> None:
+        """Replace a failed SDK connection pool without changing its routing policy."""
+        import asyncio
+        from crabcode_core.api.network import http_options, request_timeout
+
+        client = getattr(self, "client", None)
+        copy = getattr(client, "with_options", None)
+        if not callable(copy):
+            return
+        transport = httpx.AsyncClient(timeout=request_timeout(self.config), **http_options(self.config))
+        try:
+            replacement = copy(http_client=transport, max_retries=0)
+        except BaseException:
+            await transport.aclose()
+            raise
+        self.client = replacement
+        try:
+            await asyncio.wait_for(client.close(), timeout=2)
+        except Exception:
+            pass
+
     async def _count_tokens_http(
         self, url: str, payload: dict[str, Any], headers: dict[str, str],
     ) -> int | None:
@@ -179,7 +200,8 @@ class APIAdapter(ABC):
         # Keep the cooldown even if the caller's overall deadline cancels HTTP.
         self._token_count_retry_at = time.monotonic() + 300
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
+            from crabcode_core.api.network import http_options
+            async with httpx.AsyncClient(timeout=3.0, **http_options(getattr(self, "config", None))) as client:
                 response = await client.post(url, json=payload, headers=headers)
             if response.status_code in {404, 405, 501}:
                 self._token_count_retry_at = float("inf")

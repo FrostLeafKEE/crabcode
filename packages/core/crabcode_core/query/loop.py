@@ -15,6 +15,7 @@ from typing import Any, AsyncGenerator, Callable, Coroutine
 import httpx
 
 from crabcode_core.api.base import APIAdapter, ModelConfig, usage_int_field
+from crabcode_core.api.network import certificate_failure, network_error_message
 from crabcode_core.compact.compact import (
     DEFAULT_COMPACT_BUFFER_TOKENS,
     compact_conversation,
@@ -210,6 +211,8 @@ def _format_exception_message(exc: Exception) -> str:
 
 def _is_recoverable_api_exception(exc: Exception) -> bool:
     """Identify transport/server failures that are safe for the caller to retry."""
+    if certificate_failure(exc):
+        return False
     pending: list[BaseException] = [exc]
     seen: set[int] = set()
     while pending:
@@ -1098,7 +1101,7 @@ async def query_loop(
     effective_unbounded_connection_retries = bool(
         cfg.unbounded_connection_retries
         if cfg
-        else getattr(adapter_config, "unbounded_connection_retries", True)
+        else getattr(adapter_config, "unbounded_connection_retries", False)
     )
     context_window = params.context_window
     token_tracker = params.context_token_tracker or ContextTokenTracker()
@@ -1145,6 +1148,12 @@ async def query_loop(
         connection_failed: bool = False,
         retry_after: float | None = None,
     ) -> StreamRetry | None:
+        # Without durable item checkpoints, replaying partial output could
+        # duplicate text or tool calls. Let the user decide how to continue.
+        if _has_response_evidence() and not getattr(params.api_adapter, "emits_response_item_events", False):
+            return None
+        if "CERTIFICATE_VERIFY_FAILED" in error_message:
+            return None
         fallback = getattr(params.api_adapter, "try_switch_fallback_transport", None)
         allow_unbounded = type(params.api_adapter).__name__ != "BedrockAdapter"
         return stream_retry_state.schedule(
@@ -1247,6 +1256,13 @@ async def query_loop(
             )
             if retry.delay_seconds > 0:
                 await asyncio.sleep(retry.delay_seconds)
+            reset_client = getattr(params.api_adapter, "reset_network_client", None)
+            if callable(reset_client) and not retry.transport_fallback:
+                try:
+                    await reset_client()
+                except Exception as exc:
+                    yield ErrorEvent(message=network_error_message(exc, adapter_config), recoverable=True, error_type="network")
+                    return
 
         turn_count += 1
         # Tools and permission reviewers must always observe the active
@@ -1817,6 +1833,8 @@ async def query_loop(
         except Exception as e:
             response_outcome = "exception"
             error_str = _format_exception_message(e)
+            if _is_connection_api_exception(e) or certificate_failure(e) or isinstance(e, httpx.TransportError):
+                error_str = network_error_message(e, adapter_config)
             if _is_request_size_error(e):
                 yield _request_size_error_event(error_str)
                 return
@@ -1872,7 +1890,10 @@ async def query_loop(
                 else:
                     continue
             else:
-                logger.exception("Query loop failed")
+                if is_network_error or certificate_failure(e):
+                    logger.warning("Query network failure: %s", error_str)
+                else:
+                    logger.exception("Query loop failed")
                 yield ErrorEvent(
                     message=error_str,
                     recoverable=is_network_error,

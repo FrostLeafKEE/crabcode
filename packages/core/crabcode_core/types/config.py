@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 DEFAULT_FILESYSTEM_TIMEOUT = 3600.0
@@ -87,6 +87,25 @@ class ApiConfig(BaseModel):
     provider: str | None = None  # anthropic | openai | codex | ollama | gemini | azure | bedrock | vertex | router
     model: str | None = None
     base_url: str | None = None
+    network_mode: Literal["inherit", "direct", "proxy"] = "inherit"
+    proxy_url: str | None = None
+
+    @field_validator("proxy_url")
+    @classmethod
+    def validate_proxy_url(cls, value: str | None) -> str | None:
+        if not value:
+            return None
+        from urllib.parse import urlsplit
+        try:
+            parsed = urlsplit(value)
+            valid = parsed.scheme in {"http", "https"} and bool(parsed.hostname) and parsed.port != 0
+            valid = valid and not parsed.username and not parsed.password
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError("Use an HTTP(S) proxy URL without embedded credentials")
+        return value
+
     api_key_env: str | None = None
     codex_auth_path: str | None = None
     # Opt in to native Responses image generation on API-key/custom Codex
@@ -104,11 +123,10 @@ class ApiConfig(BaseModel):
     # HTTP request-establishment retries for transport failures and 5xx,
     # excluding 429. This budget is separate from stream reconnects.
     request_max_retries: int = Field(default=4, ge=0, le=100)
-    # Stream reconnect budget (default 5, hard cap 100).
-    max_retries: int = Field(default=5, ge=0, le=100)
-    # Connection-establishment failures use a separate unbounded 5s..60s
-    # exponential retry path. Disable explicitly for fail-fast jobs.
-    unbounded_connection_retries: bool = True
+    # Stream reconnect budget (default 3, hard cap 100).
+    max_retries: int = Field(default=3, ge=0, le=100)
+    # Explicit opt-in for a separate unbounded 5s..60s connection retry path.
+    unbounded_connection_retries: bool = False
     context_window: int | None = None  # override auto-detected context window
     prompt_cache_key: str | None = None  # OpenAI Responses API prompt cache routing key
     prompt_caching: Literal["auto", "enabled", "disabled"] = "auto"
