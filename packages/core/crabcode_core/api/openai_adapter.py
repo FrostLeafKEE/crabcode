@@ -32,6 +32,15 @@ def _messages_to_openai(
 ) -> list[dict[str, Any]]:
     """Convert internal messages + system to OpenAI chat format."""
     result: list[dict[str, Any]] = []
+    pending_tool_ids: set[str] = set()
+    deferred_images: list[dict[str, Any]] = []
+
+    def require_complete_image_batch() -> None:
+        if deferred_images:
+            raise ValueError(
+                "Cannot send tool images: missing tool results for "
+                + ", ".join(sorted(pending_tool_ids))
+            )
 
     system_text = "\n\n".join(s for s in system if s)
     if system_text:
@@ -42,6 +51,7 @@ def _messages_to_openai(
             continue
 
         if isinstance(msg.content, str):
+            require_complete_image_batch()
             result.append({"role": msg.role.value, "content": msg.content})
             continue
 
@@ -72,6 +82,8 @@ def _messages_to_openai(
                 reasoning_parts.append(block.thinking)
 
         if msg.role == MessageRole.ASSISTANT:
+            require_complete_image_batch()
+            pending_tool_ids = {call["id"] for call in tool_calls}
             entry: dict[str, Any] = {"role": "assistant"}
             if text_parts:
                 entry["content"] = "".join(text_parts)
@@ -84,12 +96,16 @@ def _messages_to_openai(
                 entry["reasoning_content"] = "".join(reasoning_parts)
             result.append(entry)
         elif msg.role == MessageRole.USER:
+            if not tool_results:
+                require_complete_image_batch()
             if tool_results:
                 result.extend(tool_results)
+                pending_tool_ids.difference_update(
+                    item["tool_call_id"] for item in tool_results
+                )
 
-            # Keep image blocks as a separate multimodal user message after
-            # tool outputs. This mirrors the Responses adapter and prevents
-            # tool-result messages from dropping Codex-style image output.
+            # Chat Completions requires all tool results before the next user
+            # message. Hold tool images until the entire call batch is closed.
             has_images = isinstance(msg.content, list) and any(
                 isinstance(b, ImageBlock) for b in msg.content
             )
@@ -110,10 +126,19 @@ def _messages_to_openai(
                             "image_url": {"url": data_url},
                         })
                 if content_parts:
-                    result.append({"role": "user", "content": content_parts})
+                    image_message = {"role": "user", "content": content_parts}
+                    if tool_results:
+                        deferred_images.append(image_message)
+                    else:
+                        result.append(image_message)
             elif text_parts and not tool_results:
                 result.append({"role": "user", "content": "".join(text_parts)})
 
+            if not pending_tool_ids:
+                result.extend(deferred_images)
+                deferred_images.clear()
+
+    require_complete_image_batch()
     return safe_utf8_json_tree(result)
 
 

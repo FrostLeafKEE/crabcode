@@ -84,7 +84,7 @@ def test_repeated_images_each_consume_budget_without_mutation():
 @pytest.mark.parametrize("url", [
     "https://example.invalid/image.png?signature=" + "x" * 100_000,
     "data:image/png;base64," + "A" * 3_000_000,
-])
+], ids=["signed-url", "data-url"])
 def test_image_url_is_not_tokenized_or_fetched(url):
     message = create_user_message([ImageBlock(source={"type": "url", "url": url})])
     assert 0 < estimate_token_count([message]) < 10_000
