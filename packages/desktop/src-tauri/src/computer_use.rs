@@ -545,6 +545,7 @@ fn mac_window_list_values(
         .collect()
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WindowTarget {
     window_id: u32,
@@ -805,28 +806,7 @@ fn window_target(window_id: &str) -> Result<WindowTarget, String> {
         .ok_or_else(|| format!("Window not found: {window_id}"))
 }
 
-#[cfg(not(target_os = "macos"))]
-fn window_target(window_id: &str) -> Result<WindowTarget, String> {
-    let windows = Window::all().map_err(|error| error.to_string())?;
-    let window = windows
-        .iter()
-        .find(|window| {
-            window
-                .id()
-                .map(|value| value.to_string() == window_id)
-                .unwrap_or(false)
-        })
-        .ok_or_else(|| format!("Window not found: {window_id}"))?;
-    Ok(WindowTarget {
-        window_id: window.id().map_err(|error| error.to_string())?,
-        pid: window.pid().map_err(|error| error.to_string())? as i32,
-        x: window.x().map_err(|error| error.to_string())?,
-        y: window.y().map_err(|error| error.to_string())?,
-        width: window.width().map_err(|error| error.to_string())?,
-        height: window.height().map_err(|error| error.to_string())?,
-    })
-}
-
+#[cfg(any(target_os = "macos", test))]
 fn background_local_point(
     action: &ComputerAction,
     target: WindowTarget,
@@ -842,6 +822,7 @@ fn background_local_point(
     Ok((x, y))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn background_point(action: &ComputerAction, target: WindowTarget) -> Result<(i32, i32), String> {
     let (x, y) = background_local_point(action, target)?;
     Ok((
