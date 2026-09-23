@@ -324,6 +324,7 @@ async def new_session(req: NewSessionRequest, request: Request) -> SessionInfo:
             if getattr(request.app.state, "gateway_closing", False):
                 raise HTTPException(status_code=503, detail="Gateway is shutting down")
             sessions: dict = request.app.state.sessions
+            session.reload_computer_use_settings()
             request.app.state.event_bus.register_session(session.session_id, session)
             sessions[session.session_id] = session
             request.app.state.default_session_id = session.session_id
@@ -502,6 +503,7 @@ async def resume_session(req: ResumeSessionRequest, request: Request) -> Session
                     else:
                         existing = request.app.state.sessions.get(session_id)
                         if existing is None:
+                            candidate.reload_computer_use_settings()
                             request.app.state.event_bus.register_session(
                                 candidate.session_id,
                                 candidate,

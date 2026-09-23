@@ -4020,6 +4020,22 @@ class CoreSession:
         """Return the Computer Use policy independently of tool approval mode."""
         return self.computer_use_delivery_policy
 
+    def reload_computer_use_settings(self) -> None:
+        """Apply file changes to a live session without replacing its other resources."""
+        from crabcode_core.config.manager import ConfigManager
+
+        configured = self._merge_project_settings(
+            ConfigManager(cwd=self.cwd).load()
+        ).computer_use
+        self.settings.computer_use = configured
+        self.computer_use_mode = self._computer_use_mode_override or configured.mode
+        self.computer_use_target_scope = (
+            "desktop" if self.computer_use_mode == "foreground_desktop" else "app_window"
+        )
+        self.computer_use_delivery_policy = (
+            self._computer_use_delivery_policy_override or configured.delivery_policy
+        )
+
     def switch_mode(self, mode: str) -> bool:
         """Switch between 'agent' and 'plan' mode.
 

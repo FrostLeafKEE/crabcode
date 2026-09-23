@@ -2381,6 +2381,7 @@ async def _handle_new_session(ws: WebSocket, msg: dict) -> None:
                 rejected = True
             else:
                 sessions: dict = ws.app.state.sessions
+                session.reload_computer_use_settings()
                 ws.app.state.event_bus.register_session(session.session_id, session)
                 sessions[session.session_id] = session
                 if ws.app.state.default_session_id is None:
@@ -3420,6 +3421,7 @@ async def _handle_resume_session(ws: WebSocket, msg: dict) -> None:
                         else:
                             existing = ws.app.state.sessions.get(session_id)
                             if existing is None:
+                                candidate.reload_computer_use_settings()
                                 ws.app.state.event_bus.register_session(
                                     candidate.session_id,
                                     candidate,

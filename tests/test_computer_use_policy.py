@@ -324,6 +324,95 @@ def test_runtime_settings_mutation_is_atomic_and_uses_the_effective_layers(tmp_p
     assert response.computer_use_delivery_policy == "strict_background"
 
 
+def test_runtime_policy_changes_reach_loaded_sessions_and_computer_use_tool(tmp_path, monkeypatch):
+    import json
+    from crabcode_core.config.manager import ConfigManager
+    from crabcode_gateway.routes import config
+    from crabcode_gateway.schemas import RuntimeSettingsMutationRequest
+
+    project = tmp_path / "project"
+    other_project = tmp_path / "other"
+    project.mkdir()
+    other_project.mkdir()
+    settings_path = project / ".crabcode" / "settings.json"
+    settings_path.parent.mkdir()
+    settings_path.write_text(json.dumps({
+        "computer_use": {"target_scope": "app_window", "delivery_policy": "strict_background"},
+    }))
+
+    monkeypatch.setattr(ConfigManager, "settings_file_paths", property(lambda self: {
+        "userSettings": str(tmp_path / "user.json"),
+        "projectSettings": str(Path(self._cwd) / ".crabcode" / "settings.json"),
+        "localSettings": str(Path(self._cwd) / ".crabcode" / "settings.local.json"),
+        "flagSettings": None,
+        "policySettings": str(tmp_path / "managed.json"),
+    }))
+    monkeypatch.setattr(config, "_resolve_model_settings_cwd", lambda _request, cwd: cwd)
+
+    regular = CoreSession(cwd=str(project), tools=[])
+    regular.reload_computer_use_settings()
+    explicit = CoreSession(
+        cwd=str(project),
+        settings=CrabCodeSettings(computer_use={"delivery_policy": "allow_foreground"}),
+        tools=[],
+    )
+    explicit.reload_computer_use_settings()
+    unrelated = CoreSession(cwd=str(other_project), tools=[])
+    unrelated.reload_computer_use_settings()
+
+    class Backend:
+        calls = []
+
+        def is_available(self, *_args):
+            return True
+
+        async def execute(self, *_args, **kwargs):
+            self.calls.append(kwargs)
+            return {"ok": True, "action": kwargs["action"]["action"], "action_dispatched": True}
+
+    async def scenario():
+        backend = Backend()
+        regular.computer_use_backend = backend
+        regular.computer_use_host_id = "host"
+        regular.computer_use_enabled = True
+        tool = ComputerUseTool()
+        context = ToolContext(session=regular, session_id="session")
+        await tool.setup(context)
+        state = SimpleNamespace(sessions={"session": regular, "explicit": explicit, "other": unrelated})
+        request = SimpleNamespace(app=SimpleNamespace(state=state))
+
+        async def mutate(policy, scope=None):
+            return await config.mutate_runtime_settings(RuntimeSettingsMutationRequest(
+                action="set_computer_use_options",
+                source="projectSettings",
+                cwd=str(project),
+                computer_use_delivery_policy=policy,
+                computer_use_target_scope=scope,
+            ), request)
+
+        assert "focus_window" not in tool.to_api_schema()["input_schema"]["properties"]["action"]["enum"]
+        await mutate("allow_foreground", "desktop")
+        assert regular.computer_use_mode == "foreground_desktop"
+        assert regular.computer_use_delivery_policy == "allow_foreground"
+        assert "focus_window" in tool.to_api_schema()["input_schema"]["properties"]["action"]["enum"]
+        result = await tool.call({"action": "focus_window", "window_id": "1"}, context)
+        assert not result.is_error
+        assert backend.calls[-1]["delivery_policy"] == "allow_foreground"
+        assert backend.calls[-1]["target_scope"] == "desktop"
+
+        await mutate("strict_background", "app_window")
+        assert regular.computer_use_mode == "background_app"
+        assert regular.computer_use_delivery_policy == "strict_background"
+        assert "focus_window" not in tool.to_api_schema()["input_schema"]["properties"]["action"]["enum"]
+        result = await tool.call({"action": "focus_window", "window_id": "1"}, context)
+        assert result.is_error
+        assert len(backend.calls) == 1
+        assert explicit.computer_use_delivery_policy == "allow_foreground"
+        assert unrelated.computer_use_delivery_policy == "allow_foreground"
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("lock_name", ["action_lock", "send_lock"])
 def test_broker_rechecks_host_policy_capability_after_waiting(lock_name):
     class Socket:

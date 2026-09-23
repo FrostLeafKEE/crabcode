@@ -845,7 +845,20 @@ async def mutate_runtime_settings(
         lock = asyncio.Lock()
         request.app.state.model_settings_lock = lock
     async with lock:
-        return _mutate_runtime_settings(request, req)
+        if req.action not in {"set_computer_use_mode", "set_computer_use_options"}:
+            return _mutate_runtime_settings(request, req)
+
+        # Session registration uses this lock too. Keep the file write and
+        # in-memory refresh together so a newly registered session cannot
+        # retain settings read just before the write.
+        async with get_session_lock(request.app.state):
+            result = _mutate_runtime_settings(request, req)
+            changed_path = _settings_mutation_path(result.cwd, req.source).resolve()
+            for session in request.app.state.sessions.values():
+                session_path = ConfigManager(cwd=session.cwd).settings_file_paths.get(req.source)
+                if session_path and Path(session_path).resolve() == changed_path:
+                    session.reload_computer_use_settings()
+            return result
 
 
 @router.post("/config/switch-model")
