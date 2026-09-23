@@ -29,6 +29,7 @@ from crabcode_core.logging_utils import get_logger
 from crabcode_core.prompts.blocks import SystemPrompt
 from crabcode_core.tools.loading import ToolCatalog, ToolLoadingState
 from crabcode_core.query.retry import ResponsesStreamRetryState, StreamRetry
+from crabcode_core.query.computer_use_history import project_computer_use_history
 from crabcode_core.types.config import ApiConfig, ToolLoadingSettings
 from crabcode_core.types.event import (
     CompactEvent,
@@ -445,7 +446,8 @@ def _prepend_user_context(
     messages: list[Message],
     user_context: dict[str, str],
 ) -> list[Message]:
-    """Prepend user context as a meta user message at the start."""
+    """Prepare request-only history and prepend user context at the start."""
+    messages = project_computer_use_history(messages)
     if not user_context:
         return messages
 

@@ -54,6 +54,46 @@ fn belongs_to_process(element: &CFType, pid: i32) -> bool {
     }
 }
 
+pub(super) fn find_window(application: &CFType, target: WindowTarget) -> Result<CFType, String> {
+    let mut pending: std::collections::VecDeque<_> = array(application, "AXWindows")
+        .into_iter()
+        .map(|element| (element, None, 0))
+        .collect();
+    let mut visited = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while let Some((element, parent_id, depth)) = pending.pop_front() {
+        if visited.len() >= 512 || std::time::Instant::now() >= deadline {
+            return Err(
+                "Accessibility window lookup exceeded its budget; observe before continuing".into(),
+            );
+        }
+        if depth > 16 || visited.contains(&element) || !belongs_to_process(&element, target.pid) {
+            continue;
+        }
+        visited.push(element.clone());
+        let id = mac_ax_window_id(&element).ok();
+        let is_window = matches!(
+            mac_ax_string(&element, "AXRole").as_deref(),
+            Some("AXWindow" | "AXSheet" | "AXPopover")
+        );
+        if id == Some(target.window_id) && is_window {
+            return Ok(element);
+        }
+        // Search window boundaries, including nested save sheets. Do not walk
+        // the contents of every unrelated document, or return an arbitrary
+        // text/control node merely because it has the same AXWindow ID.
+        if parent_id.is_some() && id == parent_id && !is_window {
+            continue;
+        }
+        for attribute in ["AXSheets", "AXChildren"] {
+            for child in array(&element, attribute) {
+                pending.push_back((child, id.or(parent_id), depth + 1));
+            }
+        }
+    }
+    Err("The selected window is absent from the application's accessibility tree".into())
+}
+
 fn link(relations: &mut WindowRelations, child: u32, owner: u32, evidence: &str) {
     if child == owner {
         return;
@@ -202,5 +242,7 @@ pub(super) fn application(pid: i32) -> Result<CFType, String> {
     if raw.is_null() {
         return Err("Unable to inspect the target application's accessibility tree".into());
     }
-    Ok(unsafe { CFType::wrap_under_create_rule(raw) })
+    let application = unsafe { CFType::wrap_under_create_rule(raw) };
+    mac_ax_limit_message(&application);
+    Ok(application)
 }

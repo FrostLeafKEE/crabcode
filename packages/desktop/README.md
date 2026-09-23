@@ -105,6 +105,21 @@ Scroll results confirm dispatch only (`effect_verified: false`); the agent must
 check the target area in the observation. Both macOS modes now use pixels with
 positive deltas down/right, rather than the old mixed units and signs.
 
+macOS window lists use one WindowServer snapshot. `application_frontmost`
+describes the process; `focused` describes the AX focused window and is `null`
+when focus cannot be established. Save sheets and their internal content
+windows are resolved through AX ownership, never by matching titles or position.
+If a target disappears after dispatched input, `target_disappeared_after_action: true` requests observation
+of the parent without treating the closure as a failed dispatch. This does not
+confirm that the intended save or other operation succeeded.
+
+Native receipts include `timings_ms` for worker queueing, window enumeration,
+AX lookup/input preparation, dispatch, capture, encoding, and `native_total`.
+Nested stage totals overlap and should not be added together. AX messages use
+a one-second per-element timeout; this is not an overall action deadline.
+Model requests retain the five most recent Computer Use screenshot messages;
+older receipts and the complete original images remain in the session history.
+
 ## Build and test
 
 ```bash
@@ -124,4 +139,11 @@ the input check:
 ```bash
 cd src-tauri
 cargo test --lib computer_use::tests::macos_background_scroll_targets_one_of_two_windows_without_focus -- --ignored --nocapture
+```
+
+The real save-panel regression creates an isolated `NSSavePanel`, clicks its
+Save button through AX, and checks the saved file in a temporary directory:
+
+```bash
+cargo test --lib computer_use::regression_tests::macos_real_save_sheet_receives_one_ax_click_and_saves_file -- --ignored --nocapture --test-threads=1
 ```

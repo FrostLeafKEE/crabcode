@@ -56,9 +56,12 @@ use foreign_types::ForeignType;
 
 #[cfg(all(test, target_os = "macos"))]
 mod background_experiment;
+mod diagnostics;
 #[cfg(target_os = "macos")]
 mod mac_ax_relations;
 mod policy;
+#[cfg(all(test, target_os = "macos"))]
+mod regression_tests;
 #[cfg(target_os = "macos")]
 mod window_lifecycle;
 #[cfg(target_os = "macos")]
@@ -472,6 +475,7 @@ fn select_focus_window(
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn window_list() -> Result<Vec<Value>, String> {
     Window::all()
         .map_err(|error| error.to_string())?
@@ -492,6 +496,55 @@ fn window_list() -> Result<Vec<Value>, String> {
         .collect()
 }
 
+#[cfg(target_os = "macos")]
+fn window_list() -> Result<Vec<Value>, String> {
+    // xcap's macOS getters each re-enumerate the entire WindowServer list,
+    // and its is_focused() means foreground *process*, not focused window.
+    let _timing = diagnostics::Stage::new("window_list");
+    let windows = mac_all_window_info()?;
+    let front = mac_front_process_serial_number().ok();
+    let mut pids = std::collections::BTreeSet::new();
+    let front_pid = windows.iter().filter(|w| w.on_screen).find_map(|w| {
+        (pids.insert(w.target.pid)
+            && front.is_some()
+            && mac_process_serial_number(w.target.pid).ok() == front)
+            .then_some(w.target.pid)
+    });
+    let focused = front_pid.and_then(|pid| {
+        let application = mac_ax_relations::application(pid).ok()?;
+        let window = mac_ax_copy_attribute(&application, "AXFocusedWindow").ok()?;
+        mac_ax_window_id(&window).ok()
+    });
+    Ok(mac_window_list_values(&windows, front_pid, focused))
+}
+
+#[cfg(target_os = "macos")]
+fn mac_window_list_values(
+    windows: &[MacWindowInfo],
+    front_pid: Option<i32>,
+    focused: Option<u32>,
+) -> Vec<Value> {
+    windows
+        .iter()
+        .filter(|w| w.on_screen)
+        .map(|w| {
+            let foreground = front_pid.map(|pid| pid == w.target.pid);
+            let focused = match foreground {
+                Some(false) => Some(false),
+                Some(true) => focused.map(|id| id == w.target.window_id),
+                None => None,
+            };
+            json!({
+                "id": w.target.window_id.to_string(), "pid": w.target.pid,
+                "app_name": w.app_name, "title": w.title,
+                "x": w.target.x, "y": w.target.y,
+                "width": w.target.width, "height": w.target.height,
+                "focused": focused, "application_frontmost": foreground,
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WindowTarget {
     window_id: u32,
@@ -506,6 +559,7 @@ struct WindowTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MacWindowInfo {
     target: WindowTarget,
+    app_name: String,
     title: String,
     layer: i32,
     on_screen: bool,
@@ -558,6 +612,7 @@ fn mac_dictionary_bool(dictionary: &CFDictionary, key: &str) -> Option<bool> {
 
 #[cfg(target_os = "macos")]
 fn mac_all_window_info() -> Result<Vec<MacWindowInfo>, String> {
+    let _timing = diagnostics::Stage::new("window_server_snapshot");
     let windows = copy_window_info(
         kCGWindowListOptionAll | kCGWindowListExcludeDesktopElements,
         kCGNullWindowID,
@@ -602,6 +657,7 @@ fn mac_all_window_info() -> Result<Vec<MacWindowInfo>, String> {
                 width: bounds.size.width.round() as u32,
                 height: bounds.size.height.round() as u32,
             },
+            app_name: mac_dictionary_string(&dictionary, "kCGWindowOwnerName").unwrap_or_default(),
             title: mac_dictionary_string(&dictionary, "kCGWindowName").unwrap_or_default(),
             layer: mac_dictionary_number(&dictionary, "kCGWindowLayer")
                 .and_then(|value| i32::try_from(value).ok())
@@ -638,6 +694,7 @@ fn mac_window_group_from_info(
         .position(|window| window.target.window_id == root.window_id);
     let fallback = MacWindowInfo {
         target: root,
+        app_name: String::new(),
         title: String::new(),
         layer: 0,
         on_screen: false,
@@ -738,6 +795,17 @@ fn unresolved_pointer_target(action: &ComputerAction, reason: String) -> Value {
         "requires_observation": true, "retry_safe": true, "focus_changed_by_tool": false})
 }
 
+#[cfg(target_os = "macos")]
+fn window_target(window_id: &str) -> Result<WindowTarget, String> {
+    let id: u32 = window_id.parse().map_err(|_| "Invalid window ID")?;
+    mac_all_window_info()?
+        .into_iter()
+        .find(|window| window.target.window_id == id && window.on_screen)
+        .map(|window| window.target)
+        .ok_or_else(|| format!("Window not found: {window_id}"))
+}
+
+#[cfg(not(target_os = "macos"))]
 fn window_target(window_id: &str) -> Result<WindowTarget, String> {
     let windows = Window::all().map_err(|error| error.to_string())?;
     let window = windows
@@ -838,6 +906,7 @@ unsafe extern "C" {
     ) -> AXError;
     fn AXUIElementPerformAction(element: CFTypeRef, action: CFStringRef) -> AXError;
     fn AXUIElementGetPid(element: CFTypeRef, pid: *mut libc::pid_t) -> AXError;
+    fn AXUIElementSetMessagingTimeout(element: CFTypeRef, seconds: f32) -> AXError;
     fn AXValueGetType(value: CFTypeRef) -> u32;
     fn AXValueGetTypeID() -> usize;
     fn AXValueGetValue(value: CFTypeRef, value_type: u32, output: *mut libc::c_void) -> bool;
@@ -857,7 +926,18 @@ fn mac_ax_error(operation: &str, status: AXError) -> String {
 }
 
 #[cfg(target_os = "macos")]
+fn mac_ax_limit_message(element: &CFType) {
+    // This is a client-local timeout, not a focus/input mutation. It must be
+    // applied to each element: setting it on an application does not propagate
+    // to its children (AXUIElementSetMessagingTimeout's documented contract).
+    unsafe {
+        AXUIElementSetMessagingTimeout(element.as_CFTypeRef(), 1.0);
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn mac_ax_copy_attribute(element: &CFType, attribute: &str) -> Result<CFType, AXError> {
+    mac_ax_limit_message(element);
     let attribute = CFString::new(attribute);
     let mut value_ref: CFTypeRef = std::ptr::null();
     let status = unsafe {
@@ -875,6 +955,7 @@ fn mac_ax_copy_attribute(element: &CFType, attribute: &str) -> Result<CFType, AX
 
 #[cfg(target_os = "macos")]
 fn mac_ax_supports_action(element: &CFType, action: &str) -> Result<bool, AXError> {
+    mac_ax_limit_message(element);
     let mut actions_ref: CFArrayRef = std::ptr::null();
     let status = unsafe { AXUIElementCopyActionNames(element.as_CFTypeRef(), &mut actions_ref) };
     if status != AX_ERROR_SUCCESS || actions_ref.is_null() {
@@ -888,6 +969,7 @@ fn mac_ax_supports_action(element: &CFType, action: &str) -> Result<bool, AXErro
 
 #[cfg(target_os = "macos")]
 fn mac_ax_window_id(element: &CFType) -> Result<u32, String> {
+    mac_ax_limit_message(element);
     type GetWindow = unsafe extern "C" fn(CFTypeRef, *mut u32) -> AXError;
     static GET_WINDOW: std::sync::OnceLock<Option<GetWindow>> = std::sync::OnceLock::new();
     let get_window = GET_WINDOW.get_or_init(|| {
@@ -1088,6 +1170,7 @@ fn mac_ax_pressable_at_point(
     depth: usize,
     remaining: &mut usize,
     scaled_content: Option<&MacAxScaledContent>,
+    relations: &WindowRelations,
 ) -> Option<CFType> {
     if depth > 32 || *remaining == 0 {
         return None;
@@ -1112,16 +1195,22 @@ fn mac_ax_pressable_at_point(
         return None;
     }
     for child in mac_ax_children(&element).into_iter().rev() {
-        if let Some(hit) =
-            mac_ax_pressable_at_point(child, target, point, depth + 1, remaining, scaled_content)
-        {
+        if let Some(hit) = mac_ax_pressable_at_point(
+            child,
+            target,
+            point,
+            depth + 1,
+            remaining,
+            scaled_content,
+            relations,
+        ) {
             return Some(hit);
         }
     }
     // Unknown geometry may belong to a container; traverse it but never
     // invoke an action on it. Keep the final candidate in the selected window.
     if contains == Some(true)
-        && mac_ax_window_id(&element) == Ok(target.window_id)
+        && mac_ax_element_in_target(&element, target, relations)
         && (mac_ax_supports_action(&element, "AXPress") == Ok(true)
             || mac_ax_supports_action(&element, "AXPick") == Ok(true))
     {
@@ -1132,30 +1221,47 @@ fn mac_ax_pressable_at_point(
 }
 
 #[cfg(target_os = "macos")]
-fn mac_ax_window(application: &CFType, target: WindowTarget) -> Result<CFType, String> {
-    let windows = mac_ax_copy_attribute(application, "AXWindows")
-        .map_err(|status| mac_ax_error("Reading AXWindows for click", status))?
-        .downcast::<CFArray>()
-        .ok_or_else(|| "AXWindows was not an accessibility element array".to_string())?;
-    for window in windows.get_all_values() {
-        if window.is_null() {
-            continue;
-        }
-        let window = unsafe { CFType::wrap_under_get_rule(window.cast()) };
-        if mac_ax_window_id(&window) != Ok(target.window_id) {
-            continue;
-        }
-        return Ok(window);
+fn mac_ax_element_in_target(
+    element: &CFType,
+    target: WindowTarget,
+    relations: &WindowRelations,
+) -> bool {
+    let mut pid = 0;
+    if unsafe { AXUIElementGetPid(element.as_CFTypeRef(), &mut pid) } != AX_ERROR_SUCCESS
+        || pid != target.pid
+    {
+        return false;
     }
-    Err("The selected window is absent from the application's accessibility tree".to_string())
+    mac_ax_window_id(element).is_ok_and(|id| {
+        relations.kind(id) != WindowKind::Passive
+            && (id == target.window_id || relations.belongs_to(id, target.window_id))
+    })
 }
 
 #[cfg(target_os = "macos")]
+fn mac_ax_window(application: &CFType, target: WindowTarget) -> Result<CFType, String> {
+    let _timing = diagnostics::Stage::new("ax_window_lookup");
+    mac_ax_relations::find_window(application, target)
+}
+
+#[cfg(all(test, target_os = "macos"))]
 fn mac_ax_click_target(
     application: &CFType,
     target: WindowTarget,
     x: i32,
     y: i32,
+) -> Result<CFType, String> {
+    let relations = mac_ax_relations::snapshot(application, target.pid).relations;
+    mac_ax_click_target_in_group(application, target, x, y, &relations)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_ax_click_target_in_group(
+    application: &CFType,
+    target: WindowTarget,
+    x: i32,
+    y: i32,
+    relations: &WindowRelations,
 ) -> Result<CFType, String> {
     let window = mac_ax_window(application, target);
     let scaled_content = window
@@ -1174,7 +1280,15 @@ fn mac_ax_click_target(
         };
         if !hit_ref.is_null() {
             let hit = unsafe { CFType::wrap_under_create_rule(hit_ref) };
-            if status == AX_ERROR_SUCCESS && mac_ax_window_id(&hit) == Ok(target.window_id) {
+            // Native save sheets can hit-test to their non-actionable shell,
+            // while their buttons live in an AX-owned remote content window.
+            // In that case search the sheet tree instead of pressing the shell
+            // or prematurely falling back to a mouse event.
+            if status == AX_ERROR_SUCCESS
+                && mac_ax_element_in_target(&hit, target, relations)
+                && (mac_ax_supports_action(&hit, "AXPress") == Ok(true)
+                    || mac_ax_supports_action(&hit, "AXPick") == Ok(true))
+            {
                 return Ok(hit);
             }
         }
@@ -1188,12 +1302,14 @@ fn mac_ax_click_target(
         0,
         &mut remaining,
         scaled_content.as_ref(),
+        relations,
     )
     .ok_or_else(|| "No background accessibility click action at the target point".to_string())
 }
 
 #[cfg(target_os = "macos")]
 fn mac_ax_press(target: WindowTarget, x: i32, y: i32) -> MacAxPressOutcome {
+    let _timing = diagnostics::Stage::new("ax_click");
     let application_ref = unsafe { AXUIElementCreateApplication(target.pid) };
     if application_ref.is_null() {
         return MacAxPressOutcome::Unsupported {
@@ -1201,6 +1317,7 @@ fn mac_ax_press(target: WindowTarget, x: i32, y: i32) -> MacAxPressOutcome {
         };
     }
     let application = unsafe { CFType::wrap_under_create_rule(application_ref) };
+    mac_ax_limit_message(&application);
 
     // Chromium/Electron applications may not expose their accessibility tree
     // until an assistive client opts in. This does not activate, focus, or
@@ -1221,7 +1338,8 @@ fn mac_ax_press(target: WindowTarget, x: i32, y: i32) -> MacAxPressOutcome {
     let parent_attribute = CFString::new("AXParent");
     let press_action = CFString::new("AXPress");
     let pick_action = CFString::new("AXPick");
-    let mut current = match mac_ax_click_target(&application, target, x, y) {
+    let relations = mac_ax_relations::snapshot(&application, target.pid).relations;
+    let mut current = match mac_ax_click_target_in_group(&application, target, x, y, &relations) {
         Ok(hit) => hit,
         Err(reason) => return MacAxPressOutcome::Unsupported { reason },
     };
@@ -1233,7 +1351,7 @@ fn mac_ax_press(target: WindowTarget, x: i32, y: i32) -> MacAxPressOutcome {
                 reason: "Accessibility hit test escaped the target application".to_string(),
             };
         }
-        if mac_ax_window_id(&current) != Ok(target.window_id) {
+        if !mac_ax_element_in_target(&current, target, &relations) {
             break;
         }
 
@@ -1546,12 +1664,14 @@ fn mac_post_prepared_mouse(event: &CGEvent, pid: i32) {
 
 #[cfg(target_os = "macos")]
 fn mac_prepare_mouse_window(target: WindowTarget) -> Result<(), ClickPreparationFailure> {
+    let _timing = diagnostics::Stage::new("mouse_preparation");
     let application_ref = unsafe { AXUIElementCreateApplication(target.pid) };
     if application_ref.is_null() {
         return Err(ClickFailureStage::WindowPreparation
             .failure("Unable to prepare the target application for mouse input".to_string()));
     }
     let application = unsafe { CFType::wrap_under_create_rule(application_ref) };
+    mac_ax_limit_message(&application);
     let enabled = CFBoolean::true_value();
     // A correctly routed CGEvent can reach an inactive Chromium process and
     // still be discarded before its content sees mouseDown. Application mode
@@ -1652,6 +1772,7 @@ fn mac_click(
     button_name: Option<&str>,
     click_count: i64,
 ) -> Result<(), String> {
+    let _timing = diagnostics::Stage::new("mouse_dispatch");
     let button = mac_mouse_button(button_name)?;
     let (down, up, _) = mac_mouse_event_types(button);
     // Chromium-based applications use the preceding pointer location for hit
@@ -1871,6 +1992,7 @@ fn mac_prepare_keyboard(
     target: WindowTarget,
     policy: DeliveryPolicy,
 ) -> Result<MacKeyboardPreparation, Value> {
+    let _timing = diagnostics::Stage::new("keyboard_preparation");
     let mut receipt = json!({
         "requested_window_id": target.window_id.to_string(),
         "resolved_window_id": null, "focused_window_id": null,
@@ -1904,7 +2026,7 @@ fn mac_prepare_keyboard(
         return Err(keyboard_failure(receipt, if resolution == "other_document" {
             "keyboard_target_mismatch"
         } else { "keyboard_focus_unresolved" },
-            "The focused responder cannot be proven to belong to the requested window. No focus was changed. Observe and explicitly select the intended editor before retrying", 0));
+            "The focused responder cannot be proven to belong to the requested window. Observe and explicitly select the intended editor before retrying", 0));
     }
     let resolved = WindowTarget {
         window_id: snapshot.focused_window_id.unwrap(),
@@ -2052,6 +2174,7 @@ fn mac_post_keyboard_pair(
     route: Option<(WindowTarget, bool)>,
     sent: &mut usize,
 ) -> Result<(), String> {
+    let _timing = diagnostics::Stage::new("keyboard_dispatch");
     if let Some((target, foreground)) = route {
         mac_verify_keyboard_focus(target, foreground)?;
     }
@@ -2270,6 +2393,7 @@ fn mac_capture_hidden_window_with_screencapture(target: WindowTarget) -> Result<
 
 #[cfg(target_os = "macos")]
 fn mac_capture_window_group(root: WindowTarget) -> Result<ScreenshotCapture, String> {
+    let _timing = diagnostics::Stage::new("capture");
     let mut group = mac_window_group(root)?;
     for _ in 0..2 {
         let capture = mac_capture_window_group_snapshot(root, &group)?;
@@ -2465,6 +2589,7 @@ fn encode_screenshot(image: RgbaImage, x: i32, y: i32, target: String) -> Result
 }
 
 fn encode_screenshot_capture(capture: ScreenshotCapture) -> Result<Value, String> {
+    let _timing = diagnostics::Stage::new("encode");
     let mut frame = encode_screenshot(
         capture.image,
         capture.origin_x,
@@ -3499,6 +3624,10 @@ fn execute_background(_request: ExecuteRequest) -> Result<Value, String> {
 }
 
 fn execute(request: ExecuteRequest) -> Result<Value, String> {
+    diagnostics::measure(|| execute_inner(request))
+}
+
+fn execute_inner(request: ExecuteRequest) -> Result<Value, String> {
     // This gate precedes permission probes, AX writes, application launch and
     // every native dispatch path. Direct Tauri calls receive the same policy.
     let legacy_scope = request.mode.map(|mode| match mode {
@@ -3579,9 +3708,16 @@ fn execute(request: ExecuteRequest) -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn computer_use_execute(request: ExecuteRequest) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || execute(request))
-        .await
-        .map_err(|error| format!("Computer Use worker failed: {error}"))?
+    let queued = std::time::Instant::now();
+    tauri::async_runtime::spawn_blocking(move || {
+        let queue_ms = queued.elapsed().as_secs_f64() * 1000.0;
+        execute(request).map(|mut result| {
+            result["timings_ms"]["worker_queue"] = json!(queue_ms);
+            result
+        })
+    })
+    .await
+    .map_err(|error| format!("Computer Use worker failed: {error}"))?
 }
 
 #[cfg(test)]
@@ -3656,7 +3792,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     pub(super) struct MacInputTestHost {
         launch: std::process::Child,
-        state_path: std::path::PathBuf,
+        pub(super) state_path: std::path::PathBuf,
         _directory: tempfile::TempDir,
     }
 
@@ -4135,6 +4271,7 @@ mod tests {
                 window_id: id,
                 ..root
             },
+            app_name: String::new(),
             title: String::new(),
             layer: 0,
             on_screen,
@@ -4184,6 +4321,7 @@ mod tests {
                 window_id: id,
                 ..root
             },
+            app_name: String::new(),
             title: String::new(),
             layer: 3,
             on_screen,
@@ -5071,13 +5209,14 @@ mod tests {
             } else if action == "keypress" {
                 request["keys"] = value;
             }
-            execute_background(ExecuteRequest {
+            let result = execute_background(ExecuteRequest {
                 mode: Some(ComputerUseMode::BackgroundApp),
                 target_scope: Some(TargetScope::AppWindow),
                 delivery_policy: DeliveryPolicy::AllowForeground,
                 action: serde_json::from_value(request).unwrap(),
             })
             .unwrap();
+            assert_eq!(result["ok"], true, "{action}: {result}; fixture={:?}", host.state());
         };
         send(&state["second"], "focus_window", Value::Null);
         send(&state["first"], "focus_window", Value::Null);
@@ -5085,10 +5224,21 @@ mod tests {
         send(&state["first"], "type", json!("report"));
         let after = wait("first_text", json!("report"));
         assert_eq!(after["second_text"], "second");
+        // Typing collapses selection. AppKit disables Copy for an empty
+        // selection, so explicitly select the text before testing the shortcut.
+        send(&state["first"], "keypress", json!(["CMD", "A"]));
         send(&state["first"], "keypress", json!(["CMD", "C"]));
         wait("copies", json!(1));
         std::fs::write(host.state_path.with_extension("command"), "panel").unwrap();
         let panel = wait("phase", json!("panel"));
+        // makeKeyAndOrderFront publishes its window asynchronously. The old
+        // repeated enumeration was slow enough to mask this fixture race.
+        let panel_id = panel["panel"].to_string();
+        (0..100).find_map(|_| {
+            let target = window_target(&panel_id).ok();
+            if target.is_none() { thread::sleep(Duration::from_millis(20)); }
+            target
+        }).expect("fixture panel was not published by WindowServer");
         send(&panel["panel"], "type", json!("report.txt"));
         wait("name", json!("report.txt"));
         send(&panel["panel"], "keypress", json!(["CMD", "A"]));
