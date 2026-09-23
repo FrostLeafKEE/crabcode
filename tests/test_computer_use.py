@@ -141,7 +141,10 @@ def test_background_mode_allows_focus_changes_but_keeps_window_coordinates():
     assert "background_delivery_unsupported" in prompt
     assert "window-local screenshot coordinates" in prompt
     assert "must not add origin_x/origin_y" in prompt
-    assert "composites AX-confirmed same-process auxiliary windows" in prompt
+    assert "only auxiliary windows with proven AX ownership" in prompt
+    assert "sibling documents are excluded" in prompt
+    assert "never raise another document on a focus mismatch" in prompt
+    assert "Never substitute a similar window ID and replay automatically" in prompt
     assert "stale hidden backing stores are ignored" in prompt
     assert "background_observation_limited" in prompt
     assert "auxiliary window is not clicked from stale pixels" in prompt
@@ -167,6 +170,55 @@ def test_background_mode_allows_focus_changes_but_keeps_window_coordinates():
     assert "window_id is required" in asyncio.run(
         tool.validate_input({"action": "focus_window", "text": "desktop"})
     )
+
+
+@pytest.mark.parametrize("dispatched", [False, True, None])
+def test_window_lifecycle_and_focus_diagnostics_survive_model_projection(dispatched):
+    class WindowBackend(FakeBackend):
+        async def execute(self, host_id, **kwargs):
+            result = await super().execute(host_id, **kwargs)
+            result.update({
+                "ok": False,
+                "error_code": "target_stale",
+                "requested_window_id": "42",
+                "resolved_window_id": "43",
+                "focused_window_id": "43",
+                "focused_element_role": "AXTextField",
+                "focus_resolution": "owned_auxiliary",
+                "focus_changed_by_tool": False,
+                "action_dispatched": dispatched,
+                "retry_safe": dispatched is False,
+                "requires_observation": True,
+                "window_lifecycle": {"target_resolvable": False, "focused_window_id": "44",
+                                     "appeared_windows": [{"id": "44", "pid": 7}],
+                                     "disappeared_windows": [{"id": "42", "pid": 7}]},
+            })
+            result["screenshot"]["window_components"] = [{
+                "window_id": "43", "kind": "sheet", "owner_window_id": "42",
+                "relationship_evidence": [{"owner_window_id": "42", "attributes": ["AXSheets"]}],
+            }]
+            result["screenshot"]["excluded_windows"] = [{
+                "window_id": "45", "kind": "unknown", "excluded_reason": "ownership_unproven",
+            }]
+            return result
+
+    backend = WindowBackend()
+    tool, context = prepared_tool(backend)
+    context.session.computer_use_mode = "background_app"
+    result = asyncio.run(tool.call({"action": "type", "window_id": "42", "text": "name"}, context))
+    projected = json.loads(result.result_for_model)
+    assert result.is_error
+    assert len(backend.calls) == 1
+    assert projected["error_code"] == "target_stale"
+    assert projected["action_dispatched"] is dispatched
+    assert projected["retry_safe"] is (dispatched is False)
+    assert projected["focus_changed_by_tool"] is False
+    assert projected["resolved_window_id"] == "43"
+    assert projected["window_lifecycle"]["focused_window_id"] == "44"
+    assert projected["screenshot"]["window_components"][0]["relationship_evidence"][0]["attributes"] == ["AXSheets"]
+    assert projected["screenshot"]["excluded_windows"][0]["excluded_reason"] == "ownership_unproven"
+    assert "data" not in projected["screenshot"]
+    assert len(result.images) == 1
 
 
 @pytest.mark.parametrize("effect_verified", [True, False])

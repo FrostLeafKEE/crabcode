@@ -11,7 +11,13 @@ app.deactivate()
 
 final class FixtureWindow: NSWindow {
     var axSubrole: NSAccessibility.Subrole = .standardWindow
+    weak var axOwner: NSWindow?
+    var passive = false
     override func accessibilitySubrole() -> NSAccessibility.Subrole? { axSubrole }
+    override func accessibilityParent() -> Any? { axOwner ?? super.accessibilityParent() }
+    override func accessibilityRole() -> NSAccessibility.Role? { passive ? .image : .window }
+    override func accessibilityWindow() -> Any? { self }
+    override func isAccessibilityEnabled() -> Bool { !passive }
 }
 
 final class Surface: NSView {
@@ -54,6 +60,11 @@ let occluder = CommandLine.arguments.count > 2
 let root = makeWindow(occluder ? "occluder" : "root", .standardWindow)
 let dialog = makeWindow("dialog", .dialog)
 let companion = makeWindow("companion", .unknown)
+// These fixtures expose explicit ownership/passivity. Matching bounds or
+// addChildWindow alone must never be the proof used by the host.
+dialog.axOwner = root
+companion.axOwner = root
+companion.passive = true
 if occluder {
     root.order(.above, relativeTo: Int(CommandLine.arguments[2])!)
 } else {

@@ -4,8 +4,6 @@ use enigo::Axis;
 use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-#[cfg(target_os = "macos")]
-use std::collections::HashSet;
 use std::io::Cursor;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -58,8 +56,16 @@ use foreign_types::ForeignType;
 
 #[cfg(all(test, target_os = "macos"))]
 mod background_experiment;
+#[cfg(target_os = "macos")]
+mod mac_ax_relations;
 mod policy;
+#[cfg(target_os = "macos")]
+mod window_lifecycle;
+#[cfg(target_os = "macos")]
+mod window_relations;
 use policy::{DeliveryPolicy, TargetScope};
+#[cfg(target_os = "macos")]
+use window_relations::{WindowKind, WindowRelations};
 
 const MAX_SCREENSHOT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_SCROLL_DELTA: i32 = 10_000;
@@ -506,13 +512,14 @@ struct MacWindowInfo {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct MacWindowGroup {
     // Components are ordered front-to-back and always include the root.
     components: Vec<MacWindowInfo>,
-    // Visual companions (for example a watermark) still belong in the image,
-    // but must not intercept input meant for the actual window underneath.
-    passive_window_ids: HashSet<u32>,
+    relations: WindowRelations,
+    // Overlapping surfaces without proven ownership are reported separately.
+    // Ordinary sibling documents never become components or input targets.
+    excluded: Vec<MacWindowInfo>,
 }
 
 #[cfg(target_os = "macos")]
@@ -621,87 +628,61 @@ fn window_intersection_area(left: WindowTarget, right: WindowTarget) -> u64 {
 }
 
 #[cfg(target_os = "macos")]
-fn same_window_bounds(left: WindowTarget, right: WindowTarget) -> bool {
-    left.x == right.x
-        && left.y == right.y
-        && left.width == right.width
-        && left.height == right.height
-}
-
-#[cfg(target_os = "macos")]
 fn mac_window_group_from_info(
     root: WindowTarget,
     windows: &[MacWindowInfo],
-    interactive_window_ids: &HashSet<u32>,
+    relations: &WindowRelations,
 ) -> MacWindowGroup {
-    let Some(root_index) = windows
+    let root_index = windows
         .iter()
-        .position(|window| window.target.window_id == root.window_id)
-    else {
-        return MacWindowGroup {
-            components: vec![MacWindowInfo {
-                target: root,
-                title: String::new(),
-                layer: 0,
-                on_screen: true,
-            }],
-            passive_window_ids: HashSet::new(),
-        };
+        .position(|window| window.target.window_id == root.window_id);
+    let fallback = MacWindowInfo {
+        target: root,
+        title: String::new(),
+        layer: 0,
+        on_screen: false,
     };
-    let root = windows[root_index].target;
-    let root_layer = windows[root_index].layer;
-    let mut components = windows[..=root_index]
-        .iter()
-        .filter(|window| {
-            if window.target.window_id == root.window_id {
-                return true;
-            }
-            if window.target.pid != root.pid
-                || !window.on_screen
-                || (window.layer != root_layer
-                    && !interactive_window_ids.contains(&window.target.window_id))
-            {
-                return false;
-            }
-            // Covered windows remain ordered onscreen. An ordered-out window
-            // can retain both its backing pixels and its AXWindows entry after
-            // dismissal; neither is evidence that it should be composited.
-            window_intersection_area(window.target, root) > 0
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    if !components
-        .iter()
-        .any(|window| window.target.window_id == root.window_id)
-    {
-        components.push(windows[root_index].clone());
+    let root_info = root_index.map(|i| windows[i].clone()).unwrap_or(fallback);
+    let root = root_info.target;
+    let mut components = Vec::new();
+    let mut excluded = Vec::new();
+    for window in root_index.map(|i| &windows[..i]).unwrap_or_default() {
+        if window.target.pid != root.pid
+            || !window.on_screen
+            || window_intersection_area(window.target, root) == 0
+        {
+            continue;
+        }
+        if relations.belongs_to(window.target.window_id, root.window_id) {
+            components.push(window.clone());
+        } else {
+            excluded.push(window.clone());
+        }
     }
-    let passive_window_ids = components
-        .iter()
-        .filter(|window| {
-            window.target.window_id != root.window_id
-                && window.title.is_empty()
-                && same_window_bounds(window.target, root)
-                && !interactive_window_ids.contains(&window.target.window_id)
-        })
-        .map(|window| window.target.window_id)
-        .collect();
+    components.push(root_info);
     MacWindowGroup {
         components,
-        passive_window_ids,
+        relations: relations.clone(),
+        excluded,
     }
 }
 
 #[cfg(target_os = "macos")]
 fn mac_window_group(root: WindowTarget) -> Result<MacWindowGroup, String> {
     let windows = mac_all_window_info()?;
-    let interactive_window_ids =
-        mac_ax_application_interactive_window_ids(root.pid).unwrap_or_default();
-    Ok(mac_window_group_from_info(
-        root,
-        &windows,
-        &interactive_window_ids,
-    ))
+    if !windows
+        .iter()
+        .any(|window| window.target.window_id == root.window_id && window.target.pid == root.pid)
+    {
+        return Err(format!(
+            "Window not found or changed identity: {}",
+            root.window_id
+        ));
+    }
+    let relations = mac_ax_relations::application(root.pid)
+        .map(|application| mac_ax_relations::snapshot(&application, root.pid).relations)
+        .unwrap_or_default();
+    Ok(mac_window_group_from_info(root, &windows, &relations))
 }
 
 #[cfg(target_os = "macos")]
@@ -717,33 +698,44 @@ fn mac_event_target_from_group(
     group: MacWindowGroup,
     root: WindowTarget,
     point: (i32, i32),
-) -> MacWindowInfo {
+) -> Result<MacWindowInfo, String> {
+    // A sibling document is a separate explicit target. An unclassified
+    // overlapping surface could be an editor/dialog: never click through it.
+    if let Some(window) = group.excluded.iter().find(|window| {
+        group.relations.kind(window.target.window_id) != WindowKind::Document
+            && point_in_window(window.target, point)
+    }) {
+        return Err(format!("Window relationship is unresolved for overlapping window {}; no input was sent. Observe and explicitly select the intended window", window.target.window_id));
+    }
     group
         .components
         .into_iter()
         .find(|window| {
-            !group.passive_window_ids.contains(&window.target.window_id)
+            group.relations.kind(window.target.window_id) != WindowKind::Passive
                 && point_in_window(window.target, point)
         })
-        .unwrap_or(MacWindowInfo {
-            target: root,
-            title: String::new(),
-            layer: 0,
-            on_screen: true,
+        .ok_or_else(|| {
+            format!(
+                "No confirmed input surface at the point in window {}",
+                root.window_id
+            )
         })
 }
 
 #[cfg(target_os = "macos")]
-fn mac_background_event_target(root: WindowTarget, point: (i32, i32)) -> MacWindowInfo {
-    mac_window_group(root)
-        .ok()
-        .map(|group| mac_event_target_from_group(group, root, point))
-        .unwrap_or(MacWindowInfo {
-            target: root,
-            title: String::new(),
-            layer: 0,
-            on_screen: true,
-        })
+fn mac_background_event_target(
+    root: WindowTarget,
+    point: (i32, i32),
+) -> Result<MacWindowInfo, String> {
+    mac_event_target_from_group(mac_window_group(root)?, root, point)
+}
+
+#[cfg(target_os = "macos")]
+fn unresolved_pointer_target(action: &ComputerAction, reason: String) -> Value {
+    json!({"ok": false, "action": action.action, "error_code": "window_relationship_unresolved",
+        "error": reason, "summary": "Pointer target is unresolved; no input was sent",
+        "action_dispatched": false, "dispatch_succeeded": false, "effect_verified": false,
+        "requires_observation": true, "retry_safe": true, "focus_changed_by_tool": false})
 }
 
 fn window_target(window_id: &str) -> Result<WindowTarget, String> {
@@ -765,13 +757,6 @@ fn window_target(window_id: &str) -> Result<WindowTarget, String> {
         width: window.width().map_err(|error| error.to_string())?,
         height: window.height().map_err(|error| error.to_string())?,
     })
-}
-
-fn background_target(action: &ComputerAction) -> Result<WindowTarget, String> {
-    let window_id = action.window_id.as_deref().ok_or_else(|| {
-        "background_app mode requires window_id; call list_windows first".to_string()
-    })?;
-    window_target(window_id)
 }
 
 fn background_local_point(
@@ -937,35 +922,6 @@ fn mac_ax_window_id(element: &CFType) -> Result<u32, String> {
         .to_i64()
         .ok_or_else(|| "AXWindowNumber was outside the supported range".to_string())?;
     u32::try_from(value).map_err(|_| "AXWindowNumber was outside the supported range".to_string())
-}
-
-#[cfg(target_os = "macos")]
-fn mac_ax_application_interactive_window_ids(pid: i32) -> Result<HashSet<u32>, String> {
-    let application_ref = unsafe { AXUIElementCreateApplication(pid) };
-    if application_ref.is_null() {
-        return Err("Unable to create the target application's accessibility element".to_string());
-    }
-    let application = unsafe { CFType::wrap_under_create_rule(application_ref) };
-    let windows = mac_ax_copy_attribute(&application, "AXWindows")
-        .map_err(|status| mac_ax_error("Reading AXWindows", status))?
-        .downcast::<CFArray>()
-        .ok_or_else(|| "AXWindows was not an accessibility element array".to_string())?;
-    Ok(windows
-        .get_all_values()
-        .into_iter()
-        .filter(|window| !window.is_null())
-        .filter_map(|window| {
-            let window = unsafe { CFType::wrap_under_get_rule(window.cast()) };
-            // watermark companions. Size/title alone cannot distinguish them.
-            if !matches!(
-                mac_ax_string(&window, "AXSubrole").as_deref(),
-                Some("AXStandardWindow" | "AXDialog" | "AXSystemDialog" | "AXFloatingWindow")
-            ) {
-                return None;
-            }
-            mac_ax_window_id(&window).ok()
-        })
-        .collect())
 }
 
 #[cfg(target_os = "macos")]
@@ -1676,9 +1632,10 @@ fn mac_validate_mouse_layout(
             .iter()
             .any(|window| window.target == *target && window.on_screen)
     });
-    let interactive = mac_ax_application_interactive_window_ids(root.pid).unwrap_or_default();
-    let group = mac_window_group_from_info(root, &windows, &interactive);
-    let selected = mac_event_target_from_group(group, root, point);
+    let application = mac_ax_relations::application(root.pid)?;
+    let relations = mac_ax_relations::snapshot(&application, root.pid).relations;
+    let group = mac_window_group_from_info(root, &windows, &relations);
+    let selected = mac_event_target_from_group(group, root, point)?;
     if !stable || selected.target != event_target || !selected.on_screen {
         return Err(
             "Window layout changed while preparing mouse input; no click was sent. Observe again before clicking".to_string(),
@@ -1868,88 +1825,140 @@ fn add_scroll_receipt(result: &mut Value, action: &ComputerAction) {
 }
 
 #[cfg(target_os = "macos")]
-fn mac_keyboard_focus_matches(application: &CFType, target: WindowTarget) -> bool {
-    // Follow AX ownership, not overlapping rectangles: another document from
-    // the same process is not an acceptable keyboard destination. Starting at
-    // the responder also preserves a sheet/popover's field editor.
-    for attribute in ["AXFocusedUIElement", "AXFocusedWindow"] {
-        let Ok(mut element) = mac_ax_copy_attribute(application, attribute) else {
-            continue;
-        };
-        for _ in 0..32 {
-            if mac_ax_window_id(&element) == Ok(target.window_id) {
-                return true;
-            }
-            let Ok(parent) = mac_ax_copy_attribute(&element, "AXParent") else {
-                break;
-            };
-            element = parent;
-        }
-        // If a focused responder exists but belongs elsewhere, do not accept
-        // the document merely because AXFocusedWindow still names its parent.
-        if attribute == "AXFocusedUIElement" {
-            return false;
-        }
-    }
-    false
+struct MacKeyboardPreparation {
+    target: WindowTarget,
+    receipt: Value,
 }
 
 #[cfg(target_os = "macos")]
 fn mac_verify_keyboard_focus(target: WindowTarget, require_foreground: bool) -> Result<(), String> {
-    let application_ref = unsafe { AXUIElementCreateApplication(target.pid) };
-    if application_ref.is_null() {
-        return Err("Unable to inspect keyboard focus".to_string());
-    }
-    let application = unsafe { CFType::wrap_under_create_rule(application_ref) };
-    if !mac_keyboard_focus_matches(&application, target) {
-        return Err("Keyboard target is not the focused window/responder; observe and focus the intended window before retrying".to_string());
+    let application = mac_ax_relations::application(target.pid)?;
+    let focus = mac_ax_relations::focus_snapshot(&application, target.pid);
+    // The resolved window is pinned for the entire sequence. A newly opened
+    // sheet or a sibling document must not receive the remaining characters.
+    if focus.focused_window_id != Some(target.window_id) {
+        return Err("Keyboard responder changed; observe before sending further input".into());
     }
     if require_foreground
         && mac_front_process_serial_number()? != mac_process_serial_number(target.pid)?
     {
-        return Err("Keyboard target is no longer the foreground application".to_string());
+        return Err("Keyboard target is no longer the foreground application".into());
     }
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn mac_prepare_keyboard(target: WindowTarget, policy: DeliveryPolicy) -> Result<(), String> {
-    if policy == DeliveryPolicy::StrictBackground {
-        // PID delivery cannot select a window. Refuse rather than typing into
-        // an unrelated document or activating the application in strict mode.
-        return mac_verify_keyboard_focus(target, false);
+fn keyboard_failure(mut receipt: Value, code: &str, reason: &str, sent: usize) -> Value {
+    receipt["ok"] = json!(false);
+    receipt["error_code"] = json!(code);
+    receipt["error"] = json!(reason);
+    receipt["summary"] = json!(if sent == 0 {
+        "Keyboard input was not sent; observe the focused window"
+    } else {
+        "Keyboard input was partially sent; observe before continuing"
+    });
+    receipt["action_dispatched"] = json!(sent > 0);
+    receipt["dispatch_succeeded"] = json!(false);
+    receipt["keyboard_events_sent"] = json!(sent);
+    receipt["effect_verified"] = json!(false);
+    receipt["retry_safe"] = json!(sent == 0);
+    receipt["requires_observation"] = json!(true);
+    receipt
+}
+
+#[cfg(target_os = "macos")]
+fn mac_prepare_keyboard(
+    target: WindowTarget,
+    policy: DeliveryPolicy,
+) -> Result<MacKeyboardPreparation, Value> {
+    let mut receipt = json!({
+        "requested_window_id": target.window_id.to_string(),
+        "resolved_window_id": null, "focused_window_id": null,
+        "focused_element_role": null, "focus_resolution": "unresolved",
+        "focus_changed_by_tool": false,
+    });
+    let live = mac_all_window_info().map_err(|reason| {
+        keyboard_failure(receipt.clone(), "window_snapshot_unavailable", &reason, 0)
+    })?;
+    if !live.iter().any(|window| {
+        window.target.window_id == target.window_id && window.target.pid == target.pid
+    }) {
+        return Err(keyboard_failure(
+            receipt,
+            "target_stale",
+            "The requested window disappeared before keyboard preparation",
+            0,
+        ));
     }
-    if mac_verify_keyboard_focus(target, true).is_ok() {
-        return Ok(());
+    let application = mac_ax_relations::application(target.pid).map_err(|reason| {
+        keyboard_failure(receipt.clone(), "keyboard_focus_unresolved", &reason, 0)
+    })?;
+    let snapshot = mac_ax_relations::snapshot(&application, target.pid);
+    let resolution = snapshot
+        .relations
+        .resolve_focus(target.window_id, snapshot.focused_window_id);
+    receipt["focused_window_id"] = json!(snapshot.focused_window_id.map(|id| id.to_string()));
+    receipt["focused_element_role"] = json!(snapshot.focused_element_role);
+    receipt["focus_resolution"] = json!(resolution);
+    if !matches!(resolution, "requested_window" | "owned_auxiliary") {
+        return Err(keyboard_failure(receipt, if resolution == "other_document" {
+            "keyboard_target_mismatch"
+        } else { "keyboard_focus_unresolved" },
+            "The focused responder cannot be proven to belong to the requested window. No focus was changed. Observe and explicitly select the intended editor before retrying", 0));
     }
-    if mac_verify_keyboard_focus(target, false).is_ok() {
-        // Activate without raising the document over its active popover.
-        let application_ref = unsafe { AXUIElementCreateApplication(target.pid) };
-        if application_ref.is_null() {
-            return Err("Unable to activate keyboard target".to_string());
-        }
-        let application = unsafe { CFType::wrap_under_create_rule(application_ref) };
-        let attribute = CFString::new("AXFrontmost");
+    let resolved = WindowTarget {
+        window_id: snapshot.focused_window_id.unwrap(),
+        ..target
+    };
+    receipt["resolved_window_id"] = json!(resolved.window_id.to_string());
+    receipt["resolved_window"] = snapshot.relations.receipt(resolved.window_id);
+    mac_verify_keyboard_focus(resolved, false).map_err(|reason| {
+        keyboard_failure(receipt.clone(), "keyboard_focus_unresolved", &reason, 0)
+    })?;
+    let needs_activation = policy == DeliveryPolicy::AllowForeground
+        && (|| {
+            Ok::<_, String>(
+                mac_front_process_serial_number()? != mac_process_serial_number(target.pid)?,
+            )
+        })()
+        .map_err(|reason| {
+            keyboard_failure(receipt.clone(), "keyboard_focus_unresolved", &reason, 0)
+        })?;
+    if needs_activation {
+        // Preserve the selected responder. Never set AXMain or AXRaise here:
+        // either can dismiss an active field editor belonging to the document.
+        let frontmost = CFString::new("AXFrontmost");
+        receipt["focus_changed_by_tool"] = Value::Null;
         let status = unsafe {
             AXUIElementSetAttributeValue(
                 application.as_CFTypeRef(),
-                attribute.as_concrete_TypeRef(),
+                frontmost.as_concrete_TypeRef(),
                 CFBoolean::true_value().as_CFTypeRef(),
             )
         };
         if status != AX_ERROR_SUCCESS {
-            return Err(mac_ax_error("Activating keyboard target", status));
+            return Err(keyboard_failure(
+                receipt,
+                "keyboard_focus_unresolved",
+                &mac_ax_error("Activating keyboard target", status),
+                0,
+            ));
         }
-    } else {
-        mac_prepare_mouse_window(target).map_err(|failure| failure.reason)?;
-    }
-    for _ in 0..25 {
-        if mac_verify_keyboard_focus(target, true).is_ok() {
-            return Ok(());
+        receipt["focus_changed_by_tool"] = json!(true);
+        for _ in 0..25 {
+            if mac_verify_keyboard_focus(resolved, true).is_ok() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
         }
-        thread::sleep(Duration::from_millis(10));
     }
-    mac_verify_keyboard_focus(target, true)
+    mac_verify_keyboard_focus(resolved, policy == DeliveryPolicy::AllowForeground).map_err(
+        |reason| keyboard_failure(receipt.clone(), "keyboard_focus_unresolved", &reason, 0),
+    )?;
+    Ok(MacKeyboardPreparation {
+        target: resolved,
+        receipt,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -2036,72 +2045,94 @@ fn mac_key_combination(names: &[String]) -> Result<(u16, CGEventFlags), String> 
 }
 
 #[cfg(target_os = "macos")]
-fn mac_post_keyboard(event: &CGEvent, target: WindowTarget) -> Result<(), String> {
-    // Do not send global input if the user switched applications/windows
-    // while a sequence was being sent. No retry after partial delivery.
-    mac_verify_keyboard_focus(target, true)?;
-    event.post(CGEventTapLocation::HID);
+fn mac_post_keyboard_pair(
+    down: CGEvent,
+    up: CGEvent,
+    pid: i32,
+    route: Option<(WindowTarget, bool)>,
+    sent: &mut usize,
+) -> Result<(), String> {
+    if let Some((target, foreground)) = route {
+        mac_verify_keyboard_focus(target, foreground)?;
+    }
+    let foreground = route.is_some_and(|(_, foreground)| foreground);
+    if foreground {
+        down.post(CGEventTapLocation::HID);
+    } else {
+        down.post_to_pid(pid);
+    }
+    *sent += 1;
+    // Balance every submitted key-down, including shortcuts that close a window.
+    if foreground {
+        up.post(CGEventTapLocation::HID);
+    } else {
+        up.post_to_pid(pid);
+    }
+    *sent += 1;
     thread::sleep(Duration::from_millis(10));
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 fn mac_press_keys(pid: i32, names: &[String]) -> Result<(), String> {
     mac_send_keys(pid, names, None)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 fn mac_send_keys(
     pid: i32,
     names: &[String],
     foreground: Option<WindowTarget>,
 ) -> Result<(), String> {
-    let (keycode, flags) = mac_key_combination(names)?;
-    let source = mac_event_source()?;
-    for down in [true, false] {
-        let event = CGEvent::new_keyboard_event(source.clone(), keycode, down)
-            .map_err(|_| "Unable to create a macOS keyboard event".to_string())?;
-        event.set_flags(flags);
-        if let Some(target) = foreground {
-            if down {
-                mac_post_keyboard(&event, target)?;
-            } else {
-                // Always balance a global key-down on the same event route,
-                // even when the shortcut closed the window or changed focus.
-                event.post(CGEventTapLocation::HID);
-            }
-        } else {
-            event.post_to_pid(pid);
-        }
-    }
-    Ok(())
+    mac_send_keys_tracked(pid, names, foreground.map(|target| (target, true)), &mut 0)
 }
 
 #[cfg(target_os = "macos")]
+fn mac_send_keys_tracked(
+    pid: i32,
+    names: &[String],
+    route: Option<(WindowTarget, bool)>,
+    sent: &mut usize,
+) -> Result<(), String> {
+    let (keycode, flags) = mac_key_combination(names)?;
+    let source = mac_event_source()?;
+    let make = |down| {
+        let event = CGEvent::new_keyboard_event(source.clone(), keycode, down)
+            .map_err(|_| "Unable to create a macOS keyboard event".to_string())?;
+        event.set_flags(flags);
+        Ok::<_, String>(event)
+    };
+    mac_post_keyboard_pair(make(true)?, make(false)?, pid, route, sent)
+}
+
+#[cfg(all(test, target_os = "macos"))]
 fn mac_type_text(pid: i32, text: &str) -> Result<(), String> {
     mac_send_text(pid, text, None)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 fn mac_send_text(pid: i32, text: &str, foreground: Option<WindowTarget>) -> Result<(), String> {
+    mac_send_text_tracked(pid, text, foreground.map(|target| (target, true)), &mut 0)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_send_text_tracked(
+    pid: i32,
+    text: &str,
+    route: Option<(WindowTarget, bool)>,
+    sent: &mut usize,
+) -> Result<(), String> {
     let source = mac_event_source()?;
     for character in text.chars() {
         let value = character.to_string();
-        for down in [true, false] {
+        let make = |down| {
             let event = CGEvent::new_keyboard_event(source.clone(), 0, down)
                 .map_err(|_| "Unable to create a macOS text event".to_string())?;
             event.set_flags(CGEventFlags::CGEventFlagNull);
             event.set_string(&value);
-            if let Some(target) = foreground {
-                if down {
-                    mac_post_keyboard(&event, target)?;
-                } else {
-                    event.post(CGEventTapLocation::HID);
-                }
-            } else {
-                event.post_to_pid(pid);
-            }
-        }
+            Ok::<_, String>(event)
+        };
+        mac_post_keyboard_pair(make(true)?, make(false)?, pid, route, sent)?;
     }
     Ok(())
 }
@@ -2114,6 +2145,8 @@ struct ScreenshotCapture {
     component_window_ids: Vec<u32>,
     hidden_component_window_ids: Vec<u32>,
     component_capture_errors: Vec<String>,
+    window_components: Vec<Value>,
+    excluded_windows: Vec<Value>,
 }
 
 #[cfg(target_os = "macos")]
@@ -2241,7 +2274,7 @@ fn mac_capture_window_group(root: WindowTarget) -> Result<ScreenshotCapture, Str
     for _ in 0..2 {
         let capture = mac_capture_window_group_snapshot(root, &group)?;
         let current = mac_window_group(root)?;
-        if current.components == group.components {
+        if current == group {
             return Ok(capture);
         }
         // A popup can close while its backing store is being captured. Do not
@@ -2295,6 +2328,26 @@ fn mac_capture_window_group_snapshot(
         component_window_ids,
         hidden_component_window_ids,
         component_capture_errors,
+        window_components: group
+            .components
+            .iter()
+            .map(|w| group.relations.receipt(w.target.window_id))
+            .collect(),
+        excluded_windows: group
+            .excluded
+            .iter()
+            .map(|w| {
+                let mut receipt = group.relations.receipt(w.target.window_id);
+                receipt["excluded_reason"] = json!(if group.relations.kind(w.target.window_id)
+                    == WindowKind::Document
+                {
+                    "sibling_document"
+                } else {
+                    "ownership_unproven"
+                });
+                receipt
+            })
+            .collect(),
     })
 }
 
@@ -2367,6 +2420,8 @@ fn capture_screenshot(action: &ComputerAction) -> Result<ScreenshotCapture, Stri
         component_window_ids: Vec::new(),
         hidden_component_window_ids: Vec::new(),
         component_capture_errors: Vec::new(),
+        window_components: Vec::new(),
+        excluded_windows: Vec::new(),
     })
 }
 
@@ -2416,6 +2471,16 @@ fn encode_screenshot_capture(capture: ScreenshotCapture) -> Result<Value, String
         capture.origin_y,
         capture.target,
     )?;
+    if !capture.window_components.is_empty() {
+        frame["window_components"] = json!(capture.window_components);
+    }
+    if !capture.excluded_windows.is_empty() {
+        frame["requires_observation"] = json!(capture
+            .excluded_windows
+            .iter()
+            .any(|w| w["excluded_reason"] == "ownership_unproven"));
+        frame["excluded_windows"] = json!(capture.excluded_windows);
+    }
     if !capture.component_window_ids.is_empty() {
         frame["component_window_ids"] = json!(capture.component_window_ids);
     }
@@ -2854,6 +2919,7 @@ fn record_click_outcome(result: &mut Value, dispatched: bool, visual_change: Opt
     // the model to interpret, not a prerequisite for a successful tool call.
     result["ok"] = json!(dispatched);
     result["dispatch_succeeded"] = json!(dispatched);
+    result["action_dispatched"] = if dispatched { json!(true) } else { Value::Null };
     result["dispatch_status"] = json!(if dispatched { "sent" } else { "uncertain" });
     result["effect_status"] = json!(if changed {
         "change_detected"
@@ -2897,13 +2963,16 @@ fn record_click_outcome(result: &mut Value, dispatched: bool, visual_change: Opt
 fn execute_background_click(
     action: &ComputerAction,
     delivery_policy: DeliveryPolicy,
+    target: WindowTarget,
 ) -> Result<Value, String> {
-    let target = background_target(action)?;
     let point = background_local_point(action, target)?;
     let (x, y) = background_point(action, target)?;
-    let event_window = mac_background_event_target(target, (x, y));
+    let event_window = match mac_background_event_target(target, (x, y)) {
+        Ok(window) => window,
+        Err(reason) => return Ok(unresolved_pointer_target(action, reason)),
+    };
     let event_target = event_window.target;
-    let mut before = match capture_screenshot(action) {
+    let mut before = match mac_capture_window_group(target) {
         Ok(frame) => frame,
         Err(reason) => {
             return Ok(failed_background_click_preparation(
@@ -2970,7 +3039,7 @@ fn execute_background_click(
             mac_prepare_mouse_window(event_target).and_then(|_| {
                 // Activation alone can change title-bar pixels. Compare the click
                 // against the prepared window, so that is not counted as its effect.
-                let baseline = capture_screenshot(action)
+                let baseline = mac_capture_window_group(target)
                     .map_err(|reason| ClickFailureStage::BaselineCapture.failure(reason))?;
                 mac_validate_mouse_layout(target, event_target, (x, y))
                     .map_err(|reason| ClickFailureStage::LayoutValidation.failure(reason))?;
@@ -3001,7 +3070,7 @@ fn execute_background_click(
                 return Ok(finish_background_click(
                     action,
                     result,
-                    capture_screenshot(action),
+                    mac_capture_window_group(target),
                 ));
             }
         }
@@ -3019,14 +3088,14 @@ fn execute_background_click(
     }
 
     thread::sleep(Duration::from_millis(CLICK_SETTLE_MS));
-    let mut after = capture_screenshot(action);
+    let mut after = mac_capture_window_group(target);
     let mut visual_change = after
         .as_ref()
         .ok()
         .and_then(|frame| screenshot_visual_change(&before, frame, (x, y)));
     if !visual_change.map(|change| change.detected).unwrap_or(false) && after.is_ok() {
         thread::sleep(Duration::from_millis(CLICK_SETTLE_MS));
-        after = capture_screenshot(action);
+        after = mac_capture_window_group(target);
         visual_change = after
             .as_ref()
             .ok()
@@ -3084,6 +3153,67 @@ fn execute_background_click(
 
 #[cfg(target_os = "macos")]
 fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
+    let action = &request.action;
+    let Some(id) = action.window_id.as_deref() else {
+        return execute_background_inner(&request, None);
+    };
+    // Pin the identity and geometry from the same pre-action enumeration.
+    let before = match window_list() {
+        Ok(windows) => windows,
+        Err(reason) => {
+            return Ok(
+                json!({"ok": false, "error_code": "window_snapshot_unavailable",
+            "error": reason, "action": action.action, "action_dispatched": false,
+            "dispatch_succeeded": false, "requires_observation": true}),
+            )
+        }
+    };
+    let Some(window) = before.iter().find(|w| w["id"].as_str() == Some(id)) else {
+        let mut result = window_lifecycle::stale_before_action(id, &before);
+        result["action"] = json!(action.action);
+        return Ok(result);
+    };
+    let target = WindowTarget {
+        window_id: id.parse().map_err(|_| "Invalid window ID")?,
+        pid: window["pid"].as_i64().ok_or("Missing window PID")? as i32,
+        x: window["x"].as_i64().ok_or("Missing window X")? as i32,
+        y: window["y"].as_i64().ok_or("Missing window Y")? as i32,
+        width: window["width"].as_u64().ok_or("Missing window width")? as u32,
+        height: window["height"].as_u64().ok_or("Missing window height")? as u32,
+    };
+    let read_only = policy::observation_only(&action.action);
+    let mut result = match execute_background_inner(&request, Some(target)) {
+        Ok(result) => result,
+        Err(error) => json!({"ok": false, "action": action.action, "error": error,
+            "action_dispatched": if read_only { Some(false) } else { None },
+            "effect_verified": false}),
+    };
+    if result.get("action_dispatched").is_none() {
+        result["action_dispatched"] = if read_only {
+            json!(false)
+        } else {
+            result
+                .get("dispatch_succeeded")
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
+    }
+    let after = window_list();
+    window_lifecycle::record(
+        &mut result,
+        id,
+        &before,
+        after.as_ref().map(Vec::as_slice).map_err(String::as_str),
+    );
+    result["retry_safe"] = json!(result["action_dispatched"] == false);
+    Ok(result)
+}
+
+#[cfg(target_os = "macos")]
+fn execute_background_inner(
+    request: &ExecuteRequest,
+    pinned_target: Option<WindowTarget>,
+) -> Result<Value, String> {
     let delivery_policy = request.delivery_policy;
     let action = &request.action;
     if matches!(
@@ -3099,10 +3229,16 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
     ) {
         mac_require_input_permission()?;
     }
+    let target = || {
+        pinned_target.ok_or_else(|| {
+            "background_app mode requires window_id; call list_windows first".to_string()
+        })
+    };
     let mut cursor = Value::Null;
+    let mut keyboard_receipt = None;
     let summary = match action.action.as_str() {
         "observe" => {
-            background_target(action)?;
+            target()?;
             "Observed application window".to_string()
         }
         "list_windows" => "Listed application windows".to_string(),
@@ -3111,10 +3247,13 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
                 .to_string(),
         ),
         "move" => {
-            let target = background_target(action)?;
+            let target = target()?;
             let local = background_local_point(action, target)?;
             let (x, y) = background_point(action, target)?;
-            let event_target = mac_background_event_target(target, (x, y)).target;
+            let event_target = match mac_background_event_target(target, (x, y)) {
+                Ok(window) => window.target,
+                Err(reason) => return Ok(unresolved_pointer_target(action, reason)),
+            };
             mac_post_mouse(
                 event_target,
                 CGEventType::MouseMoved,
@@ -3127,10 +3266,10 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
             "Moved application pointer".to_string()
         }
         "click" | "double_click" => {
-            return execute_background_click(action, delivery_policy);
+            return execute_background_click(action, delivery_policy, target()?);
         }
         "drag" => {
-            let target = background_target(action)?;
+            let target = target()?;
             let start = background_point(action, target)?;
             let end_action = ComputerAction {
                 action: action.action.clone(),
@@ -3150,7 +3289,10 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
             };
             let end_local = background_local_point(&end_action, target)?;
             let end = background_point(&end_action, target)?;
-            let event_target = mac_background_event_target(target, start).target;
+            let event_target = match mac_background_event_target(target, start) {
+                Ok(window) => window.target,
+                Err(reason) => return Ok(unresolved_pointer_target(action, reason)),
+            };
             mac_drag(
                 event_target,
                 start,
@@ -3163,39 +3305,60 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
         }
         "scroll" => {
             let (delta_x, delta_y) = scroll_delta(action)?;
-            let target = background_target(action)?;
+            let target = target()?;
             let local = background_local_point(action, target)?;
             let point = background_point(action, target)?;
-            let event_target = mac_background_event_target(target, point).target;
+            let event_target = match mac_background_event_target(target, point) {
+                Ok(window) => window.target,
+                Err(reason) => return Ok(unresolved_pointer_target(action, reason)),
+            };
             mac_scroll(Some(event_target), point, delta_x, delta_y)?;
             cursor = json!({ "x": local.0, "y": local.1 });
             "Scroll input sent to application window; movement unverified".to_string()
         }
-        "type" => {
-            let target = background_target(action)?;
-            let text = action
-                .text
-                .as_deref()
-                .ok_or_else(|| "text is required".to_string())?;
-            mac_prepare_keyboard(target, delivery_policy)?;
-            if delivery_policy == DeliveryPolicy::AllowForeground {
-                mac_send_text(target.pid, text, Some(target))?;
-            } else {
-                mac_type_text(target.pid, text)?;
+        "type" | "keypress" => {
+            let target = target()?;
+            if action.action == "type" && action.text.is_none() {
+                return Err("text is required".into());
             }
-            "Typed into application window".to_string()
-        }
-        "keypress" => {
-            let target = background_target(action)?;
             let keys = action.keys.as_deref().unwrap_or_default();
-            mac_key_combination(keys)?;
-            mac_prepare_keyboard(target, delivery_policy)?;
-            if delivery_policy == DeliveryPolicy::AllowForeground {
-                mac_send_keys(target.pid, keys, Some(target))?;
-            } else {
-                mac_press_keys(target.pid, keys)?;
+            if action.action == "keypress" {
+                mac_key_combination(keys)?;
             }
-            "Pressed keys in application window".to_string()
+            let prepared = match mac_prepare_keyboard(target, delivery_policy) {
+                Ok(prepared) => prepared,
+                Err(mut failure) => {
+                    failure["action"] = json!(action.action);
+                    return Ok(failure);
+                }
+            };
+            let mut sent = 0;
+            let route = Some((
+                prepared.target,
+                delivery_policy == DeliveryPolicy::AllowForeground,
+            ));
+            let outcome = if action.action == "type" {
+                mac_send_text_tracked(
+                    target.pid,
+                    action.text.as_deref().unwrap(),
+                    route,
+                    &mut sent,
+                )
+            } else {
+                mac_send_keys_tracked(target.pid, keys, route, &mut sent)
+            };
+            let mut receipt = prepared.receipt;
+            if let Err(reason) = outcome {
+                let mut failure =
+                    keyboard_failure(receipt, "keyboard_dispatch_interrupted", &reason, sent);
+                failure["action"] = json!(action.action);
+                return Ok(failure);
+            }
+            receipt["action_dispatched"] = json!(sent > 0);
+            receipt["dispatch_succeeded"] = json!(true);
+            receipt["keyboard_events_sent"] = json!(sent);
+            keyboard_receipt = Some(receipt);
+            "Keyboard input sent; intended effect unverified".to_string()
         }
         "open_app" => {
             let name = action
@@ -3214,8 +3377,44 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
             format!("Opened {name} in background")
         }
         "focus_window" => {
-            let target = background_target(action)?;
-            mac_prepare_keyboard(target, delivery_policy)?;
+            let target = target()?;
+            // Only this explicit action may raise a different document.
+            let (prepared, changed) = match mac_prepare_keyboard(target, delivery_policy) {
+                Ok(prepared) => (prepared, false),
+                Err(mut failure) => {
+                    // An activation/recheck failure is not permission to raise
+                    // the parent over a responder that was already resolved.
+                    if delivery_policy == DeliveryPolicy::StrictBackground
+                        || failure["focus_resolution"] == "owned_auxiliary"
+                        || failure["focus_resolution"] == "requested_window"
+                        || failure["error_code"] == "target_stale"
+                    {
+                        failure["action"] = json!(action.action);
+                        return Ok(failure);
+                    }
+                    if let Err(error) = mac_prepare_mouse_window(target) {
+                        failure["error"] = json!(error.reason);
+                        failure["action"] = json!(action.action);
+                        failure["focus_changed_by_tool"] = Value::Null;
+                        failure["action_dispatched"] = Value::Null;
+                        return Ok(failure);
+                    }
+                    match mac_prepare_keyboard(target, delivery_policy) {
+                        Ok(prepared) => (prepared, true),
+                        Err(mut failure) => {
+                            failure["focus_changed_by_tool"] = json!(true);
+                            failure["action_dispatched"] = json!(true);
+                            failure["action"] = json!(action.action);
+                            return Ok(failure);
+                        }
+                    }
+                }
+            };
+            let mut receipt = prepared.receipt;
+            if changed {
+                receipt["focus_changed_by_tool"] = json!(true);
+            }
+            keyboard_receipt = Some(receipt);
             format!("Verified keyboard focus for window {}", target.window_id)
         }
         "wait" => {
@@ -3235,6 +3434,13 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
         "cursor": cursor,
         "coordinate_space": "window",
     });
+    result["action_dispatched"] = json!(!policy::observation_only(&action.action));
+    if let Some(receipt) = keyboard_receipt {
+        result
+            .as_object_mut()
+            .unwrap()
+            .extend(receipt.as_object().unwrap().clone());
+    }
     add_scroll_receipt(&mut result, action);
     if action.action == "list_windows" {
         result["windows"] = Value::Array(window_list()?);
@@ -3259,7 +3465,11 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
         if action.action == "scroll" {
             thread::sleep(Duration::from_millis(SCROLL_SETTLE_MS));
         }
-        match screenshot(action) {
+        let frame = match pinned_target {
+            Some(target) => mac_capture_window_group(target).and_then(encode_screenshot_capture),
+            None => screenshot(action),
+        };
+        match frame {
             Ok(frame) => {
                 if frame["background_observation_limited"] == Value::Bool(true) {
                     result["background_observation_limited"] = Value::Bool(true);
@@ -3270,6 +3480,9 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
                                 .to_string(),
                         );
                     }
+                }
+                if frame["requires_observation"] == true {
+                    result["requires_observation"] = json!(true);
                 }
                 result["screenshot"] = frame;
             }
@@ -3908,89 +4121,119 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn background_window_group_separates_visible_surfaces_from_input_targets() {
+    fn window_group_excludes_sibling_documents_and_unproven_overlays() {
         let root = WindowTarget {
-            window_id: 107,
-            pid: 1084,
+            window_id: 1,
+            pid: 10,
             x: 0,
-            y: 33,
-            width: 1492,
-            height: 868,
+            y: 0,
+            width: 500,
+            height: 500,
         };
-        let info = |window_id, x, y, width, height, title: &str, on_screen| MacWindowInfo {
+        let info = |id, on_screen| MacWindowInfo {
             target: WindowTarget {
-                window_id,
-                pid: 1084,
-                x,
-                y,
-                width,
-                height,
+                window_id: id,
+                ..root
             },
-            title: title.to_string(),
+            title: String::new(),
             layer: 0,
             on_screen,
         };
-        let windows = vec![
-            info(10057, 0, 33, 1492, 868, "", false),
-            info(8676, 0, 33, 1492, 868, "", true),
-            info(200, 400, 200, 500, 500, "", true),
-            info(153, 0, 482, 64, 64, "", false),
-            info(107, 0, 33, 1492, 868, "", true),
-        ];
-        let current_ax_windows = HashSet::from([107]);
-        let group = mac_window_group_from_info(root, &windows, &current_ax_windows);
+        let windows = vec![info(2, true), info(3, true), info(4, false), info(1, true)];
+        let mut relations = WindowRelations::default();
+        relations.record(1, WindowKind::Document, None);
+        relations.record(2, WindowKind::Document, None);
+        relations.record(3, WindowKind::Auxiliary, None);
+        relations.record(4, WindowKind::Sheet, Some((1, "AXSheets")));
+        let group = mac_window_group_from_info(root, &windows, &relations);
         assert_eq!(
             group
                 .components
                 .iter()
-                .map(|window| window.target.window_id)
+                .map(|w| w.target.window_id)
                 .collect::<Vec<_>>(),
-            vec![8676, 200, 107]
+            vec![1]
         );
-        let event_target = mac_event_target_from_group(group, root, (450, 250));
-        assert_eq!(event_target.target.window_id, 200);
-        assert!(event_target.on_screen);
+        assert_eq!(group.excluded.len(), 2);
+        assert!(mac_event_target_from_group(group, root, (100, 100)).is_err());
+        // A positively identified sibling cannot become the dispatch target,
+        // even when it has the same title, PID, layer and rectangle.
+        let group = mac_window_group_from_info(root, &[info(2, true), info(1, true)], &relations);
+        assert_eq!(
+            mac_event_target_from_group(group, root, (100, 100))
+                .unwrap()
+                .target
+                .window_id,
+            1
+        );
+    }
 
-        // AX can retain a dismissed dialog. It must stay out of both the
-        // screenshot and event routing, even with a live AX window ID.
-        let current_ax_windows = HashSet::from([107, 10057]);
-        let group = mac_window_group_from_info(root, &windows, &current_ax_windows);
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn window_group_routes_proven_auxiliaries_but_not_passive_companions() {
+        let root = WindowTarget {
+            window_id: 1,
+            pid: 10,
+            x: 0,
+            y: 0,
+            width: 500,
+            height: 500,
+        };
+        let info = |id, on_screen| MacWindowInfo {
+            target: WindowTarget {
+                window_id: id,
+                ..root
+            },
+            title: String::new(),
+            layer: 3,
+            on_screen,
+        };
+        let windows = vec![info(4, false), info(2, true), info(3, true), info(1, true)];
+        let mut relations = WindowRelations::default();
+        relations.record(1, WindowKind::Document, None);
+        relations.record(2, WindowKind::Passive, Some((1, "AXParent")));
+        relations.record(3, WindowKind::Sheet, Some((1, "AXSheets")));
+        relations.record(4, WindowKind::Popover, Some((1, "AXParent")));
+        let group = mac_window_group_from_info(root, &windows, &relations);
         assert_eq!(
             group
                 .components
                 .iter()
-                .map(|window| window.target.window_id)
+                .map(|w| w.target.window_id)
                 .collect::<Vec<_>>(),
-            vec![8676, 200, 107]
+            vec![2, 3, 1]
         );
-        let event_target = mac_event_target_from_group(group, root, (450, 250));
-        assert_eq!(event_target.target.window_id, 200);
-        assert!(event_target.on_screen);
-
-        let group = mac_window_group_from_info(root, &windows, &HashSet::new());
         assert_eq!(
-            group
-                .components
-                .iter()
-                .map(|window| window.target.window_id)
-                .collect::<Vec<_>>(),
-            vec![8676, 200, 107]
+            mac_event_target_from_group(group, root, (100, 100))
+                .unwrap()
+                .target
+                .window_id,
+            3
         );
+        let group = mac_window_group_from_info(root, &windows, &WindowRelations::default());
+        assert_eq!(group.components.len(), 1);
+        assert!(mac_event_target_from_group(group, root, (100, 100)).is_err());
+    }
 
-        // A full-size AXDialog can have exactly the same title and geometry
-        // as an AXUnknown companion. Both are visible; only the dialog takes
-        // input. This also works for an AX-confirmed floating panel.
-        for layer in [0, 3] {
-            let mut windows = windows.clone();
-            windows[1].layer = layer;
-            let group = mac_window_group_from_info(root, &windows, &HashSet::from([107, 8676]));
-            assert_eq!(
-                mac_event_target_from_group(group, root, (450, 250))
-                    .target
-                    .window_id,
-                8676
-            );
-        }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keyboard_rejection_and_partial_dispatch_have_distinct_receipts() {
+        let receipt = json!({"requested_window_id": "1", "resolved_window_id": "3", "focus_changed_by_tool": false});
+        let rejected = keyboard_failure(
+            receipt.clone(),
+            "keyboard_focus_unresolved",
+            "no ownership",
+            0,
+        );
+        assert_eq!(rejected["action_dispatched"], false);
+        assert_eq!(rejected["focus_changed_by_tool"], false);
+        assert_eq!(rejected["retry_safe"], true);
+        let partial =
+            keyboard_failure(receipt, "keyboard_dispatch_interrupted", "focus changed", 2);
+        assert_eq!(partial["action_dispatched"], true);
+        assert_eq!(partial["retry_safe"], false);
+        assert_eq!(partial["keyboard_events_sent"], 2);
+        assert_eq!(partial["requires_observation"], true);
     }
 
     #[cfg(target_os = "macos")]
@@ -4028,6 +4271,8 @@ mod tests {
             component_window_ids: Vec::new(),
             hidden_component_window_ids: Vec::new(),
             component_capture_errors: Vec::new(),
+            window_components: Vec::new(),
+            excluded_windows: Vec::new(),
         };
         let before = capture(base.clone());
         let same = capture(base.clone());
@@ -4115,7 +4360,7 @@ mod tests {
                 check_pixel(60, 60, [0, 0, 0, 255]);
                 check_pixel(180, 120, [0, 0, 0, 255]);
             }
-            let target = mac_background_event_target(root, (root.x + 180, root.y + 120));
+            let target = mac_background_event_target(root, (root.x + 180, root.y + 120)).unwrap();
             assert_eq!(
                 target.target.window_id,
                 if dialog_visible { dialog_id } else { root_id }
@@ -4162,8 +4407,12 @@ mod tests {
             .collect::<Vec<_>>();
         eprintln!("process_windows={process_windows:?}");
         eprintln!(
-            "interactive_window_ids={:?}",
-            mac_ax_application_interactive_window_ids(target.pid)
+            "window_relations={:?}",
+            mac_ax_relations::snapshot(
+                &mac_ax_relations::application(target.pid).unwrap(),
+                target.pid
+            )
+            .relations
         );
         let capture = mac_capture_window_group(target).expect("window group capture failed");
         assert_eq!(capture.image.dimensions(), (target.width, target.height));
