@@ -285,7 +285,7 @@ export function RuntimeSettingsPanel({
             <div className="settings-row compact">
               <div className="settings-row-copy">
                 <strong>前台权限</strong>
-                <span>严格后台使用进程定向输入，不主动激活目标窗口；允许前台操作时，指定窗口的单次左键点击优先使用辅助功能（AX）操作，不支持时允许激活窗口并投递鼠标事件。</span>
+                <span>严格后台仅允许已验证的系统、应用版本和输入操作；不支持时返回原因，不会自动切换到前台。允许前台操作可能激活目标窗口。</span>
               </div>
               <div className="settings-segmented" aria-label="Computer Use 前台权限">
                 {(["strict_background", "allow_foreground"] as const).map((policy) => (
@@ -306,7 +306,7 @@ export function RuntimeSettingsPanel({
               </div>
             </div>
             <div className="runtime-settings-note">
-              指定窗口目前仅支持 macOS。严格后台不提供聚焦窗口操作，部分应用可能忽略输入；允许前台操作可能打断当前操作，并不表示所有输入都支持自动回退。是否允许前台操作仅由此处设置决定，与会话的“完全访问”权限无关。使用整个桌面前仍需选择允许前台操作。
+              指定窗口目前仅支持 macOS。严格后台不提供聚焦窗口操作，会拒绝未通过验证的输入；允许前台操作可能打断当前操作，并不表示所有输入都支持自动回退。是否允许前台操作仅由此处设置决定，与会话的“完全访问”权限无关。使用整个桌面前仍需选择允许前台操作。
             </div>
           </>}
         </section>

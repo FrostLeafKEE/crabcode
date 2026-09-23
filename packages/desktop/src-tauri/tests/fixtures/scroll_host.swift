@@ -112,6 +112,9 @@ func makeWindow(_ title: String) -> (NSWindow, ScrollArea) {
 
 let (target, targetScroll) = makeWindow("CrabCode scroll target")
 let (decoy, decoyScroll) = makeWindow("CrabCode scroll decoy")
+if CommandLine.arguments.contains("--separate-windows") {
+    decoy.setFrameOrigin(NSPoint(x: 800, y: 200))
+}
 let buttonCounter = ButtonCounter()
 let button = NSButton(title: "Test click", target: buttonCounter, action: #selector(ButtonCounter.press(_:)))
 button.frame = NSRect(x: 20, y: 20, width: 140, height: 32)

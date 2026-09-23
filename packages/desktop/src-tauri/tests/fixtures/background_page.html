@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Crab background validation</title>
+<style>
+body { margin: 30px; font: 18px system-ui; background: #fafafa; }
+button, input { font: inherit; padding: 14px; margin: 8px; }
+#scroll { height: 180px; overflow: auto; border: 2px solid #555; width: 500px; }
+#rows { height: 2400px; background: repeating-linear-gradient(#eee 0 39px, #ddd 40px 79px); }
+pre { white-space: pre-wrap; }
+</style>
+<h1>CrabCode background input validation</h1>
+<button id="click">Count exactly one click</button>
+<input id="text" aria-label="Background test text" placeholder="Background test text">
+<div id="scroll" aria-label="Background scroll area"><div id="rows">Scrollable test content</div></div>
+<pre id="state"></pre>
+<script>
+const result = {clicks: 0, doubleClicks: 0, text: '', scrollY: 0, keys: [], trusted: []};
+function record() {
+  document.querySelector('#state').textContent = JSON.stringify(result);
+  document.title = `CrabBG c=${result.clicks} d=${result.doubleClicks} s=${result.scrollY} t=${result.text}`;
+}
+document.querySelector('#click').addEventListener('click', e => { result.clicks++; result.trusted.push(e.isTrusted); record(); });
+document.querySelector('#click').addEventListener('dblclick', () => { result.doubleClicks++; record(); });
+document.querySelector('#text').addEventListener('input', e => { result.text = e.target.value; record(); });
+document.querySelector('#text').addEventListener('keydown', e => { result.keys.push(e.key); record(); });
+document.querySelector('#scroll').addEventListener('scroll', e => { result.scrollY = e.target.scrollTop; record(); });
+record();
+</script>

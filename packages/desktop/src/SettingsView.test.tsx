@@ -540,8 +540,8 @@ describe("SettingsView", () => {
       .find((item) => item.textContent === label)!;
     act(() => render(data));
     expect(button("整个桌面").disabled).toBe(true);
-    expect(container.textContent).toContain("严格后台使用进程定向输入，不主动激活目标窗口");
-    expect(container.textContent).toContain("单次左键点击优先使用辅助功能（AX）操作");
+    expect(container.textContent).toContain("严格后台仅允许已验证的系统、应用版本和输入操作");
+    expect(container.textContent).toContain("不会自动切换到前台");
     expect(container.textContent).toContain("并不表示所有输入都支持自动回退");
     expect(container.textContent).toContain("与会话的“完全访问”权限无关");
     await act(async () => button("允许前台操作").click());

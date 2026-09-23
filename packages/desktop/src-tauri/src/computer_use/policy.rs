@@ -40,8 +40,8 @@ pub(super) fn rejection(
     if action == "focus_window" {
         return Some("focus_window requires allow_foreground");
     }
-    // App-window input has a PID/window-targeted delivery path. Strict mode
-    // skips every activation helper and never falls back to foreground input.
+    // The strict provider separately validates each OS/app/action combination.
+    // Target-local input preparation never grants global foreground permission.
     None
 }
 

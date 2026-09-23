@@ -1,0 +1,34 @@
+[
+  {
+    "identity": {
+      "os_build": "25D125",
+      "architecture": "aarch64",
+      "bundle_id": "com.apple.TextEdit",
+      "app_version": "1.20",
+      "app_build": "415"
+    },
+    "actions": ["click", "double_click"],
+    "pointer": "quartz",
+    "keyboard": "quartz",
+    "prepare_active": true,
+    "primer": false,
+    "semantic_click": false,
+    "evidence": "docs/computer-use-background-validation.md#textedit"
+  },
+  {
+    "identity": {
+      "os_build": "25D125",
+      "architecture": "aarch64",
+      "bundle_id": "com.google.Chrome",
+      "app_version": "153.0.8010.53",
+      "app_build": "8010.53"
+    },
+    "actions": ["click", "double_click"],
+    "pointer": "sky_light",
+    "keyboard": "quartz",
+    "prepare_active": true,
+    "primer": true,
+    "semantic_click": false,
+    "evidence": "docs/computer-use-background-validation.md#chrome"
+  }
+]

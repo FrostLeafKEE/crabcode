@@ -56,6 +56,8 @@ use foreign_types::ForeignType;
 
 #[cfg(all(test, target_os = "macos"))]
 mod background_experiment;
+#[cfg(target_os = "macos")]
+mod background_input;
 mod diagnostics;
 #[cfg(target_os = "macos")]
 mod mac_ax_relations;
@@ -79,12 +81,19 @@ const SCROLL_SETTLE_MS: u64 = 180;
 const CLICK_SETTLE_MS: u64 = 250;
 
 fn strict_background_input_available() -> bool {
-    cfg!(target_os = "macos")
+    #[cfg(target_os = "macos")]
+    {
+        background_input::available()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 fn strict_background_reason() -> &'static str {
     if cfg!(target_os = "macos") {
-        "Window-targeted input is available; focus_window remains disabled"
+        "Strict input requires an exact validated OS/app/action profile and live isolation checks; unsupported targets are rejected without foreground fallback"
     } else {
         "Strict background input requires macOS window targeting"
     }
@@ -3066,9 +3075,8 @@ fn record_click_outcome(result: &mut Value, dispatched: bool, visual_change: Opt
 }
 
 #[cfg(target_os = "macos")]
-fn execute_background_click(
+fn execute_foreground_allowed_window_click(
     action: &ComputerAction,
-    delivery_policy: DeliveryPolicy,
     target: WindowTarget,
 ) -> Result<Value, String> {
     let point = background_local_point(action, target)?;
@@ -3097,13 +3105,8 @@ fn execute_background_click(
             .unwrap_or("left")
             .eq_ignore_ascii_case("left");
     if !event_window.on_screen {
-        let reason = if delivery_policy == DeliveryPolicy::StrictBackground {
-            "The target surface is off-screen; strict background delivery cannot activate it"
-                .to_string()
-        } else {
-            "The target surface is off-screen; focus it and observe again before clicking"
-                .to_string()
-        };
+        let reason = "The target surface is off-screen; focus it and observe again before clicking"
+            .to_string();
         return Ok(finish_background_click(
             action,
             failed_background_click_preparation(
@@ -3118,31 +3121,19 @@ fn execute_background_click(
     }
     let foreground_monitor = MacForegroundMonitor::start(target.pid);
 
-    // Strict mode goes directly through PID/window-targeted Quartz events and
-    // never runs AX activation helpers. Foreground-enabled mode keeps semantic
-    // AX actions first, then prepares the target before its mouse fallback.
+    // Strict input is handled exclusively by background_input. Foreground-
+    // enabled mode keeps semantic AX actions first, then prepares the target.
     // Never retry an acknowledged/uncertain action through another input path.
-    let semantic_dispatch = if delivery_policy == DeliveryPolicy::StrictBackground {
-        None
-    } else if is_single_left_click {
-        Some(mac_ax_press(event_target, x, y))
+    let semantic_dispatch = if is_single_left_click {
+        mac_ax_press(event_target, x, y)
     } else {
-        Some(MacAxPressOutcome::Unsupported {
+        MacAxPressOutcome::Unsupported {
             reason: "The requested mouse gesture requires window-targeted mouse events".to_string(),
-        })
+        }
     };
-    let uses_mouse = semantic_dispatch.is_none()
-        || matches!(
-            &semantic_dispatch,
-            Some(MacAxPressOutcome::Unsupported { .. })
-        );
+    let uses_mouse = matches!(&semantic_dispatch, MacAxPressOutcome::Unsupported { .. });
     if uses_mouse {
-        let preparation = if delivery_policy == DeliveryPolicy::StrictBackground {
-            mac_validate_mouse_layout(target, event_target, (x, y))
-                .map(|_| None)
-                .map_err(|reason| ClickFailureStage::LayoutValidation.failure(reason))
-        } else {
-            mac_prepare_mouse_window(event_target).and_then(|_| {
+        let preparation = mac_prepare_mouse_window(event_target).and_then(|_| {
                 // Activation alone can change title-bar pixels. Compare the click
                 // against the prepared window, so that is not counted as its effect.
                 let baseline = mac_capture_window_group(target)
@@ -3155,12 +3146,10 @@ fn execute_background_click(
                         .map_err(|reason| ClickFailureStage::Activation.failure(reason))? {
                     return Err(ClickFailureStage::Activation.failure("The target lost activation before mouse input; no click was sent. Observe again before clicking".to_string()));
                 }
-                Ok(Some(baseline))
-            })
-        };
+                Ok(baseline)
+            });
         match preparation {
-            Ok(Some(baseline)) => before = baseline,
-            Ok(None) => {}
+            Ok(baseline) => before = baseline,
             Err(failure) => {
                 let mut result = failed_background_click_preparation(
                     action,
@@ -3216,9 +3205,7 @@ fn execute_background_click(
         "dispatch_window_id": event_target.window_id.to_string(),
         "visual_changed_pixels": visual_change.map(|change| change.changed_pixels),
         "visual_sampled_pixels": visual_change.map(|change| change.sampled_pixels),
-        "input_method": if delivery_policy == DeliveryPolicy::StrictBackground {
-            "quartz_pid_event"
-        } else if uses_mouse {
+        "input_method": if uses_mouse {
             "quartz_event"
         } else {
             "accessibility_action"
@@ -3228,24 +3215,17 @@ fn execute_background_click(
     });
     record_click_outcome(
         &mut result,
-        uses_mouse
-            || matches!(
-                &semantic_dispatch,
-                Some(MacAxPressOutcome::Performed { .. })
-            ),
+        uses_mouse || matches!(&semantic_dispatch, MacAxPressOutcome::Performed { .. }),
         visual_change.map(|change| change.detected),
     );
     match semantic_dispatch {
-        None => {
-            result["delivery_route"] = json!("pid_targeted_message");
-        }
-        Some(MacAxPressOutcome::Performed { action: ax_action }) => {
+        MacAxPressOutcome::Performed { action: ax_action } => {
             result["accessibility_action"] = json!(ax_action);
         }
-        Some(MacAxPressOutcome::Uncertain { reason }) => {
+        MacAxPressOutcome::Uncertain { reason } => {
             result["dispatch_warning"] = json!(reason);
         }
-        Some(MacAxPressOutcome::Unsupported { reason }) => {
+        MacAxPressOutcome::Unsupported { reason } => {
             result["fallback_reason"] = json!(reason);
         }
     }
@@ -3311,7 +3291,8 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
         &before,
         after.as_ref().map(Vec::as_slice).map_err(String::as_str),
     );
-    result["retry_safe"] = json!(result["action_dispatched"] == false);
+    result["retry_safe"] =
+        json!(result["action_dispatched"] == false && result["retry_safe"] != false);
     Ok(result)
 }
 
@@ -3340,6 +3321,18 @@ fn execute_background_inner(
             "background_app mode requires window_id; call list_windows first".to_string()
         })
     };
+    if delivery_policy == DeliveryPolicy::StrictBackground
+        && !policy::observation_only(&action.action)
+    {
+        if action.action == "open_app" {
+            return Ok(json!({"ok": false, "action": action.action,
+                "error_code": "background_delivery_unsupported",
+                "error": "Application launch has not passed strict-background isolation validation",
+                "action_dispatched": false, "effect_verified": false,
+                "focus_isolation": "preserved", "input_method": "none"}));
+        }
+        return Ok(background_input::execute(action, target()?));
+    }
     let mut cursor = Value::Null;
     let mut keyboard_receipt = None;
     let summary = match action.action.as_str() {
@@ -3372,7 +3365,7 @@ fn execute_background_inner(
             "Moved application pointer".to_string()
         }
         "click" | "double_click" => {
-            return execute_background_click(action, delivery_policy, target()?);
+            return execute_foreground_allowed_window_click(action, target()?);
         }
         "drag" => {
             let target = target()?;
@@ -3605,6 +3598,12 @@ fn execute_background(_request: ExecuteRequest) -> Result<Value, String> {
 }
 
 pub(crate) fn execute(request: ExecuteRequest) -> Result<Value, String> {
+    // Prevent another Computer Use session from changing global input state
+    // during a strict provider's preparation, dispatch or cleanup.
+    static INPUT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _input = INPUT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     diagnostics::measure(|| execute_inner(request))
 }
 
@@ -3656,17 +3655,19 @@ fn execute_inner(request: ExecuteRequest) -> Result<Value, String> {
     };
     result["target_scope"] = json!(scope);
     result["delivery_policy"] = json!(policy);
-    result["focus_isolation"] = json!(if read_only {
-        "preserved"
-    } else if policy == DeliveryPolicy::StrictBackground {
-        match result.get("foreground_activated").and_then(Value::as_bool) {
-            Some(false) => "preserved",
-            Some(true) => "violated",
-            None => "unavailable",
-        }
-    } else {
-        "unavailable"
-    });
+    if result.get("focus_isolation").is_none() {
+        result["focus_isolation"] = json!(if read_only {
+            "preserved"
+        } else if policy == DeliveryPolicy::StrictBackground {
+            match result.get("foreground_activated").and_then(Value::as_bool) {
+                Some(false) => "preserved",
+                Some(true) => "violated",
+                None => "unavailable",
+            }
+        } else {
+            "unavailable"
+        });
+    }
     if result.get("action_dispatched").is_none() {
         result["action_dispatched"] = if read_only {
             json!(false)
@@ -3680,7 +3681,8 @@ fn execute_inner(request: ExecuteRequest) -> Result<Value, String> {
         };
     }
     // Retrying a delivered input is not safe even when pixels did not change.
-    result["retry_safe"] = json!(result["action_dispatched"] == false);
+    result["retry_safe"] =
+        json!(result["action_dispatched"] == false && result["retry_safe"] != false);
     if result.get("effect_verified").is_none() {
         result["effect_verified"] = json!(false);
     }
@@ -3795,6 +3797,8 @@ mod tests {
 <key>CFBundleExecutable</key><string>input-fixture</string>
 <key>CFBundleIdentifier</key><string>io.crabcode.input-test</string>
 <key>CFBundleName</key><string>CrabCode input fixture</string>
+<key>CFBundleShortVersionString</key><string>1.0</string>
+<key>CFBundleVersion</key><string>1</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 </dict></plist>"#,
             )
@@ -5197,7 +5201,12 @@ mod tests {
                 action: serde_json::from_value(request).unwrap(),
             })
             .unwrap();
-            assert_eq!(result["ok"], true, "{action}: {result}; fixture={:?}", host.state());
+            assert_eq!(
+                result["ok"],
+                true,
+                "{action}: {result}; fixture={:?}",
+                host.state()
+            );
         };
         send(&state["second"], "focus_window", Value::Null);
         send(&state["first"], "focus_window", Value::Null);
@@ -5215,11 +5224,15 @@ mod tests {
         // makeKeyAndOrderFront publishes its window asynchronously. The old
         // repeated enumeration was slow enough to mask this fixture race.
         let panel_id = panel["panel"].to_string();
-        (0..100).find_map(|_| {
-            let target = window_target(&panel_id).ok();
-            if target.is_none() { thread::sleep(Duration::from_millis(20)); }
-            target
-        }).expect("fixture panel was not published by WindowServer");
+        (0..100)
+            .find_map(|_| {
+                let target = window_target(&panel_id).ok();
+                if target.is_none() {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                target
+            })
+            .expect("fixture panel was not published by WindowServer");
         send(&panel["panel"], "type", json!("report.txt"));
         wait("name", json!("report.txt"));
         send(&panel["panel"], "keypress", json!(["CMD", "A"]));

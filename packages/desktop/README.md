@@ -84,12 +84,15 @@ Defaults are `app_window + allow_foreground`. Desktop scope requires
 `allow_foreground`. These are user/session settings, not model action arguments.
 
 The delivery policy is independent of tool approval modes, including Full
-Access (`run_everything` / `bypassPermissions`). Strict background permits
-window-targeted input but never exposes or dispatches `focus_window`. Clicks
-use PID/window-targeted Quartz event delivery first and do not run activation
-helpers. Some applications can ignore input while inactive; select
-**允许前台操作** in settings to permit activation-assisted fallback. An
-unsupported action never changes the policy by itself.
+Access (`run_everything` / `bypassPermissions`). On macOS, strict input goes
+through one backend that owns target preparation, window routing, event
+delivery, cleanup and isolation monitoring. It requires an exact validated
+macOS build, application version, executable architecture and action profile.
+The initial profiles cover left click/double-click in TextEdit and Chrome;
+Feishu, keyboard input and scrolling have not passed the complete validation.
+Unsupported combinations return a reason before sending input. Strict mode
+never raises/activates a global foreground window or automatically switches
+to `allow_foreground`. See the [validation matrix and reproduction steps](../../docs/computer-use-background-validation.md).
 
 Legacy `computer_use.mode` values migrate only the target scope, never the
 foreground permission. Old Desktop hosts must be upgraded before input can be
@@ -100,7 +103,7 @@ apply to new or reconnected sessions.
 The native action receipt separates `action_dispatched` (true/false/null),
 `effect_verified`, `focus_isolation`, and `retry_safe`. Null dispatch means
 input may have arrived; a transport failure is not permission to click again.
-See [the implementation and experiment notes](../../docs/computer-use-delivery-policy.md).
+See [the backend and validation notes](../../docs/computer-use-background-validation.md).
 
 On macOS, background pointer events carry a window ID and window-local position.
 The position uses the private `CGEventSetWindowLocation` symbol, resolved at runtime;
