@@ -174,6 +174,34 @@ describe("desktop status bar", () => {
     expect(container.querySelector(".computer-use-mode")?.textContent).toContain("允许前台");
   });
 
+  it("shows the current configured policy while keeping preview policy as action history", () => {
+    const computerUse: ComputerUseState = {
+      ...initialComputerUseState("desktop-test", true),
+      active: true,
+      status: "ready",
+      previews: [{
+        key: "session:s:agent:main", sessionId: "s", mode: "background_app",
+        deliveryPolicy: "allow_foreground", status: "ready", action: "click",
+        summary: "Clicked", frame: null, cursor: null, updatedAt: Date.now(),
+      }],
+    };
+    const config = {
+      cwd: "/workspace", snapshot_enabled: true, snapshot_max_size_mb: 1024,
+      computer_use_target_scope: "app_window" as const,
+      computer_use_delivery_policy: "strict_background" as const,
+      extra_tools: [], extra_tools_by_source: {}, sources: [], warnings: [],
+    };
+    act(() => root.render(<StatusBar computerUse={computerUse} computerUseConfig={config} />));
+    act(() => container.querySelector<HTMLButtonElement>(".status-computer-use")!.click());
+    expect(container.querySelector(".computer-use-mode")?.textContent).toBe("指定窗口 · 严格后台");
+    expect(container.querySelector(".computer-use-preview-card header")?.textContent).toContain("操作时：指定窗口 · 允许前台");
+
+    act(() => root.render(<StatusBar computerUse={computerUse} computerUseConfig={{
+      ...config, computer_use_target_scope: "desktop", computer_use_delivery_policy: "allow_foreground",
+    }} />));
+    expect(container.querySelector(".computer-use-mode")?.textContent).toBe("整个桌面 · 允许前台");
+  });
+
   it.each([
     { label: "background window at a positive screen origin", mode: "background_app", origin: [320, 180], cursor: { x: 25, y: 15 }, expected: ["25%", "30%"] },
     { label: "background window on a display with a negative origin", mode: "background_app", origin: [-1600, -900], cursor: { x: 25, y: 15 }, expected: ["25%", "30%"] },

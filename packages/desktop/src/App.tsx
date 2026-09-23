@@ -787,6 +787,7 @@ function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("general");
   const [modelSettingsState, setModelSettingsState] = useState<ModelSettingsLoadState | null>(null);
   const [runtimeSettingsState, setRuntimeSettingsState] = useState<RuntimeSettingsLoadState | null>(null);
+  const runtimeSettingsRevisionRef = useRef(new Map<string, number>());
   const [connectionModal, setConnectionModal] = useState<"new" | string | null>(null);
   const [checkpointModal, setCheckpointModal] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
@@ -1020,6 +1021,8 @@ function App() {
 
   const refreshRuntimeSettings = useCallback(async (connectionId: string, cwd?: string) => {
     const key = `${connectionId}\u0000${cwd ?? ""}`;
+    const revision = (runtimeSettingsRevisionRef.current.get(key) ?? 0) + 1;
+    runtimeSettingsRevisionRef.current.set(key, revision);
     const api = apiRef.current.get(connectionId);
     if (!api) {
       setRuntimeSettingsState({ key, data: null, loading: false, error: "Gateway 尚未连接" });
@@ -1033,10 +1036,12 @@ function App() {
     }));
     try {
       const data = await api.runtimeSettings(cwd);
+      if (runtimeSettingsRevisionRef.current.get(key) !== revision) return;
       setRuntimeSettingsState((current) => current?.key === key
         ? { key, data, loading: false, error: null }
         : current);
     } catch (error) {
+      if (runtimeSettingsRevisionRef.current.get(key) !== revision) return;
       setRuntimeSettingsState((current) => current?.key === key
         ? {
             key,
@@ -1054,10 +1059,14 @@ function App() {
   ) => {
     const api = apiRef.current.get(connectionId);
     if (!api) throw new Error("Gateway 尚未连接");
-    const data = await api.mutateRuntimeSettings(mutation);
     const cwd = mutation.cwd ?? "";
     const key = `${connectionId}\u0000${cwd}`;
-    setRuntimeSettingsState({ key, data, loading: false, error: null });
+    runtimeSettingsRevisionRef.current.set(key, (runtimeSettingsRevisionRef.current.get(key) ?? 0) + 1);
+    const data = await api.mutateRuntimeSettings(mutation);
+    runtimeSettingsRevisionRef.current.set(key, (runtimeSettingsRevisionRef.current.get(key) ?? 0) + 1);
+    setRuntimeSettingsState((current) => current?.key === key
+      ? { key, data, loading: false, error: null }
+      : current);
   }, []);
 
   const mutateModelSettings = useCallback(async (
@@ -2100,9 +2109,7 @@ function App() {
 
   useEffect(() => {
     if (
-      !settingsOpen
-      || settingsSection !== "runtime"
-      || !activeConnection
+      !activeConnection
       || activeGateway?.status !== "online"
     ) return;
     void refreshRuntimeSettings(activeConnection.id, activeProject?.path);
@@ -2111,8 +2118,6 @@ function App() {
     activeGateway?.status,
     activeProject?.path,
     refreshRuntimeSettings,
-    settingsOpen,
-    settingsSection,
   ]);
 
   const deleteConnection = useCallback(async (id: string) => {
@@ -4142,6 +4147,7 @@ function App() {
         startup={activeConnection ? gatewayStartups[activeConnection.id] : undefined}
         project={activeProject}
         computerUse={computerUseState}
+        computerUseConfig={activeRuntimeSettingsState?.data}
         onComputerUseEnabledChange={(enabled) => {
           computerUseChannelRef.current?.setEnabled(enabled);
           channelRef.current.forEach((channel) => channel.setComputerUseEnabled(enabled));

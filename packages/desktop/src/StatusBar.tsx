@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ComputerUsePreview, ComputerUseState } from "./computerUse";
 import type { GatewayStartupState } from "./gatewayStartup";
-import type { ConnectionPreset, GatewayViewState, ProjectPreset } from "./types";
+import type { ConnectionPreset, GatewayViewState, ProjectPreset, RuntimeSettingsResponse } from "./types";
 
 interface StatusBarProps {
   connection?: ConnectionPreset | null;
@@ -16,6 +16,7 @@ interface StatusBarProps {
   onRetry?: () => void;
   onConnections?: () => void;
   computerUse?: ComputerUseState;
+  computerUseConfig?: RuntimeSettingsResponse | null;
   onComputerUseEnabledChange?: (enabled: boolean) => void;
   onComputerUseOpenInputSettings?: () => void;
   onComputerUseRefresh?: () => void;
@@ -39,7 +40,7 @@ function previewCursorPosition(preview: ComputerUsePreview | null): { left: numb
   };
 }
 
-export function StatusBar({ connection, gateway, startup, project, loading, error, activity, onRetry, onConnections, computerUse, onComputerUseEnabledChange, onComputerUseOpenInputSettings, onComputerUseRefresh }: StatusBarProps) {
+export function StatusBar({ connection, gateway, startup, project, loading, error, activity, onRetry, onConnections, computerUse, computerUseConfig, onComputerUseEnabledChange, onComputerUseOpenInputSettings, onComputerUseRefresh }: StatusBarProps) {
   const [expanded, setExpanded] = useState(false);
   const [computerExpanded, setComputerExpanded] = useState(false);
   const [computerDetail, setComputerDetail] = useState<ComputerUsePreview | null>(null);
@@ -99,8 +100,12 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
     setExpanded(false);
     toggleRef.current?.focus();
   };
-  const strictInputUnavailable = computerUse?.deliveryPolicy === "strict_background"
-    && computerUse.capabilities?.strict_background_input_available === false;
+  const configuredMode = computerUseConfig?.computer_use_target_scope === "desktop" ? "foreground_desktop"
+    : computerUseConfig?.computer_use_target_scope === "app_window" ? "background_app"
+      : computerUseConfig?.computer_use_mode ?? computerUse?.mode;
+  const configuredPolicy = computerUseConfig?.computer_use_delivery_policy ?? computerUse?.deliveryPolicy;
+  const strictInputUnavailable = configuredPolicy === "strict_background"
+    && computerUse?.capabilities?.strict_background_input_available === false;
   const computerStatusLabel = computerUse?.status === "ready"
     ? computerUse.capabilities?.input_available === false || strictInputUnavailable ? "有限可用" : "可用"
     : computerUse?.status === "busy" ? "Agent 正在操作"
@@ -153,7 +158,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
             <strong><MonitorUp />Computer Use{computerUse.capabilities?.environment === "local_vm" ? ` · ${computerUse.capabilities.environment_name} · 独立桌面` : ""}</strong>
             <span className="computer-use-mode">{previews.length > 1
               ? `${previews.length} 个活动预览`
-              : computerUse.capabilities?.environment === "local_vm" ? "虚拟机独立桌面" : computerUseLabel(computerUse.mode, computerUse.deliveryPolicy)}</span>
+              : computerUse.capabilities?.environment === "local_vm" ? "虚拟机独立桌面" : computerUseLabel(configuredMode ?? computerUse.mode, configuredPolicy)}</span>
             <span className={`computer-use-state ${computerUse.status}`}>{computerStatusLabel}</span>
             <button
               className={`computer-use-power ${computerUse.enabled ? "enabled" : ""}`}
@@ -174,7 +179,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                 <section className={`computer-use-preview-card ${preview.status}`} key={preview.key} aria-label={`${identity} Computer Use 预览`}>
                   <header>
                     <strong title={preview.agentId || preview.sessionId}>{identity}</strong>
-                    <span>{computerUse.capabilities?.environment === "local_vm" ? "虚拟机独立桌面" : computerUseLabel(preview.mode, preview.deliveryPolicy)}</span>
+                    <span>{computerUse.capabilities?.environment === "local_vm" ? "虚拟机独立桌面" : `操作时：${computerUseLabel(preview.mode, preview.deliveryPolicy)}`}</span>
                     <code>{preview.action}</code>
                     <em>{preview.status === "busy" ? "正在操作" : preview.status === "error" ? "失败" : "等待后续"}</em>
                   </header>
@@ -308,7 +313,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                 <span>{computerDetail.summary}</span>
               </div>
               <div className="computer-use-detail-badges">
-                <span>{computerUse?.capabilities?.environment === "local_vm" ? "虚拟机独立桌面" : computerUseLabel(computerDetail.mode, computerDetail.deliveryPolicy)}</span>
+                <span>{computerUse?.capabilities?.environment === "local_vm" ? "虚拟机独立桌面" : `操作时：${computerUseLabel(computerDetail.mode, computerDetail.deliveryPolicy)}`}</span>
                 <code>{computerDetail.action}</code>
                 <em className={computerDetail.status}>{computerDetail.status === "busy" ? "正在操作" : computerDetail.status === "error" ? "失败" : "等待后续"}</em>
               </div>
