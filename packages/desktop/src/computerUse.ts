@@ -1,3 +1,4 @@
+import { vmEnvironmentId, type LocalVmConfig } from "./virtualMachine";
 import { invoke } from "@tauri-apps/api/core";
 import type { GatewayApi } from "./gateway";
 import { isDesktopShell } from "./native";
@@ -8,6 +9,11 @@ export const COMPUTER_USE_RELEASE_RETENTION_MS = 15_000;
 const COMPUTER_USE_HOST_ID_STORAGE_KEY = "crabcode.computer-use-host-id";
 
 export interface ComputerUseCapabilities {
+  environment?: "host" | "local_vm";
+  environment_id?: string;
+  environment_name?: string;
+  instance_id?: string;
+  paused?: boolean;
   gui_available: boolean;
   input_available: boolean;
   platform: string;
@@ -134,6 +140,7 @@ export class ComputerUseChannel {
     private hostId: string,
     enabled: boolean,
     private onState: (state: ComputerUseState) => void,
+    private vm: LocalVmConfig | null = null,
   ) {
     this.enabled = enabled;
     this.state = initialComputerUseState(hostId, enabled);
@@ -195,7 +202,9 @@ export class ComputerUseChannel {
       };
     } else {
       try {
-        capabilities = await invoke<ComputerUseCapabilities>("computer_use_capabilities");
+        capabilities = this.vm
+          ? await invoke<ComputerUseCapabilities>("computer_use_vm_capabilities", { config: this.vm })
+          : await invoke<ComputerUseCapabilities>("computer_use_capabilities");
       } catch (error) {
         capabilities = {
           gui_available: false,
@@ -208,6 +217,14 @@ export class ComputerUseChannel {
       }
     }
     if (this.disposed || !this.enabled || generation !== this.capabilityGeneration) return false;
+    if (this.vm) {
+      capabilities = { ...capabilities, environment: "local_vm", environment_id: vmEnvironmentId(this.vm), environment_name: this.vm.name };
+      if (this.capabilities?.instance_id && this.capabilities.instance_id !== capabilities.instance_id) {
+        this.cancelAllReleases();
+        this.latestRequestIds.clear();
+        this.publish({ active: false, previews: [] });
+      }
+    }
     this.capabilities = capabilities;
     this.publish({
       capabilities,
@@ -219,6 +236,9 @@ export class ComputerUseChannel {
 
   setEnabled(enabled: boolean): void {
     const changed = this.enabled !== enabled;
+    if (!enabled && changed && this.vm) {
+      for (const preview of this.state.previews) void this.releaseVm(preview.sessionId, preview.agentId);
+    }
     this.enabled = enabled;
     if (enabled && changed) {
       this.publish({ status: "connecting", error: null });
@@ -262,6 +282,9 @@ export class ComputerUseChannel {
   }
 
   dispose(): void {
+    if (this.vm) {
+      for (const preview of this.state.previews) void this.releaseVm(preview.sessionId, preview.agentId);
+    }
     this.disposed = true;
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
@@ -269,6 +292,14 @@ export class ComputerUseChannel {
     this.latestRequestIds.clear();
     this.socket?.close();
     this.socket = null;
+  }
+
+  private async releaseVm(sessionId?: string, agentId?: string, allAgents = false): Promise<void> {
+    if (!this.vm || !sessionId || !this.capabilities?.instance_id) return;
+    try {
+      await invoke("computer_use_vm_release", { config: this.vm, instanceId: this.capabilities.instance_id,
+        owner: `${this.hostId}:${sessionId}${allAgents ? "" : `:${agentId ?? "main"}`}`, allAgents });
+    } catch { /* A stopped VM has already lost its lease. Never retry input. */ }
   }
 
   private sendRegistration(): void {
@@ -413,6 +444,7 @@ export class ComputerUseChannel {
       const sessionId = typeof message.session_id === "string" ? message.session_id : undefined;
       if (!sessionId) return;
       const agentId = typeof message.agent_id === "string" ? message.agent_id : undefined;
+      await this.releaseVm(sessionId, agentId, message.all_agents === true);
       const keys = message.all_agents === true
         ? this.state.previews
           .filter((preview) => preview.sessionId === sessionId)
@@ -485,10 +517,19 @@ export class ComputerUseChannel {
       if (message.mode !== undefined && message.mode !== mode) throw new Error("Conflicting target scope and mode");
       if (!["observe", "list_windows", "list_displays", "wait"].includes(actionName)
         && this.capabilities.delivery_policy_version !== 1) throw new Error("The host must be upgraded before it can enforce the foreground-delivery policy");
-      invoked = true;
-      result = await invoke<HostResult>("computer_use_execute", {
-        request: { mode, target_scope: scope, delivery_policy: policy, action },
-      });
+      const request = { mode, target_scope: scope, delivery_policy: policy, action };
+      if (this.vm) {
+        if (message.environment_id !== vmEnvironmentId(this.vm) || !this.capabilities.instance_id
+          || message.instance_id !== this.capabilities.instance_id) throw new Error("VM binding changed; refresh and observe again");
+        invoked = true;
+        result = await invoke<HostResult>("computer_use_vm_execute", {
+          config: this.vm, instanceId: this.capabilities.instance_id, owner: `${this.hostId}:${sessionId ?? "unknown"}:${agentId ?? "main"}`, request,
+        });
+      } else {
+        if (message.environment_id) throw new Error("A VM request cannot execute on the host desktop");
+        invoked = true;
+        result = await invoke<HostResult>("computer_use_execute", { request });
+      }
     } catch (error) {
       result = { ok: false, action: actionName, error: error instanceof Error ? error.message : String(error),
         action_dispatched: invoked ? null : false, retry_safe: !invoked, focus_isolation: "unavailable",

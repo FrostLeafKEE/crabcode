@@ -1,3 +1,4 @@
+import { normalizeVmConfig, vmHostId, manageVirtualMachine } from "./virtualMachine";
 import {
   AlertTriangle,
   Activity,
@@ -123,6 +124,7 @@ import {
 import { TrajectoryView } from "./TrajectoryView";
 import { getToolPresentation, parseChecklistResult, type ToolField } from "./toolPresentation";
 import { randomUuid } from "./uuid";
+import { useLumeInstaller } from "./lumeInstaller";
 import {
   DEFAULT_THEME_ID,
   addImportedTheme,
@@ -770,6 +772,7 @@ function App() {
   const [documentEngineBusy, setDocumentEngineBusy] = useState<"install" | "remove" | null>(null);
   const [documentEngineProgress, setDocumentEngineProgress] = useState<DocumentEngineInstallProgress | null>(null);
   const [documentEngineError, setDocumentEngineError] = useState<string | null>(null);
+  const lumeInstaller = useLumeInstaller(() => computerUseChannelRef.current?.refresh());
   const [gatewaySuiteBusy, setGatewaySuiteBusy] = useState(false);
   const [gatewaySuiteProgress, setGatewaySuiteProgress] = useState<GatewaySuiteInstallProgress | null>(null);
   const [gatewaySuiteError, setGatewaySuiteError] = useState<string | null>(null);
@@ -787,7 +790,9 @@ function App() {
   const [connectionModal, setConnectionModal] = useState<"new" | string | null>(null);
   const [checkpointModal, setCheckpointModal] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
-  const [computerUseId] = useState(computerUseHostId);
+  const [computerUseBaseId] = useState(computerUseHostId);
+  const computerVm = useMemo(() => settings?.computer_use_environment === "local_vm" ? normalizeVmConfig(settings.computer_use_vm) : null, [settings?.computer_use_environment, settings?.computer_use_vm]);
+  const computerUseId = computerVm ? vmHostId(computerUseBaseId, computerVm) : computerUseBaseId;
   const [computerUseState, setComputerUseState] = useState<ComputerUseState>(() => initialComputerUseState(computerUseId, false));
   const apiRef = useRef(new Map<string, GatewayApi>());
   const channelRef = useRef(new Map<string, SessionChannel>());
@@ -1837,6 +1842,7 @@ function App() {
       (state) => {
         if (computerUseChannelRef.current === channel) setComputerUseState(state);
       },
+      computerVm,
     );
     computerUseChannelRef.current = channel;
     void channel.connect();
@@ -3162,6 +3168,10 @@ function App() {
               setSystemToolProgress(null);
             }
           }}
+          computerTaskBusy={Object.values(sessions).some(session => session.busy)}
+          onVmSettingsChange={(changes) => commitSettings(current => ({ ...current, ...changes }))}
+          onVmRefresh={() => computerUseChannelRef.current?.refresh()}
+          lumeInstaller={lumeInstaller}
           onConversationChange={(changes) => {
             commitSettings((current) => ({ ...current, ...changes }));
           }}
@@ -4138,9 +4148,8 @@ function App() {
           commitSettings((current) => ({ ...current, computer_use_enabled: enabled }));
         }}
         onComputerUseOpenInputSettings={() => {
-          void openComputerUseInputSettings().catch((error) => {
-            setGlobalError(error instanceof Error ? error.message : String(error));
-          });
+          const operation = computerVm ? manageVirtualMachine(computerVm, "permissions") : openComputerUseInputSettings();
+          void operation.catch(error => setGlobalError(error instanceof Error ? error.message : String(error)));
         }}
         onComputerUseRefresh={() => computerUseChannelRef.current?.refresh()}
         activity={gatewaySuiteBusy
@@ -4149,6 +4158,8 @@ function App() {
             ? systemToolProgress?.detail ?? `正在安装系统工具 ${systemToolBusy}…`
           : documentEngineBusy
             ? documentEngineProgress?.detail ?? (documentEngineBusy === "install" ? "正在安装高精度 PDF 引擎…" : "正在移除高精度 PDF 引擎…")
+          : lumeInstaller.busy
+            ? lumeInstaller.progress?.detail ?? "正在安装 Lume…"
             : null}
         onConnections={() => setConnectionModal(activeConnection?.id ?? "new")}
         onRetry={activeConnection ? () => void connectGateway(activeConnection, settings.python_path) : undefined}

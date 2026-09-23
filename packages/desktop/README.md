@@ -3,6 +3,12 @@
 Crab Desktop is the shared React client for local and remote CrabCode Gateways.
 It runs either in a browser or inside the Tauri desktop shell.
 
+## Local macOS virtual machine
+
+Computer Use supports an isolated local macOS VM managed by Lume, with guest
+screenshots/input, shared folders and localhost service forwarding. See
+[setup, runtime boundaries and troubleshooting](LOCAL_VM.md).
+
 ## Development
 
 ```bash

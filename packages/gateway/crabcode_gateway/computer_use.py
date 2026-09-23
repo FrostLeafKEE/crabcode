@@ -144,6 +144,17 @@ class ComputerUseBroker:
             return mode == "foreground_desktop"
         return mode in supported_modes
 
+    def environment(self, host_id: str | None) -> dict[str, Any]:
+        """Transport-owned identity; model actions cannot select an environment."""
+        host = self._hosts.get(host_id or "")
+        if host is None or host.capabilities.get("environment") != "local_vm":
+            return {}
+        return {
+            key: host.capabilities.get(key)
+            for key in ("environment", "environment_id", "environment_name", "instance_id",
+                        "shared_directory", "shared_read_only", "forwarded_ports")
+        }
+
     def resolve(self, host_id: str, request_id: str, result: dict[str, Any]) -> bool:
         pending = self._pending.get(request_id)
         if pending is None or pending.host_id != host_id:
@@ -311,6 +322,8 @@ class ComputerUseBroker:
                         "mode": mode,
                         "target_scope": target_scope,
                         "delivery_policy": delivery_policy,
+                        "environment_id": host.capabilities.get("environment_id"),
+                        "instance_id": host.capabilities.get("instance_id"),
                         "action": action,
                     })
                 return await asyncio.wait_for(future, timeout=self.timeout_seconds)

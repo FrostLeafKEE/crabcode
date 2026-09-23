@@ -191,7 +191,7 @@ fn capability_status(
     (gui_available, input_available, reason)
 }
 
-fn detect_capabilities() -> ComputerUseCapabilities {
+pub(crate) fn detect_capabilities() -> ComputerUseCapabilities {
     let found = match monitors() {
         Ok(found) if !found.is_empty() => found,
         Ok(_) => {
@@ -3604,7 +3604,7 @@ fn execute_background(_request: ExecuteRequest) -> Result<Value, String> {
     Err("background_app mode is unavailable on this platform".to_string())
 }
 
-fn execute(request: ExecuteRequest) -> Result<Value, String> {
+pub(crate) fn execute(request: ExecuteRequest) -> Result<Value, String> {
     diagnostics::measure(|| execute_inner(request))
 }
 

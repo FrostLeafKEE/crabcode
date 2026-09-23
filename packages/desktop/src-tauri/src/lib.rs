@@ -1,6 +1,9 @@
 mod computer_use;
 mod gateway;
 mod settings;
+mod virtual_machine;
+
+pub use virtual_machine::run_guest_if_requested;
 
 use gateway::GatewayProcesses;
 use tauri::Manager;
@@ -13,6 +16,13 @@ pub fn run() {
             computer_use::computer_use_capabilities,
             computer_use::computer_use_execute,
             computer_use::computer_use_open_input_settings,
+            virtual_machine::computer_use_vm_list,
+            virtual_machine::computer_use_vm_manage,
+            virtual_machine::computer_use_vm_capabilities,
+            virtual_machine::computer_use_vm_execute,
+            virtual_machine::computer_use_vm_release,
+            virtual_machine::installer::lume_install_status,
+            virtual_machine::installer::install_lume,
             settings::load_desktop_settings,
             settings::save_desktop_settings,
             settings::save_theme_export,
@@ -34,6 +44,7 @@ pub fn run() {
 
     app.run(|handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
+            virtual_machine::stop_forwards();
             handle.state::<GatewayProcesses>().stop_all();
         }
     });

@@ -1,3 +1,4 @@
+import { DEFAULT_VM_CONFIG } from "./virtualMachine";
 /* @vitest-environment jsdom */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -35,6 +36,50 @@ describe("ComputerUseChannel", () => {
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);
     window.sessionStorage.clear();
+  });
+
+  it("routes VM input only to the pinned guest and refuses stale instances", async () => {
+    const caps = { gui_available: true, input_available: true, platform: "macos", displays: [],
+      supported_modes: ["foreground_desktop"], delivery_policy_version: 1, instance_id: "boot-1" };
+    invokeMock.mockResolvedValueOnce(caps).mockResolvedValue({ ok: true });
+    const publish = vi.fn();
+    const channel = new ComputerUseChannel({ authenticate: vi.fn().mockResolvedValue(undefined),
+      computerUseWebSocketUrl: () => "ws://localhost/test" } as unknown as GatewayApi,
+      "desktop-vm", true, publish, DEFAULT_VM_CONFIG);
+    await channel.connect();
+    expect(invokeMock).toHaveBeenCalledWith("computer_use_vm_capabilities", { config: DEFAULT_VM_CONFIG });
+    const socket = FakeWebSocket.instances[0]; socket.emit("open");
+    const action = { action: "click", x: 10, y: 20 };
+    const request = { type: "computer_use_request", request_id: "vm-r", session_id: "s",
+      target_scope: "desktop", delivery_policy: "allow_foreground", environment_id: "lume:default:crabcode", instance_id: "boot-1", action };
+    socket.emit("message", { data: JSON.stringify(request) });
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("computer_use_vm_execute", {
+      config: DEFAULT_VM_CONFIG, instanceId: "boot-1", owner: "desktop-vm:s:main",
+      request: { mode: "foreground_desktop", target_scope: "desktop", delivery_policy: "allow_foreground", action },
+    }));
+    socket.emit("message", { data: JSON.stringify({ ...request, request_id: "stale", instance_id: "old" }) });
+    await vi.waitFor(() => expect(publish).toHaveBeenLastCalledWith(expect.objectContaining({ status: "error" })));
+    expect(invokeMock.mock.calls.filter(([name]) => name === "computer_use_vm_execute")).toHaveLength(1);
+    expect(invokeMock.mock.calls.some(([name]) => name === "computer_use_execute" || name === "computer_use_capabilities")).toBe(false);
+    socket.emit("message", { data: JSON.stringify({ type: "computer_use_release", session_id: "s", all_agents: true }) });
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("computer_use_vm_release", {
+      config: DEFAULT_VM_CONFIG, instanceId: "boot-1", owner: "desktop-vm:s", allAgents: true,
+    }));
+    channel.dispose();
+  });
+
+  it("does not probe or fall back to host input when a VM is disconnected", async () => {
+    invokeMock.mockRejectedValue(new Error("VM stopped"));
+    const publish = vi.fn();
+    const channel = new ComputerUseChannel({ authenticate: vi.fn().mockResolvedValue(undefined),
+      computerUseWebSocketUrl: () => "ws://localhost/test" } as unknown as GatewayApi, "vm", true, publish, DEFAULT_VM_CONFIG);
+    await channel.connect();
+    const socket = FakeWebSocket.instances[0]; socket.emit("open");
+    socket.emit("message", { data: JSON.stringify({ type: "computer_use_request", request_id: "r",
+      target_scope: "desktop", delivery_policy: "allow_foreground", action: { action: "click", x: 10, y: 20 } }) });
+    await vi.waitFor(() => expect(publish).toHaveBeenLastCalledWith(expect.objectContaining({ status: "error" })));
+    expect(invokeMock.mock.calls.map(([name]) => name)).toEqual(["computer_use_vm_capabilities"]);
+    channel.dispose();
   });
 
   it.each(["strict_background", "allow_foreground"] as const)("forwards session permission outside the action (%s)", async (policy) => {

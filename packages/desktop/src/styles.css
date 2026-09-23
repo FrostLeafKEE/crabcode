@@ -15955,3 +15955,163 @@ html[data-theme="light"] .project-file-code .token.class-name {
     display: none;
   }
 }
+
+/* Local virtual desktop setup. Keep controls scoped instead of inheriting
+   the wider buttons and padded notes used by top-level settings rows. */
+.vm-settings {
+  container-type: inline-size;
+  padding: 0 16px 16px;
+  color: var(--text);
+}
+
+.vm-environment-row,
+.vm-engine-row,
+.vm-section-heading,
+.vm-save-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.vm-environment-row { min-height: 66px; padding: 10px 0 14px; }
+.vm-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.vm-copy strong { font-size: 12px; font-weight: 600; }
+.vm-copy > span, .vm-caption { color: var(--muted); font-size: 11px; line-height: 1.6; }
+.vm-caption { margin: 0; }
+.vm-environment-row .settings-segmented { flex-shrink: 0; }
+.vm-workspace { display: flex; flex-direction: column; gap: 18px; }
+
+.vm-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+
+.vm-button svg { width: 14px; height: 14px; }
+.vm-button:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--subtle); }
+.vm-button.primary { background: var(--accent); border-color: var(--accent); color: #171818; font-weight: 650; }
+.vm-button.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+.vm-button.quiet { background: transparent; border-color: transparent; color: var(--muted); }
+.vm-button.quiet:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
+.vm-button.icon { width: 30px; padding: 0; }
+.vm-button:disabled { opacity: .42; cursor: default; }
+
+.vm-engine-install {
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 2%, transparent);
+}
+
+.vm-engine-row { flex-wrap: wrap; gap: 10px; }
+.vm-engine-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); }
+.vm-engine-icon svg { width: 17px; height: 17px; }
+.vm-engine-copy { flex: 1; min-width: 130px; display: flex; flex-direction: column; gap: 3px; }
+.vm-engine-title { display: flex; align-items: center; gap: 8px; }
+.vm-engine-title > strong { font-size: 12px; font-weight: 650; }
+.vm-engine-badge { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 10px; }
+.vm-engine-badge.ready { color: var(--green); }
+.vm-engine-badge svg { width: 12px; height: 12px; }
+.vm-status-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--subtle); }
+.vm-engine-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: auto; }
+.vm-help-link { display: inline-flex; align-items: center; gap: 2px; padding: 6px 2px 6px 6px; color: var(--muted); font-size: 10px; text-decoration: none; white-space: nowrap; }
+.vm-help-link svg { width: 12px; height: 12px; }
+.vm-help-link:hover { color: var(--text); text-decoration: underline; }
+.vm-engine-reason { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.vm-install-progress { margin-top: 12px; }
+.vm-install-error { margin: 10px 0 0; padding: 9px 10px; border-radius: 5px; background: var(--red-soft); color: var(--red); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 140px; overflow: auto; font-size: 11px; line-height: 1.6; }
+
+.vm-machine-section { display: flex; flex-direction: column; gap: 12px; }
+.vm-section-heading { min-height: 26px; }
+.vm-section-heading h4 { margin: 0; font-size: 12px; font-weight: 650; }
+.vm-section-heading .vm-button { height: 26px; padding-right: 2px; }
+.vm-fields { display: grid; gap: 12px; }
+.vm-identity-fields, .vm-advanced-fields { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+.vm-resource-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.vm-fields label, .vm-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.vm-fields input, .vm-field > input {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  transition: border-color .12s, box-shadow .12s;
+}
+.vm-fields input::placeholder, .vm-field > input::placeholder { color: var(--subtle); }
+.vm-fields input:focus, .vm-field > input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent); }
+.vm-fields input:disabled, .vm-field > input:disabled { opacity: .5; }
+.vm-input-with-action { position: relative; }
+.vm-input-with-action > input { padding-right: 36px; }
+.vm-input-with-action > .vm-button { position: absolute; right: 2px; top: 2px; height: 30px; }
+.vm-control-bar, .vm-inline-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+
+.vm-more-actions { position: relative; margin-left: auto; }
+.vm-more-actions > summary { list-style: none; }
+.vm-more-actions > summary::-webkit-details-marker { display: none; }
+.vm-more-actions[open] > summary { background: var(--surface-active); color: var(--text); }
+.vm-action-menu { position: absolute; top: calc(100% + 5px); right: 0; z-index: 5; width: 172px; display: flex; flex-direction: column; padding: 5px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
+.vm-action-menu button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--text); text-align: left; font-size: 11px; cursor: pointer; }
+.vm-action-menu button svg { width: 13px; height: 13px; }
+.vm-action-menu button:hover:not(:disabled) { background: var(--surface-hover); }
+.vm-action-menu button:disabled { opacity: .4; cursor: default; }
+.vm-action-menu .vm-stop { margin-top: 4px; border-top: 1px solid var(--border-soft); border-radius: 0 0 4px 4px; color: var(--red); }
+
+.vm-options { border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); }
+.vm-disclosure + .vm-disclosure { border-top: 1px solid var(--border-soft); }
+.vm-disclosure > summary { display: flex; align-items: center; gap: 9px; min-height: 46px; padding: 10px 0; list-style: none; cursor: pointer; }
+.vm-disclosure > summary::-webkit-details-marker { display: none; }
+.vm-disclosure > summary > svg { width: 14px; height: 14px; color: var(--muted); }
+.vm-disclosure-copy { flex: 1; min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.vm-disclosure-copy strong { color: var(--text); font-size: 11px; font-weight: 550; }
+.vm-disclosure-copy > span { color: var(--subtle); font-size: 10px; }
+.vm-chevron { transition: transform .15s; }
+.vm-disclosure[open] .vm-chevron { transform: rotate(180deg); }
+.vm-disclosure > summary:focus-visible, .vm-more-actions > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.vm-disclosure-body { display: flex; flex-direction: column; gap: 10px; padding: 0 0 14px 23px; }
+.vm-checkbox { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--text); font-size: 11px; }
+.vm-checkbox input { margin: 0; accent-color: var(--accent); }
+.vm-checkbox > span { margin-left: 4px; color: var(--subtle); font-size: 10px; }
+.vm-scope-note { display: flex; align-items: flex-start; gap: 8px; padding: 10px; border-radius: 6px; background: color-mix(in srgb, var(--text) 3%, transparent); color: var(--muted); font-size: 10px; line-height: 1.65; }
+.vm-scope-note svg { width: 13px; height: 13px; margin-top: 2px; }
+.vm-save-row { flex-wrap: wrap; }
+.vm-save-row .vm-button { margin-left: auto; }
+.vm-create { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--border-soft); border-radius: 7px; background: color-mix(in srgb, var(--text) 2%, transparent); }
+.vm-create > .vm-button { align-self: flex-start; }
+.vm-feedback { display: flex; align-items: flex-start; gap: 7px; margin: 10px 0 0; padding: 9px 10px; border-radius: 6px; background: var(--panel); color: var(--muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.vm-feedback svg { width: 14px; height: 14px; margin-top: 2px; }
+.vm-feedback.error { color: var(--red); background: var(--red-soft); }
+.vm-feedback.success { color: var(--green); }
+
+@container (max-width: 420px) {
+  .vm-environment-row { flex-wrap: wrap; gap: 10px; }
+  .vm-environment-row .settings-segmented { margin-left: auto; }
+  .vm-engine-actions { gap: 4px; }
+  .vm-engine-icon { display: none; }
+  .vm-identity-fields, .vm-advanced-fields { grid-template-columns: minmax(0, 1fr); }
+  .vm-control-bar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .vm-control-bar > .vm-button { width: 100%; }
+  .vm-control-bar > .vm-button.quiet { justify-content: flex-start; padding-left: 0; }
+  .vm-more-actions { justify-self: end; margin-left: 0; }
+  .vm-disclosure-body { padding-left: 0; }
+}

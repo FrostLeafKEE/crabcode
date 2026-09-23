@@ -150,10 +150,10 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
       {computerExpanded && computerUse && (
         <section className={`computer-use-console ${previews.length > 1 ? "multi" : ""}`} id="computer-use-console" aria-label="Computer Use 控制台">
           <header>
-            <strong><MonitorUp />Computer Use</strong>
+            <strong><MonitorUp />Computer Use{computerUse.capabilities?.environment === "local_vm" ? ` · ${computerUse.capabilities.environment_name} · 独立桌面` : ""}</strong>
             <span className="computer-use-mode">{previews.length > 1
               ? `${previews.length} 个活动预览`
-              : computerUseLabel(computerUse.mode, computerUse.deliveryPolicy)}</span>
+              : computerUse.capabilities?.environment === "local_vm" ? "虚拟机独立桌面" : computerUseLabel(computerUse.mode, computerUse.deliveryPolicy)}</span>
             <span className={`computer-use-state ${computerUse.status}`}>{computerStatusLabel}</span>
             <button
               className={`computer-use-power ${computerUse.enabled ? "enabled" : ""}`}
@@ -174,7 +174,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                 <section className={`computer-use-preview-card ${preview.status}`} key={preview.key} aria-label={`${identity} Computer Use 预览`}>
                   <header>
                     <strong title={preview.agentId || preview.sessionId}>{identity}</strong>
-                    <span>{computerUseLabel(preview.mode, preview.deliveryPolicy)}</span>
+                    <span>{computerUse.capabilities?.environment === "local_vm" ? "虚拟机独立桌面" : computerUseLabel(preview.mode, preview.deliveryPolicy)}</span>
                     <code>{preview.action}</code>
                     <em>{preview.status === "busy" ? "正在操作" : preview.status === "error" ? "失败" : "等待后续"}</em>
                   </header>
@@ -224,7 +224,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
               <AlertTriangle />
               <div>
                 <strong>需要开启辅助功能权限</strong>
-                <span>点击、输入和滚动需要在 macOS“系统设置 → 隐私与安全性 → 辅助功能”中允许 Crab Desktop，同时需要前台权限策略支持。当前仍可查看屏幕。</span>
+                <span>{computerUse.capabilities?.environment === "local_vm" ? "请在虚拟机内为 Crab Computer Use 授予辅助功能和录屏权限。宿主机权限不影响虚拟机输入。" : "点击、输入和滚动需要在 macOS“系统设置 → 隐私与安全性 → 辅助功能”中允许 Crab Desktop，同时需要前台权限策略支持。当前仍可查看屏幕。"}</span>
               </div>
               <div className="computer-use-permission-actions">
                 <button type="button" onClick={onComputerUseOpenInputSettings}>打开系统设置</button>
@@ -308,7 +308,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                 <span>{computerDetail.summary}</span>
               </div>
               <div className="computer-use-detail-badges">
-                <span>{computerUseLabel(computerDetail.mode, computerDetail.deliveryPolicy)}</span>
+                <span>{computerUse?.capabilities?.environment === "local_vm" ? "虚拟机独立桌面" : computerUseLabel(computerDetail.mode, computerDetail.deliveryPolicy)}</span>
                 <code>{computerDetail.action}</code>
                 <em className={computerDetail.status}>{computerDetail.status === "busy" ? "正在操作" : computerDetail.status === "error" ? "失败" : "等待后续"}</em>
               </div>

@@ -1,3 +1,4 @@
+import type { LocalVmConfig } from "./virtualMachine";
 export interface ProjectPreset {
   id: string;
   kind: "project" | "document";
@@ -94,6 +95,8 @@ export interface DesktopSettings {
   file_upload_max_size_mb: number;
   dock_icon: DockIconChoice;
   computer_use_enabled: boolean;
+  computer_use_environment?: "host" | "local_vm";
+  computer_use_vm?: LocalVmConfig;
 }
 
 export type DockIconChoice = "dark" | "light" | "custom";

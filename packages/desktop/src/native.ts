@@ -1,3 +1,4 @@
+import { normalizeVmConfig } from "./virtualMachine";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { legacyFavoriteEntries, normalizeFavoriteEntries } from "./favorites";
@@ -135,6 +136,8 @@ const DEFAULT_SETTINGS: DesktopSettings = {
   file_upload_max_size_mb: 5,
   dock_icon: "dark",
   computer_use_enabled: true,
+  computer_use_environment: "host",
+  computer_use_vm: normalizeVmConfig(null),
 };
 
 function validHexColor(value: unknown): value is string {
@@ -326,6 +329,8 @@ export function normalizeSettings(raw: DesktopSettings): DesktopSettings {
     file_upload_max_size_mb: clampInteger(raw.file_upload_max_size_mb, 1, 100, 5),
     dock_icon: dockIcon,
     computer_use_enabled: raw.computer_use_enabled !== false,
+    computer_use_environment: raw.computer_use_environment === "local_vm" ? "local_vm" : "host",
+    computer_use_vm: normalizeVmConfig(raw.computer_use_vm),
     project_files_width: clampInteger(raw.project_files_width, 480, 1_000, 640),
     project_files_max_tabs: clampInteger(raw.project_files_max_tabs, 1, 50, 5),
     document_agent_width: clampInteger(raw.document_agent_width, 320, 4_000, 400),
@@ -550,6 +555,43 @@ export async function installSystemTool(
       tool,
       operationId,
     });
+  } finally {
+    unlisten?.();
+  }
+}
+
+export interface LumeInstallStatus {
+  supported: boolean;
+  available: boolean;
+  version: string | null;
+  path: string | null;
+  reason: string | null;
+}
+
+export interface LumeInstallProgress {
+  operationId: string;
+  stage: string;
+  detail: string;
+  percent: number;
+}
+
+export async function getLumeInstallStatus(): Promise<LumeInstallStatus> {
+  if (!isDesktopShell()) throw new Error("Lume 状态只能在桌面应用中读取");
+  return invoke<LumeInstallStatus>("lume_install_status");
+}
+
+export async function installLume(
+  onProgress?: (progress: LumeInstallProgress) => void,
+): Promise<LumeInstallStatus> {
+  if (!isDesktopShell()) throw new Error("Lume 只能由桌面应用安装");
+  const operationId = randomUuid();
+  const unlisten = onProgress
+    ? await listen<LumeInstallProgress>("lume-install-progress", (event) => {
+        if (event.payload.operationId === operationId) onProgress(event.payload);
+      })
+    : null;
+  try {
+    return await invoke<LumeInstallStatus>("install_lume", { operationId });
   } finally {
     unlisten?.();
   }

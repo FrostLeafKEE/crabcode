@@ -1,3 +1,5 @@
+import { VirtualMachineSettings, type VmSettingsUpdate } from "./VirtualMachineSettings";
+import type { LumeInstallerState } from "./lumeInstaller";
 import {
   ArrowLeft,
   ArrowRightLeft,
@@ -103,7 +105,7 @@ export const SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     id: "runtime",
     title: "运行与工具",
     description: "Computer Use、文件快照与额外工具配置",
-    searchText: "运行 Computer Use 电脑 后台应用 前台桌面 background foreground 快照 文件快照 checkpoint 检查点 snapshot 最大大小 启用 额外工具 extra tools import path 工具",
+    searchText: "运行 Computer Use 虚拟机 Lume VM 共享目录 电脑 后台应用 前台桌面 background foreground 快照 文件快照 checkpoint 检查点 snapshot 最大大小 启用 额外工具 extra tools import path 工具",
   },
   {
     id: "connections",
@@ -239,6 +241,10 @@ function projectDirectorySummary(project: ProjectPreset): string {
 }
 
 interface SettingsViewProps {
+  onVmSettingsChange?: (changes: VmSettingsUpdate) => void;
+  onVmRefresh?: () => void;
+  computerTaskBusy?: boolean;
+  lumeInstaller?: LumeInstallerState;
   settings: DesktopSettings;
   gateways: Record<string, GatewayViewState>;
   activeConnection: ConnectionPreset | null;
@@ -532,6 +538,10 @@ export function SettingsView({
   systemToolError = null,
   systemToolSuccess = null,
   onInstallSystemTool,
+  onVmSettingsChange,
+  onVmRefresh,
+  computerTaskBusy,
+  lumeInstaller,
   onConversationChange,
   onDocumentChange,
   onThemeModeChange,
@@ -1560,6 +1570,8 @@ export function SettingsView({
 
             {activeSection === "runtime" && (
               <RuntimeSettingsPanel
+                localVmSelected={settings.computer_use_environment === "local_vm"}
+                computerUseEnvironment={<VirtualMachineSettings settings={settings} taskBusy={computerTaskBusy} onChange={onVmSettingsChange} onRefresh={onVmRefresh} lumeInstaller={lumeInstaller} />}
                 activeConnection={activeConnection}
                 activeProject={activeProject}
                 gateway={activeGateway}

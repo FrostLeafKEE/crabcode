@@ -537,3 +537,58 @@ def test_host_state_updates_every_bound_session():
     asyncio.run(_sync_bound_sessions(state, "desktop-test", False))
     assert matching.computer_use_enabled is False
     assert other.computer_use_enabled is True
+
+
+def test_local_vm_uses_guest_desktop_without_changing_host_policy():
+    class VmBackend(FakeBackend):
+        selected = True
+
+        def environment(self, host_id):
+            return {"environment": "local_vm", "environment_id": "lume:default:test",
+                    "environment_name": "test", "shared_directory": "/work/project",
+                    "shared_read_only": True} if self.selected else {}
+
+    backend = VmBackend()
+    tool, context = prepared_tool(backend)
+    context.session.computer_use_mode = "background_app"
+    context.session.computer_use_delivery_policy = "strict_background"
+    # A guest click needs no host window ID and never upgrades host preferences.
+    assert asyncio.run(tool.validate_input({"action": "click", "x": 10, "y": 20})) is None
+    result = asyncio.run(tool.call({"action": "click", "x": 10, "y": 20}, context))
+    assert not result.is_error
+    assert backend.calls[-1][1]["target_scope"] == "desktop"
+    assert backend.calls[-1][1]["delivery_policy"] == "allow_foreground"
+    assert context.session.computer_use_delivery_policy == "strict_background"
+    assert context.session.computer_use_mode == "background_app"
+    assert "lume:default:test" in tool.get_permission_key({"action": "click"})
+    prompt = tool.to_api_schema()["description"]
+    assert "isolated local macOS VM" in prompt
+    assert "Bash, Read and Edit still run on the Gateway" in prompt
+    backend.selected = False
+    assert tool._binding()[3] == "background_app"
+    assert tool._delivery_policy() == "strict_background"
+    assert "window_id is required" in asyncio.run(tool.validate_input({"action": "click", "x": 10, "y": 20}))
+
+
+def test_broker_forwards_vm_instance_identity_outside_model_action():
+    async def scenario():
+        broker = ComputerUseBroker(timeout_seconds=1)
+        socket = FakeSocket()
+        caps = {"environment": "local_vm", "environment_id": "lume:default:test",
+                "environment_name": "test", "instance_id": "boot-1",
+                "supported_modes": ["foreground_desktop"], "delivery_policy_version": 1}
+        broker.register("desktop-test", socket, enabled=True, gui_available=True, capabilities=caps)
+        assert broker.environment("desktop-test")["instance_id"] == "boot-1"
+        task = asyncio.create_task(broker.execute("desktop-test", session_id="s", agent_id=None,
+            action={"action": "observe"}, target_scope="desktop"))
+        await asyncio.sleep(0)
+        request = socket.messages[-1]
+        assert request["environment_id"] == "lume:default:test"
+        assert request["instance_id"] == "boot-1"
+        assert request["action"] == {"action": "observe"}
+        broker.resolve("desktop-test", request["request_id"], {"ok": True})
+        assert (await task)["ok"]
+        broker.unregister("desktop-test", socket)
+        assert not broker.environment("desktop-test")
+        assert not broker.is_available("desktop-test")
+    asyncio.run(scenario())

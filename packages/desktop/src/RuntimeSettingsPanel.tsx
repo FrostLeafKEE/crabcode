@@ -8,7 +8,7 @@ import {
   Server,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import type {
   ConnectionPreset,
   GatewayViewState,
@@ -19,6 +19,8 @@ import type {
 } from "./types";
 
 interface RuntimeSettingsPanelProps {
+  localVmSelected?: boolean;
+  computerUseEnvironment?: ReactNode;
   activeConnection: ConnectionPreset | null;
   activeProject: ProjectPreset | null;
   gateway: GatewayViewState | null;
@@ -40,6 +42,8 @@ function compactPath(path: string): string {
 }
 
 export function RuntimeSettingsPanel({
+  localVmSelected = false,
+  computerUseEnvironment,
   activeConnection,
   activeProject,
   gateway,
@@ -188,71 +192,74 @@ export function RuntimeSettingsPanel({
       {online && loading && !data && <div className="model-settings-loading"><LoaderCircle className="spin" />正在读取运行设置</div>}
 
       {online && !loading && !error && data && (
-        <>
-          <section className="runtime-settings-group settings-group" aria-labelledby="snapshot-settings-title">
-            <div className="settings-subsection-heading">
-              <div>
-                <h3 id="snapshot-settings-title">文件快照</h3>
-                <p>关闭后仍会保存对话 checkpoint，只跳过工作区文件副本。</p>
-              </div>
-              <HardDrive aria-hidden="true" />
+        <section className="runtime-settings-group settings-group" aria-labelledby="snapshot-settings-title">
+          <div className="settings-subsection-heading">
+            <div>
+              <h3 id="snapshot-settings-title">文件快照</h3>
+              <p>关闭后仍会保存对话 checkpoint，只跳过工作区文件副本。</p>
             </div>
-            <div className="settings-row compact">
-              <div className="settings-row-copy">
-                <strong>启用文件快照</strong>
-                <span>创建 checkpoint 或修改文件时，是否记录可供 /revert 恢复的文件快照。</span>
-              </div>
-              <button
-                className={`settings-switch ${data.snapshot_enabled ? "on" : ""}`}
-                type="button"
-                role="switch"
-                aria-checked={data.snapshot_enabled}
-                aria-label="启用文件快照"
-                disabled={!canEdit || mutationBusy}
-                onClick={() => void saveSnapshot({ snapshot_enabled: !data.snapshot_enabled })}
-              ><span /></button>
+            <HardDrive aria-hidden="true" />
+          </div>
+          <div className="settings-row compact">
+            <div className="settings-row-copy">
+              <strong>启用文件快照</strong>
+              <span>创建 checkpoint 或修改文件时，是否记录可供 /revert 恢复的文件快照。</span>
             </div>
-            <div className="settings-row compact">
-              <div className="settings-row-copy">
-                <strong>快照最大大小</strong>
-                <span>扫描工作区时的累计上限，单位 MiB，范围 1–1,048,576。</span>
-              </div>
-              <input
-                className="settings-number-input"
-                aria-label="快照最大大小（MiB）"
-                type="number"
-                min={1}
-                max={1_048_576}
-                step={1}
-                value={snapshotSizeDraft}
-                disabled={!canEdit || mutationBusy}
-                onChange={(event) => setSnapshotSizeDraft(event.target.value)}
-                onBlur={() => {
-                  const next = Number(snapshotSizeDraft);
-                  if (!Number.isFinite(next)) {
-                    setSnapshotSizeDraft(String(data.snapshot_max_size_mb));
-                    return;
-                  }
-                  const normalized = Math.min(1_048_576, Math.max(1, Math.round(next)));
-                  setSnapshotSizeDraft(String(normalized));
-                  if (normalized !== data.snapshot_max_size_mb) void saveSnapshot({ snapshot_max_size_mb: normalized });
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") event.currentTarget.blur();
-                  if (event.key === "Escape") setSnapshotSizeDraft(String(data.snapshot_max_size_mb));
-                }}
-              />
+            <button
+              className={`settings-switch ${data.snapshot_enabled ? "on" : ""}`}
+              type="button"
+              role="switch"
+              aria-checked={data.snapshot_enabled}
+              aria-label="启用文件快照"
+              disabled={!canEdit || mutationBusy}
+              onClick={() => void saveSnapshot({ snapshot_enabled: !data.snapshot_enabled })}
+            ><span /></button>
+          </div>
+          <div className="settings-row compact">
+            <div className="settings-row-copy">
+              <strong>快照最大大小</strong>
+              <span>扫描工作区时的累计上限，单位 MiB，范围 1–1,048,576。</span>
             </div>
-          </section>
+            <input
+              className="settings-number-input"
+              aria-label="快照最大大小（MiB）"
+              type="number"
+              min={1}
+              max={1_048_576}
+              step={1}
+              value={snapshotSizeDraft}
+              disabled={!canEdit || mutationBusy}
+              onChange={(event) => setSnapshotSizeDraft(event.target.value)}
+              onBlur={() => {
+                const next = Number(snapshotSizeDraft);
+                if (!Number.isFinite(next)) {
+                  setSnapshotSizeDraft(String(data.snapshot_max_size_mb));
+                  return;
+                }
+                const normalized = Math.min(1_048_576, Math.max(1, Math.round(next)));
+                setSnapshotSizeDraft(String(normalized));
+                if (normalized !== data.snapshot_max_size_mb) void saveSnapshot({ snapshot_max_size_mb: normalized });
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+                if (event.key === "Escape") setSnapshotSizeDraft(String(data.snapshot_max_size_mb));
+              }}
+            />
+          </div>
+        </section>
+      )}
 
-          <section className="runtime-settings-group settings-group" aria-labelledby="computer-use-settings-title">
-            <div className="settings-subsection-heading">
-              <div>
-                <h3 id="computer-use-settings-title">Computer Use</h3>
-                <p>选择 Agent 操作桌面应用的方式；修改对新会话生效。</p>
-              </div>
-              <MonitorUp aria-hidden="true" />
+      {(computerUseEnvironment || (online && !loading && !error && data)) && (
+        <section className="runtime-settings-group settings-group" aria-labelledby="computer-use-settings-title">
+          <div className="settings-subsection-heading">
+            <div>
+              <h3 id="computer-use-settings-title">Computer Use</h3>
+              <p>选择 Agent 操作桌面应用的方式；修改对新会话生效。</p>
             </div>
+            <MonitorUp aria-hidden="true" />
+          </div>
+          {computerUseEnvironment}
+          {!localVmSelected && online && !loading && !error && data && <>
             <div className="settings-row compact">
               <div className="settings-row-copy">
                 <strong>操作目标</strong>
@@ -301,8 +308,12 @@ export function RuntimeSettingsPanel({
             <div className="runtime-settings-note">
               指定窗口目前仅支持 macOS。严格后台不提供聚焦窗口操作，部分应用可能忽略输入；允许前台操作可能打断当前操作，并不表示所有输入都支持自动回退。是否允许前台操作仅由此处设置决定，与会话的“完全访问”权限无关。使用整个桌面前仍需选择允许前台操作。
             </div>
-          </section>
+          </>}
+        </section>
+      )}
 
+      {online && !loading && !error && data && (
+        <>
           <section className="runtime-settings-group settings-group" aria-labelledby="extra-tools-settings-title">
             <div className="settings-subsection-heading">
               <div>
