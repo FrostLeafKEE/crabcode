@@ -492,6 +492,7 @@ fn window_list() -> Result<Vec<Value>, String> {
         .collect()
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WindowTarget {
     window_id: u32,
@@ -738,6 +739,7 @@ fn unresolved_pointer_target(action: &ComputerAction, reason: String) -> Value {
         "requires_observation": true, "retry_safe": true, "focus_changed_by_tool": false})
 }
 
+#[cfg(target_os = "macos")]
 fn window_target(window_id: &str) -> Result<WindowTarget, String> {
     let windows = Window::all().map_err(|error| error.to_string())?;
     let window = windows
@@ -759,6 +761,7 @@ fn window_target(window_id: &str) -> Result<WindowTarget, String> {
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn background_local_point(
     action: &ComputerAction,
     target: WindowTarget,
@@ -774,6 +777,7 @@ fn background_local_point(
     Ok((x, y))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn background_point(action: &ComputerAction, target: WindowTarget) -> Result<(i32, i32), String> {
     let (x, y) = background_local_point(action, target)?;
     Ok((
