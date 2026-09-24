@@ -1009,6 +1009,7 @@ class ModelSettingsResponse(BaseModel):
     default_model: str | None = None
     sources: list[str] = Field(default_factory=list)
     groups: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    group_sources: dict[str, list[str]] = Field(default_factory=dict)
     models: list[ModelSettingsEntry] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     editable_sources: list[ModelSettingsSource] = Field(default_factory=list)

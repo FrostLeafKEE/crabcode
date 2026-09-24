@@ -9002,6 +9002,19 @@ html[data-theme="light"] .document-actions-separator {
   box-shadow: 0 20px 60px rgba(0, 0, 0, .42);
 }
 
+.model-delete-dialog {
+  width: min(420px, 100%);
+}
+
+.model-delete-dialog > .settings-inline-note {
+  margin: 12px 15px 0;
+}
+
+.model-delete-dialog .settings-command.danger {
+  border-color: #a64a45;
+  color: #ffaaa2;
+}
+
 .model-editor > header,
 .model-editor > footer {
   display: flex;

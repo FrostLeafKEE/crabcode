@@ -486,6 +486,7 @@ export interface ModelSettingsResponse {
   default_model: string | null;
   sources: string[];
   groups: Record<string, Record<string, unknown>>;
+  group_sources?: Record<string, string[]>;
   models: ModelSettingsEntry[];
   warnings: string[];
   editable_sources?: ModelSettingsSource[];

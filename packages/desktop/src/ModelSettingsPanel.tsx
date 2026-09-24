@@ -118,6 +118,12 @@ type EditorTarget = {
   source?: ModelSettingsSource["id"];
 };
 
+type DeleteTarget = {
+  kind: "model" | "group";
+  name: string;
+  source: ModelSettingsSource["id"];
+};
+
 function editableSources(data: ModelSettingsResponse | null): ModelSettingsSource[] {
   return data?.editable_sources ?? [];
 }
@@ -430,6 +436,7 @@ export function ModelSettingsPanel({
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [editor, setEditor] = useState<EditorTarget | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [source, setSource] = useState<ModelSettingsSource["id"]>(
     activeProject ? "projectSettings" : "userSettings",
   );
@@ -492,6 +499,12 @@ export function ModelSettingsPanel({
     return matching[matching.length - 1]?.id ?? source;
   };
 
+  const sourceForGroup = (name: string): ModelSettingsSource["id"] => {
+    const paths = data?.group_sources?.[name] ?? [];
+    const matching = sourceOptions.filter((item) => item.writable && paths.includes(item.path));
+    return matching[matching.length - 1]?.id ?? source;
+  };
+
   useEffect(() => {
     if (sourceOptions.length > 0 && !sourceOptions.some((item) => item.id === source)) {
       setSource(sourceOptions.find((item) => item.writable)?.id ?? sourceOptions[0].id);
@@ -512,12 +525,9 @@ export function ModelSettingsPanel({
     }
   };
 
-  const removeEntry = async (
-    kind: "model" | "group",
-    name: string,
-    targetSource: ModelSettingsSource["id"] = source,
-  ) => {
-    if (!onMutate || !window.confirm(`确定删除${kind === "model" ? "模型" : "配置组"}“${name}”吗？`)) return;
+  const removeEntry = async () => {
+    if (!deleteTarget || !onMutate) return;
+    const { kind, name, source: targetSource } = deleteTarget;
     try {
       await mutate({
         action: kind === "model" ? "delete_model" : "delete_group",
@@ -525,9 +535,10 @@ export function ModelSettingsPanel({
         cwd: activeProject?.path,
         name,
       });
+      setDeleteTarget(null);
       if (kind === "model" && selectedName === name) setSelectedName(null);
     } catch {
-      // The mutation banner contains the remote error.
+      // Keep the dialog open so the mutation error remains visible.
     }
   };
 
@@ -665,8 +676,8 @@ export function ModelSettingsPanel({
                       </button>
                       {canEdit && group.name !== null && (
                         <span className="model-group-actions">
-                          <button className="icon-button small" type="button" aria-label={`编辑配置组 ${group.name}`} title="编辑配置组" disabled={mutationBusy} onClick={() => setEditor({ kind: "group", name: group.name!, originalName: group.name!, config: group.config, source })}><Pencil /></button>
-                          <button className="icon-button small danger-icon-button" type="button" aria-label={`删除配置组 ${group.name}`} title="删除配置组" disabled={mutationBusy} onClick={() => void removeEntry("group", group.name!)}><Trash2 /></button>
+                          <button className="icon-button small" type="button" aria-label={`编辑配置组 ${group.name}`} title="编辑配置组" disabled={mutationBusy} onClick={() => setEditor({ kind: "group", name: group.name!, originalName: group.name!, config: group.config, source: sourceForGroup(group.name!) })}><Pencil /></button>
+                          <button className="icon-button small danger-icon-button" type="button" aria-label={`删除配置组 ${group.name}`} title="删除配置组" disabled={mutationBusy} onClick={() => setDeleteTarget({ kind: "group", name: group.name!, source: sourceForGroup(group.name!) })}><Trash2 /></button>
                         </span>
                       )}
                     </div>
@@ -704,7 +715,7 @@ export function ModelSettingsPanel({
                     {selected.is_default && <em><Check />默认模型</em>}
                     {canEdit && <span className="model-detail-actions">
                       <button className="icon-button small" type="button" aria-label={`编辑模型 ${selected.name}`} title="编辑模型" disabled={mutationBusy} onClick={() => setEditor({ kind: "model", name: selected.name, originalName: selected.name, config: selected.configured, source: sourceForModel(selected) })}><Pencil /></button>
-                      <button className="icon-button small danger-icon-button" type="button" aria-label={`删除模型 ${selected.name}`} title="删除模型" disabled={mutationBusy} onClick={() => void removeEntry("model", selected.name, sourceForModel(selected))}><Trash2 /></button>
+                      <button className="icon-button small danger-icon-button" type="button" aria-label={`删除模型 ${selected.name}`} title="删除模型" disabled={mutationBusy} onClick={() => setDeleteTarget({ kind: "model", name: selected.name, source: sourceForModel(selected) })}><Trash2 /></button>
                     </span>}
                   </header>
 
@@ -771,6 +782,31 @@ export function ModelSettingsPanel({
           onClose={() => setEditor(null)}
           onSave={mutate}
         />
+      )}
+      {deleteTarget && (
+        <div className="model-editor-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !mutationBusy) setDeleteTarget(null);
+        }}>
+          <section className="model-editor model-delete-dialog" role="dialog" aria-modal="true" aria-label={`删除${deleteTarget.kind === "model" ? "模型" : "配置组"}`} onKeyDown={(event) => {
+            if (event.key === "Escape" && !mutationBusy) setDeleteTarget(null);
+          }}>
+            <header>
+              <div>
+                <strong>删除{deleteTarget.kind === "model" ? "模型" : "配置组"}“{deleteTarget.name}”？</strong>
+                <small>从{sourceOptions.find((item) => item.id === deleteTarget.source)?.label ?? deleteTarget.source}移除</small>
+              </div>
+              <button className="icon-button small" type="button" aria-label="关闭删除确认" title="关闭" disabled={mutationBusy} onClick={() => setDeleteTarget(null)}><X /></button>
+            </header>
+            {mutationError && <div className="settings-inline-note model-settings-error" role="alert"><AlertTriangle />{mutationError}</div>}
+            <footer>
+              <button className="settings-command" type="button" autoFocus disabled={mutationBusy} onClick={() => setDeleteTarget(null)}>取消</button>
+              <button className="settings-command danger" type="button" disabled={mutationBusy} onClick={() => void removeEntry()}>
+                {mutationBusy ? <LoaderCircle className="spin" /> : <Trash2 />}
+                <span>{mutationBusy ? "删除中" : "确认删除"}</span>
+              </button>
+            </footer>
+          </section>
+        </div>
       )}
     </section>
   );

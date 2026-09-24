@@ -315,6 +315,7 @@ def _model_settings_from_files(cwd: str) -> ModelSettingsResponse:
     merged: dict[str, Any] = {}
     sources: list[str] = []
     model_sources: dict[str, list[str]] = {}
+    group_sources: dict[str, list[str]] = {}
 
     for source_name in SETTING_SOURCES:
         raw = manager.get_settings_for_source(source_name)
@@ -330,6 +331,10 @@ def _model_settings_from_files(cwd: str) -> ModelSettingsResponse:
             if isinstance(raw_models, dict):
                 for model_name in raw_models:
                     model_sources.setdefault(str(model_name), []).append(source_path)
+            raw_groups_for_source = raw.get("groups")
+            if isinstance(raw_groups_for_source, dict):
+                for group_name in raw_groups_for_source:
+                    group_sources.setdefault(str(group_name), []).append(source_path)
         merged = _merge_model_settings(merged, relevant)
 
     try:
@@ -396,6 +401,7 @@ def _model_settings_from_files(cwd: str) -> ModelSettingsResponse:
         default_model=settings.default_model,
         sources=sources,
         groups=_redact_model_settings(raw_groups),
+        group_sources=group_sources,
         models=entries,
         warnings=warnings,
         editable_sources=editable_sources,
@@ -589,6 +595,8 @@ def _mutate_model_settings(request: Request, req: ModelSettingsMutationRequest) 
         if not isinstance(models, dict):
             raise HTTPException(status_code=422, detail="models must be a JSON object")
         if action == "delete_model":
+            if name not in models:
+                raise HTTPException(status_code=404, detail=f"模型“{name}”不在所选配置层中")
             models.pop(name, None)
             if not models:
                 current.pop("models", None)
@@ -623,6 +631,8 @@ def _mutate_model_settings(request: Request, req: ModelSettingsMutationRequest) 
         if not isinstance(groups, dict):
             raise HTTPException(status_code=422, detail="groups must be a JSON object")
         if action == "delete_group":
+            if name not in groups:
+                raise HTTPException(status_code=404, detail=f"配置组“{name}”不在所选配置层中")
             groups.pop(name, None)
             if not groups:
                 current.pop("groups", None)
