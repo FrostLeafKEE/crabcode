@@ -83,6 +83,12 @@ import DocumentWorkspace from "./DocumentWorkspace";
 import { ComposerEditor, composerModifierLabel, createComposerCommandOptions, type ComposerReferenceOption } from "./ComposerEditor";
 import { CopyButton } from "./CopyButton";
 import { applyGatewayEvent } from "./events";
+import {
+  APPROVE_SHORTCUT,
+  DENY_SHORTCUT,
+  supportsWindowsApprovalShortcuts,
+  uniquePendingApproval,
+} from "./approvalShortcuts";
 import { normalizeMarkdownMathDelimiters } from "./markdownMath";
 import {
   addFavoriteEntry,
@@ -721,6 +727,9 @@ function readImage(file: File): Promise<PendingImage> {
   });
 }
 
+// Keep registration and cleanup ordered when consecutive permissions arrive.
+let approvalShortcutRegistrationQueue: Promise<void> = Promise.resolve();
+
 function App() {
   const [settings, setSettings] = useState<DesktopSettings | null>(null);
   const [gateways, setGateways] = useState<GatewayMap>({});
@@ -804,6 +813,8 @@ function App() {
   const sessionRefreshVersionRef = useRef(new Map<string, number>());
   const autoOpeningDocumentRef = useRef<string | null>(null);
   const focusedSessionRef = useRef<FocusedSessionSnapshot | null>(null);
+  const approvalShortcutTargetRef = useRef<ReturnType<typeof uniquePendingApproval>>(null);
+  const approvalShortcutSentRef = useRef<string | null>(null);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const settingsRef = useRef<DesktopSettings | null>(null);
   const documentAgentTransitionTimerRef = useRef<number | null>(null);
@@ -856,6 +867,77 @@ function App() {
   const activeSessionKey = activeConnection ? activeSessions[activeConnection.id] : null;
   const activeSession = activeSessionKey ? sessions[activeSessionKey] : null;
   const activeChannel = activeSessionKey ? channelRef.current.get(activeSessionKey) : null;
+  const pendingApproval = useMemo(() => uniquePendingApproval(sessions), [sessions]);
+  approvalShortcutTargetRef.current = pendingApproval;
+  const hasPendingApproval = pendingApproval !== null;
+
+  useEffect(() => {
+    if (!isDesktopShell() || !supportsWindowsApprovalShortcuts() || !hasPendingApproval) return;
+
+    let disposed = false;
+    let shortcuts: typeof import("@tauri-apps/plugin-global-shortcut") | null = null;
+    const registered: string[] = [];
+    const unregister = async () => {
+      if (!shortcuts) return;
+      const names = registered.splice(0);
+      await Promise.allSettled(names.map((name) => shortcuts!.unregister(name)));
+    };
+    const respond = (allowed: boolean) => {
+      const target = approvalShortcutTargetRef.current;
+      const toolUseId = target?.item.tool_use_id;
+      if (!target || !toolUseId) return;
+      const requestId = `${target.sessionKey}\u0000${toolUseId}`;
+      if (approvalShortcutSentRef.current === requestId) return;
+      const channel = channelRef.current.get(target.sessionKey);
+      if (!channel) return;
+      try {
+        channel.permission(toolUseId, allowed, false, undefined, target.item.agent_id);
+        approvalShortcutSentRef.current = requestId;
+        const response: GatewayEvent = {
+          type: "permission_response",
+          tool_use_id: toolUseId,
+          allowed,
+          always_allow: false,
+          agent_id: target.item.agent_id,
+        };
+        setSessions((current) => {
+          const session = current[target.sessionKey];
+          return session ? {
+            ...current,
+            [target.sessionKey]: applyGatewayEvent(session, response),
+          } : current;
+        });
+      } catch (error) {
+        approvalShortcutSentRef.current = null;
+        setGlobalError(error instanceof Error ? error.message : String(error));
+      }
+    };
+    const register = async () => {
+      try {
+        shortcuts = await import("@tauri-apps/plugin-global-shortcut");
+        if (disposed) return;
+        await shortcuts.register(APPROVE_SHORTCUT, (event) => {
+          if (event.state === "Pressed") respond(true);
+        });
+        registered.push(APPROVE_SHORTCUT);
+        if (disposed) return;
+        await shortcuts.register(DENY_SHORTCUT, (event) => {
+          if (event.state === "Pressed") respond(false);
+        });
+        registered.push(DENY_SHORTCUT);
+      } catch (error) {
+        if (!disposed) setGlobalError(`权限快捷键注册失败：${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        if (disposed || registered.length !== 2) await unregister();
+      }
+    };
+    approvalShortcutRegistrationQueue = approvalShortcutRegistrationQueue.then(register, register);
+    return () => {
+      disposed = true;
+      approvalShortcutRegistrationQueue = approvalShortcutRegistrationQueue.then(unregister, unregister);
+    };
+  }, [hasPendingApproval]);
+
   const activeConversationView = activeSessionKey ? conversationViews[activeSessionKey] ?? "chat" : "chat";
   const selectedProjectFile = projectFileTabs.files.find(
     (file) => projectFileTabs.activePath !== null
@@ -6375,11 +6457,16 @@ export function ChatItemView({ item, now, showTurnDuration, turnDurationFormat, 
         {item.text && <p>{item.text}</p>}
         <CopyablePre text={textFromUnknown(item.detail)} />
         {item.status === "pending" ? (
-          <div className="request-actions">
-            <button onClick={() => onPermission(item, false)}>拒绝</button>
-            <button onClick={() => onPermission(item, true, true)}>始终允许</button>
-            <button className="primary" onClick={() => onPermission(item, true)}>允许</button>
-          </div>
+          <>
+            <div className="request-actions">
+              <button onClick={() => onPermission(item, false)}>拒绝</button>
+              <button onClick={() => onPermission(item, true, true)}>始终允许</button>
+              <button className="primary" onClick={() => onPermission(item, true)}>允许</button>
+            </div>
+            {isDesktopShell() && supportsWindowsApprovalShortcuts() && (
+              <small>仅一条待审批时可在其他窗口按 {APPROVE_SHORTCUT} 允许一次，或按 {DENY_SHORTCUT} 拒绝；不会切换到 Crab Desktop。</small>
+            )}
+          </>
         ) : <span className={`request-result ${item.status}`}>{item.status === "allowed" ? "已允许" : "已拒绝"}</span>}
       </article>
     );
