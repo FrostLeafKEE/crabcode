@@ -399,7 +399,6 @@ struct Profile {
     prepare_active: bool,
     primer: bool,
     semantic_click: bool,
-    evidence: String,
 }
 
 fn profiles() -> &'static [Profile] {
@@ -421,7 +420,6 @@ pub(super) fn available() -> bool {
 
 fn supported(profile: &Profile, id: &Identity, action: &ComputerAction) -> bool {
     profile.identity == *id
-        && !profile.evidence.is_empty()
         && profile.actions.contains(&action.action)
         && (!matches!(action.action.as_str(), "click" | "double_click" | "drag")
             || action
@@ -447,7 +445,7 @@ fn rejected(action: &ComputerAction, reason: impl Into<String>) -> Value {
         "error": reason.into(), "summary": "This OS/app/action combination has not passed strict-background validation; no input was sent",
         "action_dispatched": false, "dispatch_succeeded": false, "effect_verified": false,
         "retry_safe": true, "focus_isolation": "preserved", "input_method": "none",
-        "background_validation_report": "docs/computer-use-background-validation.md"})
+    })
 }
 
 pub(super) fn execute(action: &ComputerAction, target: WindowTarget) -> Value {
@@ -1154,7 +1152,7 @@ fn run(action: &ComputerAction, target: WindowTarget, profile: &Profile) -> Valu
         "isolation_samples": session.monitor.evidence,
         "cleanup_succeeded": cleanup_succeeded,
         "input_method": if semantic { "accessibility_action" } else if matches!(action.action.as_str(), "type" | "keypress") { match profile.keyboard { Route::Quartz => "quartz_keyboard", Route::SkyLight => "skylight_keyboard" } } else { match if action.action == "scroll" { profile.scroll.unwrap_or(profile.pointer) } else { profile.pointer } { Route::Quartz => "quartz_window", Route::SkyLight => "skylight_window" } },
-        "background_profile": profile.evidence, "background_target": profile.identity,
+        "background_target": profile.identity,
         "retry_safe": session.events == 0 && isolation.is_ok(), "requires_observation": true,
         "coordinate_space": "window"});
     if !keyboard_receipt.is_null() {

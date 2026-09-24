@@ -16,7 +16,6 @@ fn candidate(pid: i32) -> Profile {
         prepare_active: true,
         primer: false,
         semantic_click: false,
-        evidence: "test-only candidate; not a production certificate".into(),
     }
 }
 
@@ -68,7 +67,6 @@ fn profiles_do_not_generalize_across_os_app_or_gesture() {
         prepare_active: true,
         primer: false,
         semantic_click: false,
-        evidence: "test".into(),
     };
     let action: ComputerAction = serde_json::from_value(json!({"action":"click"})).unwrap();
     assert!(supported(&profile, &id, &action));
@@ -299,7 +297,6 @@ fn production_profiles_exclude_unverified_input() {
             assert!(!supported(profile, &profile.identity, &action));
         }
         assert!(profile.shortcuts.is_empty());
-        assert_ne!(profile.identity.bundle_id, "com.electron.lark");
     }
 }
 

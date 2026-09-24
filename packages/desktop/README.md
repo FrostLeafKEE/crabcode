@@ -92,7 +92,7 @@ The initial profiles cover left click/double-click in TextEdit and Chrome;
 Feishu, keyboard input and scrolling have not passed the complete validation.
 Unsupported combinations return a reason before sending input. Strict mode
 never raises/activates a global foreground window or automatically switches
-to `allow_foreground`. See the [validation matrix and reproduction steps](../../docs/computer-use-background-validation.md).
+to `allow_foreground`.
 
 Legacy `computer_use.mode` values migrate only the target scope, never the
 foreground permission. Old Desktop hosts must be upgraded before input can be
@@ -103,7 +103,6 @@ apply to new or reconnected sessions.
 The native action receipt separates `action_dispatched` (true/false/null),
 `effect_verified`, `focus_isolation`, and `retry_safe`. Null dispatch means
 input may have arrived; a transport failure is not permission to click again.
-See [the backend and validation notes](../../docs/computer-use-background-validation.md).
 
 On macOS, background pointer events carry a window ID and window-local position.
 The position uses the private `CGEventSetWindowLocation` symbol, resolved at runtime;

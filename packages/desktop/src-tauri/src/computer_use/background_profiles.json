@@ -12,8 +12,7 @@
     "keyboard": "quartz",
     "prepare_active": true,
     "primer": false,
-    "semantic_click": false,
-    "evidence": "docs/computer-use-background-validation.md#textedit"
+    "semantic_click": false
   },
   {
     "identity": {
@@ -28,7 +27,6 @@
     "keyboard": "quartz",
     "prepare_active": true,
     "primer": true,
-    "semantic_click": false,
-    "evidence": "docs/computer-use-background-validation.md#chrome"
+    "semantic_click": false
   }
 ]
