@@ -84,9 +84,9 @@ import { ComposerEditor, composerModifierLabel, createComposerCommandOptions, ty
 import { CopyButton } from "./CopyButton";
 import { applyGatewayEvent } from "./events";
 import {
-  APPROVE_SHORTCUT,
-  DENY_SHORTCUT,
-  supportsWindowsApprovalShortcuts,
+  DEFAULT_APPROVAL_SHORTCUTS,
+  bindApprovalShortcuts,
+  approvalShortcutKeyLabels,
   uniquePendingApproval,
 } from "./approvalShortcuts";
 import { normalizeMarkdownMathDelimiters } from "./markdownMath";
@@ -164,6 +164,7 @@ import {
   type SystemToolInstallProgress,
 } from "./native";
 import type {
+  ApprovalShortcutPreferences,
   BackgroundTaskInfo,
   ChatItem,
   CheckpointInfo,
@@ -768,9 +769,6 @@ function readImage(file: File): Promise<PendingImage> {
   });
 }
 
-// Keep registration and cleanup ordered when consecutive permissions arrive.
-let approvalShortcutRegistrationQueue: Promise<void> = Promise.resolve();
-
 function App() {
   const [settings, setSettings] = useState<DesktopSettings | null>(null);
   const [gateways, setGateways] = useState<GatewayMap>({});
@@ -841,6 +839,7 @@ function App() {
   const [connectionModal, setConnectionModal] = useState<"new" | string | null>(null);
   const [checkpointModal, setCheckpointModal] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
+  const [approvalShortcutError, setApprovalShortcutError] = useState<string | null>(null);
   const [computerUseBaseId] = useState(computerUseHostId);
   const computerVm = useMemo(() => settings?.computer_use_environment === "local_vm" ? normalizeVmConfig(settings.computer_use_vm) : null, [settings?.computer_use_environment, settings?.computer_use_vm]);
   const computerUseId = computerVm ? vmHostId(computerUseBaseId, computerVm) : computerUseBaseId;
@@ -909,21 +908,23 @@ function App() {
   const activeSession = activeSessionKey ? sessions[activeSessionKey] : null;
   const activeChannel = activeSessionKey ? channelRef.current.get(activeSessionKey) : null;
   const pendingApproval = useMemo(() => uniquePendingApproval(sessions), [sessions]);
-  approvalShortcutTargetRef.current = pendingApproval;
+  const approvalShortcuts = settings?.approval_shortcuts ?? DEFAULT_APPROVAL_SHORTCUTS;
+  approvalShortcutTargetRef.current = approvalShortcuts.enabled && !settingsOpen ? pendingApproval : null;
   const hasPendingApproval = pendingApproval !== null;
 
   useEffect(() => {
-    if (!isDesktopShell() || !supportsWindowsApprovalShortcuts() || !hasPendingApproval) return;
+    setApprovalShortcutError(null);
+  }, [approvalShortcuts.enabled, approvalShortcuts.approve, approvalShortcuts.deny, approvalShortcuts.always_allow]);
 
-    let disposed = false;
-    let shortcuts: typeof import("@tauri-apps/plugin-global-shortcut") | null = null;
-    const registered: string[] = [];
-    const unregister = async () => {
-      if (!shortcuts) return;
-      const names = registered.splice(0);
-      await Promise.allSettled(names.map((name) => shortcuts!.unregister(name)));
-    };
-    const respond = (allowed: boolean) => {
+  useEffect(() => {
+    if (!isDesktopShell() || !hasPendingApproval
+      || !approvalShortcuts.enabled || settingsOpen) return;
+
+    const respond = (allowed: boolean, alwaysAllow = false) => {
+      const currentShortcuts = settingsRef.current?.approval_shortcuts;
+      if (!currentShortcuts?.enabled || currentShortcuts.approve !== approvalShortcuts.approve
+        || currentShortcuts.deny !== approvalShortcuts.deny
+        || currentShortcuts.always_allow !== approvalShortcuts.always_allow) return;
       const target = approvalShortcutTargetRef.current;
       const toolUseId = target?.item.tool_use_id;
       if (!target || !toolUseId) return;
@@ -932,13 +933,13 @@ function App() {
       const channel = channelRef.current.get(target.sessionKey);
       if (!channel) return;
       try {
-        channel.permission(toolUseId, allowed, false, undefined, target.item.agent_id);
+        channel.permission(toolUseId, allowed, alwaysAllow, undefined, target.item.agent_id);
         approvalShortcutSentRef.current = requestId;
         const response: GatewayEvent = {
           type: "permission_response",
           tool_use_id: toolUseId,
           allowed,
-          always_allow: false,
+          always_allow: alwaysAllow,
           agent_id: target.item.agent_id,
         };
         setSessions((current) => {
@@ -953,31 +954,12 @@ function App() {
         setGlobalError(error instanceof Error ? error.message : String(error));
       }
     };
-    const register = async () => {
-      try {
-        shortcuts = await import("@tauri-apps/plugin-global-shortcut");
-        if (disposed) return;
-        await shortcuts.register(APPROVE_SHORTCUT, (event) => {
-          if (event.state === "Pressed") respond(true);
-        });
-        registered.push(APPROVE_SHORTCUT);
-        if (disposed) return;
-        await shortcuts.register(DENY_SHORTCUT, (event) => {
-          if (event.state === "Pressed") respond(false);
-        });
-        registered.push(DENY_SHORTCUT);
-      } catch (error) {
-        if (!disposed) setGlobalError(`权限快捷键注册失败：${error instanceof Error ? error.message : String(error)}`);
-      } finally {
-        if (disposed || registered.length !== 2) await unregister();
-      }
-    };
-    approvalShortcutRegistrationQueue = approvalShortcutRegistrationQueue.then(register, register);
-    return () => {
-      disposed = true;
-      approvalShortcutRegistrationQueue = approvalShortcutRegistrationQueue.then(unregister, unregister);
-    };
-  }, [hasPendingApproval]);
+    const binding = bindApprovalShortcuts(approvalShortcuts, respond, (message) => {
+      setApprovalShortcutError(message);
+      if (message) setGlobalError(message);
+    });
+    return () => { void binding.dispose(); };
+  }, [hasPendingApproval, settingsOpen, approvalShortcuts.enabled, approvalShortcuts.approve, approvalShortcuts.deny, approvalShortcuts.always_allow]);
 
   const activeConversationView = activeSessionKey ? conversationViews[activeSessionKey] ?? "chat" : "chat";
   const selectedProjectFile = projectFileTabs.files.find(
@@ -3276,6 +3258,7 @@ function App() {
           onConversationChange={(changes) => {
             commitSettings((current) => ({ ...current, ...changes }));
           }}
+          approvalShortcutError={approvalShortcutError}
           onDocumentChange={(changes) => {
             commitSettings((current) => ({ ...current, ...changes }));
           }}
@@ -3999,6 +3982,7 @@ function App() {
                     showTurnDuration={settings.show_turn_duration}
                     turnDurationFormat={settings.turn_duration_format}
                     onPermission={resolvePermission}
+                    approvalShortcuts={settings.approval_shortcuts}
                     onToggleChoice={toggleChoice}
                     onSubmitChoice={submitChoice}
                     onPlan={(action) => activeChannel?.planAction(
@@ -6276,12 +6260,13 @@ export function MessageMarkdown({ children }: { children: string }) {
   );
 }
 
-export function ChatItemView({ item, now, showTurnDuration, turnDurationFormat, onPermission, onToggleChoice, onSubmitChoice, onPlan, onCompatibilityRetry, onFork, forkDisabled }: {
+export function ChatItemView({ item, now, showTurnDuration, turnDurationFormat, onPermission, approvalShortcuts = DEFAULT_APPROVAL_SHORTCUTS, onToggleChoice, onSubmitChoice, onPlan, onCompatibilityRetry, onFork, forkDisabled }: {
   item: ChatItem;
   now: number;
   showTurnDuration: boolean;
   turnDurationFormat: TurnDurationFormat;
   onPermission: (item: ChatItem, allowed: boolean, always?: boolean) => void;
+  approvalShortcuts?: ApprovalShortcutPreferences;
   onToggleChoice: (item: ChatItem, option: string) => void;
   onSubmitChoice: (item: ChatItem) => void;
   onPlan: (action: "execute" | "revise" | "cancel") => void;
@@ -6477,8 +6462,8 @@ export function ChatItemView({ item, now, showTurnDuration, turnDurationFormat, 
               <button onClick={() => onPermission(item, true, true)}>始终允许</button>
               <button className="primary" onClick={() => onPermission(item, true)}>允许</button>
             </div>
-            {isDesktopShell() && supportsWindowsApprovalShortcuts() && (
-              <small>仅一条待审批时可在其他窗口按 {APPROVE_SHORTCUT} 允许一次，或按 {DENY_SHORTCUT} 拒绝；不会切换到 Crab Desktop。</small>
+            {approvalShortcuts.enabled && isDesktopShell() && (
+              <small>仅一条待审批时可在其他窗口按 {approvalShortcutKeyLabels(approvalShortcuts.approve).join(" + ")} 允许一次、{approvalShortcutKeyLabels(approvalShortcuts.deny).join(" + ")} 拒绝、{approvalShortcutKeyLabels(approvalShortcuts.always_allow).join(" + ")} 始终允许；不会切换到 Crab Desktop。可在设置 → 常规 → 权限快捷键中修改。</small>
             )}
           </>
         ) : <span className={`request-result ${item.status}`}>{item.status === "allowed" ? "已允许" : "已拒绝"}</span>}

@@ -32,6 +32,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ModelSettingsPanel } from "./ModelSettingsPanel";
 import { RuntimeSettingsPanel } from "./RuntimeSettingsPanel";
 import { composerModifierLabel } from "./ComposerEditor";
+import { ApprovalShortcutSettings } from "./ApprovalShortcutSettings";
 import { ThemeRegistry, resolveActiveTheme } from "./theme";
 import {
   parseSkinPackage,
@@ -87,7 +88,7 @@ export const SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     id: "general",
     title: "常规",
     description: "运行环境、文件上传、文件查看与会话设置",
-    searchText: "常规 运行环境 Python 路径 自动检测 本地启动 CrabCode 套件 安装 Gateway Search Debugger Ripgrep rg 语义搜索 文本搜索 调试 浏览器模式 文件 上传 内容 路径 引用 查看 浏览 标签 标签页 最大标签数 最大数量 上限 会话 显示 处理用时 耗时 仅秒数 时分秒 发送快捷键 Enter 回车 Ctrl Cmd Command",
+    searchText: "常规 运行环境 Python 路径 自动检测 本地启动 CrabCode 套件 安装 Gateway Search Debugger Ripgrep rg 语义搜索 文本搜索 调试 浏览器模式 文件 上传 内容 路径 引用 查看 浏览 标签 标签页 最大标签数 最大数量 上限 会话 显示 处理用时 耗时 仅秒数 时分秒 发送快捷键 Enter 回车 Ctrl Cmd Command Option 权限快捷键 全局 审批 允许 始终允许 拒绝 Windows macOS F9 F10 F11",
   },
   {
     id: "appearance",
@@ -264,6 +265,7 @@ interface SettingsViewProps {
   systemToolSuccess?: string | null;
   onInstallSystemTool?: (tool: SystemTool, pythonPath: string | null) => Promise<void>;
   onConversationChange: (changes: ConversationSettingsUpdate) => void;
+  approvalShortcutError?: string | null;
   onDocumentChange: (changes: DocumentSettingsUpdate) => void;
   onThemeModeChange: (mode: ThemeMode) => void;
   onThemeProfileChange: (scheme: "light" | "dark", changes: Partial<ThemeProfile>) => void;
@@ -315,6 +317,7 @@ export type ConversationSettingsUpdate = Partial<Pick<DesktopSettings,
   | "show_turn_duration"
   | "turn_duration_format"
   | "composer_send_key"
+  | "approval_shortcuts"
   | "file_upload_mode"
   | "file_upload_max_size_mb"
   | "project_files_max_tabs"
@@ -543,6 +546,7 @@ export function SettingsView({
   computerTaskBusy,
   lumeInstaller,
   onConversationChange,
+  approvalShortcutError,
   onDocumentChange,
   onThemeModeChange,
   onThemeProfileChange,
@@ -1041,6 +1045,12 @@ export function SettingsView({
                     />
                   </div>
                 </div>
+
+                <ApprovalShortcutSettings
+                  value={settings.approval_shortcuts}
+                  onChange={(value) => onConversationChange({ approval_shortcuts: value })}
+                  registrationError={approvalShortcutError}
+                />
 
                 <div className="settings-section-heading general-spaced-heading">
                   <div><h2>会话</h2><p>控制对话完成后的状态信息。</p></div>

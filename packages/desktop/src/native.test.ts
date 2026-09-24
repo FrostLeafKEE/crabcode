@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isInsecureRemoteUrl, isLoopbackUrl, normalizeBaseUrl, normalizeSettings } from "./native";
 import { BUILTIN_THEMES, resolveActiveTheme } from "./theme";
 import type { DesktopSettings } from "./types";
+import { DEFAULT_APPROVAL_SHORTCUTS } from "./approvalShortcuts";
 
 describe("Gateway URL handling", () => {
   it("normalizes HTTP base URLs", () => {
@@ -24,6 +25,19 @@ describe("Gateway URL handling", () => {
 });
 
 describe("desktop settings migration", () => {
+  it("migrates approval shortcuts and preserves customized disabled settings across serialization", () => {
+    expect(normalizeSettings({ connections: [] } as unknown as DesktopSettings).approval_shortcuts)
+      .toEqual(DEFAULT_APPROVAL_SHORTCUTS);
+    const custom = normalizeSettings({ connections: [], approval_shortcuts: {
+      enabled: false, approve: "alt+ctrl+y", deny: "Ctrl+Alt+N",
+    } } as unknown as DesktopSettings);
+    expect(normalizeSettings(JSON.parse(JSON.stringify(custom))).approval_shortcuts)
+      .toEqual({ enabled: false, approve: "Ctrl+Alt+Y", deny: "Ctrl+Alt+N", always_allow: "Ctrl+Alt+Shift+F11" });
+    expect(normalizeSettings({ ...custom, approval_shortcuts: {
+      enabled: false, approve: "Ctrl+Alt+Y", deny: "Alt+Ctrl+Y", always_allow: "Ctrl+Alt+Shift+F11",
+    } }).approval_shortcuts).toEqual({ ...DEFAULT_APPROVAL_SHORTCUTS, enabled: false });
+  });
+
   it("upgrades path-only projects to project ids and directory lists", () => {
     const legacy = {
       schema_version: 1,

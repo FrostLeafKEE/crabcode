@@ -76,6 +76,7 @@ const settings: DesktopSettings = {
   show_turn_duration: true,
   turn_duration_format: "hms",
   composer_send_key: "enter",
+  approval_shortcuts: { enabled: true, approve: "Ctrl+Alt+Shift+F9", deny: "Ctrl+Alt+Shift+F10", always_allow: "Ctrl+Alt+Shift+F11" },
   file_upload_mode: "content",
   file_upload_max_size_mb: 5,
   dock_icon: "dark",
@@ -324,6 +325,73 @@ describe("SettingsView", () => {
       .find((button) => button.textContent?.includes(composerModifierLabel()))!;
     act(() => modifierMode.click());
     expect(handlers.onConversationChange).toHaveBeenCalledWith({ composer_send_key: "mod_enter" });
+  });
+
+  it("records approval shortcuts, rejects duplicates, restores defaults and disables them", () => {
+    const handlers = callbacks();
+    function Harness() {
+      const [value, setValue] = useState(settings);
+      return <SettingsView
+        {...handlers}
+        settings={value}
+        gateways={{ local: onlineGateway }}
+        activeConnection={settings.connections[0]}
+        activeProject={settings.connections[0].projects[0]}
+        activeSection="general"
+        onSectionChange={vi.fn()}
+        onConversationChange={(changes) => {
+          handlers.onConversationChange(changes);
+          setValue((current) => ({ ...current, ...changes }));
+        }}
+      />;
+    }
+    act(() => root.render(<Harness />));
+    expect(filterSettingsSections("权限快捷键").map((section) => section.id)).toContain("general");
+    const approve = container.querySelector<HTMLButtonElement>('[aria-label="允许一次快捷键"]')!;
+    const displayedKeys = () => Array.from(approve.querySelectorAll("kbd")).map((key) => key.textContent).join("+");
+    act(() => approve.click());
+    expect(document.activeElement).toBe(approve);
+    act(() => approve.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "F10", code: "F10", ctrlKey: true, altKey: true, shiftKey: true, bubbles: true,
+    })));
+    expect(handlers.onConversationChange).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("必须使用不同");
+
+    act(() => approve.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "y", code: "KeyY", ctrlKey: true, altKey: true, bubbles: true,
+    })));
+    expect(handlers.onConversationChange).toHaveBeenLastCalledWith({
+      approval_shortcuts: { ...settings.approval_shortcuts, approve: "Ctrl+Alt+Y" },
+    });
+    expect(displayedKeys()).toBe("Ctrl+Alt+Y");
+
+    act(() => approve.click());
+    const onGlobalKey = vi.fn();
+    window.addEventListener("keydown", onGlobalKey);
+    act(() => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true })));
+    window.removeEventListener("keydown", onGlobalKey);
+    expect(onGlobalKey).not.toHaveBeenCalled();
+    expect(displayedKeys()).toBe("Ctrl+Alt+Y");
+    expect(handlers.onConversationChange).toHaveBeenCalledTimes(1);
+
+    const always = container.querySelector<HTMLButtonElement>('[aria-label="始终允许快捷键"]')!;
+    act(() => always.click());
+    act(() => always.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "a", code: "KeyA", ctrlKey: true, altKey: true, bubbles: true,
+    })));
+    expect(handlers.onConversationChange).toHaveBeenLastCalledWith({
+      approval_shortcuts: { ...settings.approval_shortcuts, approve: "Ctrl+Alt+Y", always_allow: "Ctrl+Alt+A" },
+    });
+
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="恢复默认权限快捷键"]')!.click());
+    expect(displayedKeys()).toBe("Ctrl+Alt+Shift+F9");
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="启用权限快捷键"]')!.click());
+    expect(handlers.onConversationChange).toHaveBeenLastCalledWith({
+      approval_shortcuts: { ...settings.approval_shortcuts, enabled: false },
+    });
+    expect(approve.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="拒绝快捷键"]')!.disabled).toBe(true);
+    expect(always.disabled).toBe(true);
   });
 
   it("switches file uploads between content and path mode", () => {

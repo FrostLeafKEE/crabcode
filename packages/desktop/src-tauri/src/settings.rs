@@ -70,6 +70,12 @@ fn default_settings() -> Value {
         "show_turn_duration": true,
         "turn_duration_format": "hms",
         "composer_send_key": "enter",
+        "approval_shortcuts": {
+            "enabled": true,
+            "approve": "Ctrl+Alt+Shift+F9",
+            "deny": "Ctrl+Alt+Shift+F10",
+            "always_allow": "Ctrl+Alt+Shift+F11"
+        },
         "file_upload_mode": "content",
         "file_upload_max_size_mb": 5,
         "dock_icon": "dark",

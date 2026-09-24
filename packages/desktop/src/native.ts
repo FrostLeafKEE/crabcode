@@ -1,4 +1,5 @@
 import { normalizeVmConfig } from "./virtualMachine";
+import { DEFAULT_APPROVAL_SHORTCUTS, normalizeApprovalShortcuts } from "./approvalShortcuts";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { legacyFavoriteEntries, normalizeFavoriteEntries } from "./favorites";
@@ -132,6 +133,7 @@ const DEFAULT_SETTINGS: DesktopSettings = {
   show_turn_duration: true,
   turn_duration_format: "hms",
   composer_send_key: "enter",
+  approval_shortcuts: { ...DEFAULT_APPROVAL_SHORTCUTS },
   file_upload_mode: "content",
   file_upload_max_size_mb: 5,
   dock_icon: "dark",
@@ -325,6 +327,7 @@ export function normalizeSettings(raw: DesktopSettings): DesktopSettings {
     show_turn_duration: raw.show_turn_duration !== false,
     turn_duration_format: turnDurationFormat,
     composer_send_key: composerSendKey,
+    approval_shortcuts: normalizeApprovalShortcuts(raw.approval_shortcuts),
     file_upload_mode: raw.file_upload_mode === "path" ? "path" : "content",
     file_upload_max_size_mb: clampInteger(raw.file_upload_max_size_mb, 1, 100, 5),
     dock_icon: dockIcon,
