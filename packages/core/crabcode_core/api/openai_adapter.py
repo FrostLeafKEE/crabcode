@@ -291,11 +291,17 @@ class OpenAIAdapter(APIAdapter):
                     )
                 tool_call_buffers.clear()
 
-            if finish_reason == "stop":
+            if finish_reason:
+                # In particular, length is a completed but truncated response.
+                # Preserve it so the query loop reports output_limit instead
+                # of mistaking the end of the iterator for a successful turn.
+                # Keep consuming the stream for the separate usage-only chunk.
                 usage = normalize_openai_usage(chunk.usage) if chunk.usage else {}
                 yield StreamChunk(
                     type="message_stop",
-                    stop_reason="end_turn",
+                    stop_reason={"stop": "end_turn", "tool_calls": "tool_use"}.get(
+                        finish_reason, finish_reason,
+                    ),
                     usage=usage,
                 )
 

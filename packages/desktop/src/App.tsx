@@ -588,6 +588,47 @@ function firstUserText(items: ChatItem[]): string {
   return items.find((item) => item.kind === "user" && item.text?.trim())?.text?.trim() ?? "";
 }
 
+export function mergeProjectSessions(
+  persisted: SessionInfo[],
+  sessions: SessionMap,
+  connectionId: string,
+  cwd: string,
+): SessionInfo[] {
+  const stored = new Map(persisted.map((item) => [item.session_id, item]));
+  const pending: SessionInfo[] = [];
+  for (const [key, session] of Object.entries(sessions)) {
+    if (
+      key !== sessionKey(connectionId, session.id)
+      || projectPathKey(session.cwd) !== projectPathKey(cwd)
+      || session.id.startsWith("new-")
+      || session.items.length === 0
+    ) continue;
+
+    const existing = stored.get(session.id);
+    const userPreview = firstUserText(session.items);
+    const merged: SessionInfo = {
+      session_id: session.id,
+      message_count: Math.max(existing?.message_count ?? 0, session.items.length),
+      model: existing?.model || session.status?.model || "",
+      provider: existing?.provider || session.status?.provider || "",
+      created_at: existing?.created_at || new Date(session.items[0].startedAt ?? Date.now()).toISOString(),
+      title: existing?.title?.trim()
+        || (session.title !== "新会话" ? session.title : userPreview.slice(0, 200))
+        || "未命名会话",
+      cwd: session.cwd,
+      tokens_used: existing?.tokens_used ?? session.status?.context_used_tokens ?? 0,
+      preview: existing?.preview || userPreview.slice(0, 100),
+      forked_from_session_id: existing?.forked_from_session_id ?? null,
+      forked_from_message_uuid: existing?.forked_from_message_uuid ?? null,
+      forked_from_title: existing?.forked_from_title ?? null,
+    };
+    if (existing) stored.set(session.id, merged);
+    else pending.push(merged);
+  }
+  pending.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at));
+  return [...pending, ...stored.values()];
+}
+
 function formatDate(value: string): string {
   if (!value) return "";
   const date = new Date(value);
@@ -948,40 +989,13 @@ function App() {
     : [];
   // The HTTP session list is persisted metadata and can briefly lag behind
   // the live WebSocket state (especially while the first title is generated).
-  // Keep the active conversation visible as soon as its first user message is
-  // rendered, then let the next list refresh replace the optimistic values.
-  const displayList = useMemo(() => {
-    if (
-      !activeSession
-      || !activeProject
-      || projectPathKey(activeSession.cwd) !== projectPathKey(activeProject.path)
-      || activeSession.id.startsWith("new-")
-      || activeSession.items.length === 0
-    ) return activeList;
-
-    const userPreview = firstUserText(activeSession.items);
-    const existing = activeList.find((item) => item.session_id === activeSession.id);
-    const optimistic: SessionInfo = {
-      session_id: activeSession.id,
-      message_count: Math.max(existing?.message_count ?? 0, activeSession.items.length),
-      model: existing?.model || activeSession.status?.model || "",
-      provider: existing?.provider || activeSession.status?.provider || "",
-      created_at: existing?.created_at || new Date().toISOString(),
-      title: existing?.title?.trim()
-        || (activeSession.title !== "新会话" ? activeSession.title : userPreview.slice(0, 200))
-        || "未命名会话",
-      cwd: activeSession.cwd,
-      tokens_used: existing?.tokens_used ?? activeSession.status?.context_used_tokens ?? 0,
-      preview: existing?.preview || userPreview.slice(0, 100),
-      forked_from_session_id: existing?.forked_from_session_id ?? null,
-      forked_from_message_uuid: existing?.forked_from_message_uuid ?? null,
-      forked_from_title: existing?.forked_from_title ?? null,
-    };
-    if (existing) {
-      return activeList.map((item) => item.session_id === activeSession.id ? optimistic : item);
-    }
-    return [optimistic, ...activeList];
-  }, [activeList, activeProject, activeSession]);
+  // Merge every local conversation in this project, including background
+  // turns. Switching focus must not remove an entry before metadata catches up.
+  const displayList = useMemo(() => (
+    activeConnection && activeProject
+      ? mergeProjectSessions(activeList, sessions, activeConnection.id, activeProject.path)
+      : activeList
+  ), [activeList, sessions, activeConnection?.id, activeProject?.path]);
   const activeSessionInfo = activeSession
     ? displayList.find((item) => item.session_id === activeSession.id)
     : undefined;

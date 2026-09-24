@@ -52,6 +52,22 @@ describe("Gateway event reducer", () => {
     expect(current.runStartedAt).not.toBeNull();
   });
 
+  it("keeps an output-limit error visible after the turn ends and heartbeats arrive", () => {
+    let current = applyGatewayEvent(state(), { type: "stream_text", text: "unfinished reply" });
+    current = applyGatewayEvent(current, {
+      type: "error", error_type: "output_limit", recoverable: true,
+      message: "Output token limit reached; the reply is incomplete.",
+    });
+    current = applyGatewayEvent(current, { type: "turn_complete", reason: "length" });
+    current = applyGatewayEvent(current, { type: "server.heartbeat" });
+    expect(current.busy).toBe(false);
+    expect(current.currentStep).toBeNull();
+    expect(current.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "assistant", text: "unfinished reply", status: "complete" }),
+      expect.objectContaining({ kind: "error", text: "Output token limit reached; the reply is incomplete." }),
+    ]));
+  });
+
   it("keeps the turn live and starts a fresh response item while reconnecting", () => {
     let current = applyGatewayEvent(state(), { type: "stream_text", text: "partial" });
     current = applyGatewayEvent(current, {

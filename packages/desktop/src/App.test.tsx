@@ -12,6 +12,7 @@ import {
   formatTurnDuration,
   groupGatewayModels,
   MessageMarkdown,
+  mergeProjectSessions,
   ProjectActionsMenu,
   ProjectDeleteModal,
   ProjectModal,
@@ -34,7 +35,7 @@ import {
 } from "./App";
 import type { GatewayApi } from "./gateway";
 import { favoriteEntries, resolveFavoriteEntries } from "./favorites";
-import type { BackgroundTaskInfo, ChatItem, ConnectionPreset, GatewayViewState, ScheduleJobInfo, SessionInfo, SessionStatus } from "./types";
+import type { BackgroundTaskInfo, ChatItem, ConnectionPreset, GatewayViewState, ScheduleJobInfo, SessionInfo, SessionStatus, SessionViewState } from "./types";
 
 const documentCapabilities = {
   supported_extensions: [".pdf", ".docx"],
@@ -44,6 +45,75 @@ const documentCapabilities = {
   libreoffice: { available: false, executable: null },
   ocr: { available: false },
 };
+
+describe("session sidebar while metadata is pending", () => {
+  function waitingSession(id: string, startedAt = 1_000): SessionViewState {
+    return {
+      id, cwd: "/work/project", title: "新会话", loading: false,
+      connected: true, busy: true, operationId: `${id}-operation`, status: null, error: null,
+      items: [{ id: `${id}-user`, kind: "user", text: `Task ${id}`, startedAt }],
+    };
+  }
+
+  it("keeps the first waiting conversation when a second one opens and starts streaming", () => {
+    const first = waitingSession("first");
+    const sessions = {
+      "local:first": first,
+      "local:second": { ...waitingSession("second", 2_000), busy: false, items: [] },
+    };
+    expect(mergeProjectSessions([], sessions, "local", first.cwd)).toMatchObject([
+      { session_id: "first", title: "Task first", message_count: 1 },
+    ]);
+
+    const second = waitingSession("second", 2_000);
+    second.items.push({ id: "thinking", kind: "thinking", text: "working", startedAt: 3_000 });
+    const list = mergeProjectSessions([], { ...sessions, "local:second": second }, "local", first.cwd);
+    expect(list.map((item) => item.session_id)).toEqual(["second", "first"]);
+    expect(list[1]).toMatchObject({ title: "Task first", preview: "Task first" });
+    expect(list[1].created_at).toBe(new Date(1_000).toISOString());
+    expect(first.items).toHaveLength(1);
+    expect(first.busy).toBe(true);
+    // Even a turn that finishes before the HTTP list refresh stays accessible.
+    expect(mergeProjectSessions([], {
+      ...sessions, "local:first": { ...first, busy: false },
+    }, "local", first.cwd).map((item) => item.session_id)).toEqual(["first"]);
+  });
+
+  it("fills empty metadata and adopts the persisted title without duplicating the row", () => {
+    const first = waitingSession("first");
+    const sessions = { "local:first": first };
+    const placeholder: SessionInfo = {
+      session_id: first.id, cwd: first.cwd, title: "", preview: "", message_count: 0,
+      model: "test-model", provider: "test", created_at: "2026-09-24T00:00:00Z", tokens_used: 0,
+    };
+    expect(mergeProjectSessions([placeholder], sessions, "local", first.cwd)).toMatchObject([
+      { session_id: "first", title: "Task first", message_count: 1 },
+    ]);
+    const saved = {
+      ...placeholder, title: "Generated title", preview: "Saved preview", message_count: 2,
+      tokens_used: 120, forked_from_session_id: "source", forked_from_message_uuid: "reply",
+    };
+    expect(mergeProjectSessions([saved], sessions, "local", first.cwd)).toMatchObject([saved]);
+  });
+
+  it("isolates connections and projects and omits empty or unbound sessions", () => {
+    const sessions = {
+      "local:first": { ...waitingSession("first"), cwd: "C:\\Work\\Project" },
+      "remote:foreign": { ...waitingSession("foreign"), cwd: "C:\\Work\\Project" },
+      "local:other-project": waitingSession("other-project"),
+      "local:empty": { ...waitingSession("empty"), cwd: "C:\\Work\\Project", items: [] },
+      "local:new-pending": { ...waitingSession("new-pending"), cwd: "C:\\Work\\Project" },
+    };
+    expect(mergeProjectSessions([], sessions, "local", "c:/work/project/")
+      .map((item) => item.session_id)).toEqual(["first"]);
+  });
+
+  it("removes an optimistic row when its local session is deleted", () => {
+    const session = waitingSession("first");
+    expect(mergeProjectSessions([], { "local:first": session }, "local", session.cwd)).toHaveLength(1);
+    expect(mergeProjectSessions([], {}, "local", session.cwd)).toEqual([]);
+  });
+});
 
 describe("document session auto-open", () => {
   it("only auto-opens a missing document session while the chat view is active", () => {

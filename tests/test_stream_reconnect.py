@@ -13,6 +13,7 @@ import pytest
 from crabcode_core.api.anthropic_adapter import AnthropicAdapter
 from crabcode_core.api.base import ModelConfig, StreamChunk
 from crabcode_core.api.codex_adapter import CodexAdapter, _responses_error_chunk
+from crabcode_core.api.openai_adapter import OpenAIAdapter
 from crabcode_core.query.loop import QueryParams, query_loop
 from crabcode_core.query.retry import ResponsesStreamRetryState, request_retry_backoff
 from crabcode_core.types.config import ApiConfig
@@ -551,6 +552,55 @@ def test_output_limit_without_visible_output_is_also_reported(monkeypatch):
     assert len(requests) == 1
     assert result[-1].reason == "max_tokens"
     assert any(isinstance(event, ErrorEvent) and event.error_type == "output_limit" for event in result)
+
+
+@pytest.mark.parametrize("output_kind", ["text", "thinking", "tool"])
+def test_openai_output_limit_preserves_reason_and_never_executes_partial_tools(monkeypatch, output_kind):
+    from openai.types.chat import ChatCompletionChunk
+
+    delta = {
+        "text": {"content": "unfinished reply"},
+        "thinking": {"reasoning_content": "unfinished thought"},
+        "tool": {"tool_calls": [{
+            "index": 0, "id": "call-1", "type": "function",
+            "function": {"name": "Count", "arguments": '{"partial":'},
+        }]},
+    }[output_kind]
+    requests = []
+
+    async def create(**kwargs):
+        requests.append(kwargs)
+
+        async def stream():
+            for choices, usage in [
+                ([{"index": 0, "delta": delta, "finish_reason": None}], None),
+                ([{"index": 0, "delta": {}, "finish_reason": "length"}], None),
+                ([], {"prompt_tokens": 100, "completion_tokens": 1000, "total_tokens": 1100}),
+            ]:
+                yield ChatCompletionChunk(
+                    id="chunk", created=0, model="test", object="chat.completion.chunk",
+                    choices=choices, usage=usage,
+                )
+        return stream()
+
+    monkeypatch.setattr(OpenAIAdapter, "_create_client", lambda *_: SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+    ))
+    adapter = OpenAIAdapter(ApiConfig(model="test", max_tokens=1000, max_retries=0))
+    tool = CountingTool()
+    events, messages = run(adapter, tools=[tool])
+    assert len(requests) == 1
+    assert tool.calls == 0
+    assert events[-1].reason == "length"
+    assert events[-1].usage["output_tokens"] == 1000
+    errors = [event for event in events if isinstance(event, ErrorEvent)]
+    assert len(errors) == 1
+    assert errors[0].error_type == "output_limit"
+    assert core_event_to_payload(errors[0]).model_dump()["error_type"] == "output_limit"
+    if output_kind == "text":
+        assert messages[-1].text_content == "unfinished reply"
+    else:
+        assert not any(isinstance(message, AssistantMessage) for message in messages)
 
 
 def test_retry_closes_failed_stream_before_starting_next_request():

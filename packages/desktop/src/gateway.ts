@@ -565,6 +565,8 @@ export class SessionChannel {
       if (this.disposed) return;
       const socket = new WebSocket(this.api.webSocketUrl());
       this.socket = socket;
+      const initialCommand = this.sessionId ? "resume_session" : "new_session";
+      let sessionReady = false;
       socket.addEventListener("open", () => {
         if (this.disposed || this.socket !== socket) {
           socket.close();
@@ -581,11 +583,23 @@ export class SessionChannel {
           const announced = event.type === "server.connected"
             ? event.properties?.session_id
             : undefined;
-          if (typeof announced === "string") {
+          if (typeof announced === "string" && announced) {
+            // A channel belongs to one conversation for its entire lifetime.
+            if (this.sessionId && announced !== this.sessionId) return;
             this.sessionId = announced;
+            sessionReady = true;
             this.options.onReady(announced);
           }
-          if (event.session_id && this.sessionId && event.session_id !== this.sessionId) return;
+          // Before new_session is acknowledged, the Gateway may still forward
+          // its default session's events. A missing local ID must reject those
+          // events, otherwise live thoughts/replies enter the new conversation.
+          // Initial command errors are direct replies and may be tagged with
+          // that default ID; keep them visible even when session setup fails.
+          const initialCommandError = !sessionReady
+            && event.type === "error"
+            && event.command_error
+            && event.command === initialCommand;
+          if (!initialCommandError && event.session_id && event.session_id !== this.sessionId) return;
           this.options.onEvent(event);
         } catch {
           this.options.onState(false, "Gateway 返回了无效事件");
