@@ -2,6 +2,8 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionChannel, type GatewayApi } from "./gateway";
+import { applyGatewayEvent } from "./events";
+import type { GatewayEvent, SessionViewState } from "./types";
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -23,6 +25,11 @@ class FakeWebSocket {
   emit(type: string) {
     if (type === "open") this.readyState = FakeWebSocket.OPEN;
     for (const listener of this.listeners.get(type) ?? []) listener(new Event(type));
+  }
+
+  receive(event: GatewayEvent) {
+    const message = new MessageEvent("message", { data: JSON.stringify(event) });
+    for (const listener of this.listeners.get("message") ?? []) listener(message);
   }
 
   send(value: string) {
@@ -68,6 +75,87 @@ describe("SessionChannel new-session controls", () => {
       mode: "plan",
       permission_mode: "ai_review",
     });
+    channel.dispose();
+  });
+
+  it.each([undefined, "session-b"])("isolates a thinking session from a new or resumed channel (%s)", async (sessionId) => {
+    const api = {
+      authenticate: vi.fn().mockResolvedValue(undefined),
+      webSocketUrl: () => "ws://localhost/ws",
+    } as unknown as GatewayApi;
+    function view(id: string): SessionViewState {
+      return {
+        id, cwd: "/work/crab", title: id, items: [], loading: false,
+        busy: false, connected: false, operationId: null, status: null,
+        error: null, runStartedAt: null, currentStep: null, lastTurnUsage: null,
+      };
+    }
+    let first = view("session-a");
+    let second = view(sessionId ?? "new-pending");
+    const onReady = vi.fn((id: string) => { second = { ...second, id }; });
+    const firstChannel = new SessionChannel(api, {
+      sessionId: first.id, cwd: first.cwd,
+      onEvent: (event) => { first = applyGatewayEvent(first, event); },
+      onReady: vi.fn(), onState: vi.fn(),
+    });
+    const secondChannel = new SessionChannel(api, {
+      sessionId, cwd: second.cwd,
+      onEvent: (event) => { second = applyGatewayEvent(second, event); },
+      onReady, onState: vi.fn(),
+    });
+    await firstChannel.connect();
+    await secondChannel.connect();
+    const [firstSocket, secondSocket] = FakeWebSocket.instances;
+    firstSocket.emit("open");
+    secondSocket.emit("open");
+    firstSocket.receive({ type: "server.connected", properties: { session_id: "session-a" } });
+
+    // A new socket can receive the Gateway default session's stream while
+    // new_session/resume_session is still in flight.
+    const thinking = { type: "thinking", session_id: "session-a", text: "Only A's thought" };
+    firstSocket.receive(thinking);
+    secondSocket.receive(thinking);
+    expect(first.items[0]).toMatchObject({ kind: "thinking", text: thinking.text });
+    expect(second.items).toEqual([]);
+    expect(second.busy).toBe(false);
+    expect(second.currentStep).toBeNull();
+
+    secondSocket.receive({ type: "server.connected", properties: { session_id: "session-b" } });
+    secondSocket.receive(thinking);
+    secondSocket.receive({ type: "stream_text", session_id: "session-a", text: "A's reply" });
+    secondSocket.receive({ type: "server.connected", properties: { session_id: "session-a" } });
+    secondSocket.receive({ type: "thinking", session_id: "session-b", text: "Only B's thought" });
+    secondSocket.receive({ type: "turn_complete", session_id: "session-a" });
+    expect(secondChannel.sessionId).toBe("session-b");
+    expect(onReady).toHaveBeenCalledTimes(1);
+    expect(second.items).toHaveLength(1);
+    expect(second.items[0]).toMatchObject({ kind: "thinking", text: "Only B's thought" });
+    expect(second.busy).toBe(true);
+    expect(first.items[0].text).toBe(thinking.text);
+    firstChannel.dispose();
+    secondChannel.dispose();
+  });
+
+  it.each([undefined, "missing-session"])("keeps initial command failures visible (%s)", async (sessionId) => {
+    const api = {
+      authenticate: vi.fn().mockResolvedValue(undefined),
+      webSocketUrl: () => "ws://localhost/ws",
+    } as unknown as GatewayApi;
+    const onEvent = vi.fn();
+    const channel = new SessionChannel(api, {
+      sessionId, cwd: "/work/crab", onEvent, onReady: vi.fn(), onState: vi.fn(),
+    });
+    await channel.connect();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit("open");
+    // The Gateway can label a failed initial command with its default session.
+    const error = {
+      type: "error", command_error: true,
+      command: sessionId ? "resume_session" : "new_session",
+      session_id: "gateway-default", message: "Cannot open session",
+    };
+    socket.receive(error);
+    expect(onEvent).toHaveBeenCalledWith(error);
     channel.dispose();
   });
 });

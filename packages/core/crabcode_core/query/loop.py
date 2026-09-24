@@ -1940,7 +1940,15 @@ async def query_loop(
         response_limit_error = None
         if provider_stop_reason in {"max_tokens", "length", "model_context_window_exceeded"}:
             response_limit_error = ErrorEvent(
-                message=f"Model response was cut short ({provider_stop_reason}); it did not finish the task.",
+                message=(
+                    f"Model response was cut short ({provider_stop_reason}); it did not finish the task."
+                    if provider_stop_reason == "model_context_window_exceeded"
+                    else (
+                        f"Model response reached the output token limit (max_tokens={max_tokens}, "
+                        f"reason={provider_stop_reason}); the reply is incomplete. "
+                        "Ask the model to continue, or increase the maximum output tokens in model settings."
+                    )
+                ),
                 recoverable=True,
                 error_type=(
                     "context_overflow" if provider_stop_reason == "model_context_window_exceeded"
