@@ -2,6 +2,8 @@ import json
 
 from crabcode_core.query.loop import _prepend_user_context
 from crabcode_core.query.computer_use_history import project_computer_use_history
+from crabcode_core.computer_use_observation import compact_ax_result
+from test_computer_use_observation import observation, apply_delta
 from crabcode_core.types.message import (
     ImageBlock, TextBlock, ToolUseBlock, create_assistant_message,
     create_tool_result_message, create_user_message,
@@ -63,5 +65,29 @@ def test_ax_text_history_is_bounded_without_losing_receipts_or_persisted_trees()
         receipt = json.loads(projected[index * 2 + 1].content[0].content)
         assert receipt["action_dispatched"] is False
         assert receipt["accessibility"]["snapshot_id"] == f"s{index}"
-        assert ("elements" in receipt["accessibility"]) == (index >= 4)
+        assert ("tree" in receipt["accessibility"]) == (index >= 4)
     assert [message.model_dump() for message in history] == originals
+
+
+def test_ax_projection_rolls_forward_full_base_and_never_diffs_other_windows():
+    history = []
+    for index in range(4):
+        data = compact_ax_result(observation(f"s{index}", value=f"changed {index}"))
+        history.extend([
+            create_assistant_message([ToolUseBlock(id=str(index), name="ComputerUse", input={"action": "observe"})]),
+            create_tool_result_message(str(index), json.dumps(data)),
+        ])
+        projected = project_computer_use_history(history)
+        latest = json.loads(projected[-1].content[0].content)["accessibility"]
+        if index:
+            base = json.loads(projected[-3].content[0].content)["accessibility"]
+            assert "tree" in base and "tree_delta" not in base
+            assert latest["base_snapshot_id"] == base["snapshot_id"] == f"s{index - 1}"
+            assert apply_delta(base["tree"], latest["tree_delta"]) == data["accessibility"]["tree"]
+        assert "tree_delta" not in history[-1].content[0].content
+    other = compact_ax_result(observation("other", window="8"))
+    history += [
+        create_assistant_message([ToolUseBlock(id="other", name="ComputerUse", input={"action": "observe"})]),
+        create_tool_result_message("other", json.dumps(other)),
+    ]
+    assert "tree" in json.loads(project_computer_use_history(history)[-1].content[0].content)["accessibility"]

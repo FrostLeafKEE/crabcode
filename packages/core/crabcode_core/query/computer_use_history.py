@@ -2,6 +2,7 @@
 
 import json
 
+from crabcode_core.computer_use_observation import TREE_FORMAT, compact_ax_result, diff_ax_tree
 from crabcode_core.types.message import ImageBlock, Message, TextBlock, ToolResultBlock
 
 
@@ -38,12 +39,15 @@ def project_computer_use_history(messages: list[Message], keep: int = 5) -> list
                 data = json.loads(results[0].content)
             except (ValueError, TypeError):
                 continue
-            if (isinstance(data, dict) and isinstance(data.get("accessibility"), dict)
-                    and isinstance(data["accessibility"].get("elements"), list)):
-                ax_results.append((index, results[0], data))
+            if isinstance(data, dict) and isinstance(data.get("accessibility"), dict):
+                tree = data["accessibility"]
+                if isinstance(tree.get("elements"), list) or (
+                    tree.get("tree_format") == TREE_FORMAT and isinstance(tree.get("tree"), str)
+                ):
+                    ax_results.append((index, results[0], compact_ax_result(data)))
     # Full trees contain substantially more text than image metadata. Keep two
     # recent observations for comparison; receipts and persisted UI stay intact.
-    if len(eligible) <= keep and len(ax_results) <= 2:
+    if len(eligible) <= keep and not ax_results:
         return messages
     projected = list(messages)
     for index in eligible[:-keep]:
@@ -55,10 +59,21 @@ def project_computer_use_history(messages: list[Message], keep: int = 5) -> list
             "receipt are retained above. Use the recent screenshots to judge the current UI.]"
         )))
         projected[index] = message.model_copy(update={"content": content})
-    for index, block, data in ax_results[:-2]:
+    for position, (index, block, data) in enumerate(ax_results):
         tree = data["accessibility"]
-        tree["omitted_element_count"] = len(tree.pop("elements"))
-        tree["history_note"] = "Historical AX tree omitted; observe again before using element references."
+        if position < len(ax_results) - 2:
+            tree.pop("tree")
+            tree["omitted_element_count"] = tree.get("element_count", 0)
+            tree["history_note"] = "Historical AX tree omitted; observe again before using element references."
+        elif position == len(ax_results) - 1 and position > 0:
+            # Recompute against the full retained base on EVERY request. Never
+            # persist deltas: rolling history must not leave an orphaned chain.
+            previous = ax_results[position - 1][2]
+            window = tree.get("window_id") or data.get("requested_window_id") or data.get("window_id")
+            previous_window = (previous["accessibility"].get("window_id")
+                               or previous.get("requested_window_id") or previous.get("window_id"))
+            if window and window == previous_window:
+                data["accessibility"] = diff_ax_tree(previous["accessibility"], tree)
         replacement = block.model_copy(update={"content": json.dumps(data, ensure_ascii=False)})
         message = projected[index]
         assert isinstance(message.content, list)

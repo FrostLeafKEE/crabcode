@@ -6,7 +6,10 @@ use std::hash::{Hash, Hasher};
 use std::sync::{mpsc, OnceLock};
 use std::time::Instant;
 
-const MAX_NODES: usize = 512;
+// Rich-text apps split paragraphs into many static text elements. Bound the
+// emitted content separately from the larger walk budget for layout wrappers.
+const MAX_NODES: usize = 1024;
+const MAX_VISITED: usize = 4096;
 const MAX_TEXT: usize = 32_000;
 const SNAPSHOT_TTL: Duration = Duration::from_secs(120);
 const MAX_OWNERS: usize = 32;
@@ -288,7 +291,7 @@ fn array(element: &CFType, name: &str, count: usize) -> Vec<CFType> {
 fn children(element: &CFType) -> Vec<CFType> {
     // Sheets precede large document contents. Retain this ordering when resolving.
     let mut values = array(element, "AXSheets", 32);
-    for child in array(element, "AXChildren", MAX_NODES + 1) {
+    for child in array(element, "AXChildren", MAX_VISITED + 1) {
         if !values.contains(&child) {
             values.push(child);
         }
@@ -365,6 +368,27 @@ fn fingerprint(value: &Value) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     value.to_string().hash(&mut hasher);
     hasher.finish()
+}
+
+fn expose_node(signature: &Value, actions: &[String], settable: bool, root: bool) -> bool {
+    if root || settable || signature["protected"] == true {
+        return true;
+    }
+    // Chromium exposes many anonymous layout wrappers with generic menu/scroll
+    // actions. They must not consume the output budget ahead of document text.
+    let structural = matches!(
+        signature["role"].as_str(),
+        Some("AXGroup" | "AXImage" | "AXStaticText" | "AXUnknown")
+    );
+    let has_text = ["title", "description", "value"].iter().any(|field| {
+        let value = &signature[*field];
+        !value.is_null() && value.as_str().is_none_or(|text| !text.trim().is_empty())
+    });
+    !structural
+        || has_text
+        || actions
+            .iter()
+            .any(|action| !matches!(action.as_str(), "AXShowMenu" | "AXScrollToVisible"))
 }
 
 fn clip(value: &mut Value, remaining: &mut usize, truncated: &mut bool) {
@@ -476,6 +500,7 @@ impl Store {
         background_input::enable_accessibility(&application);
         let relations = mac_ax_relations::snapshot(&application, target.pid).relations;
         let roots = roots(&application, target, &relations)?;
+        let focused = read(&application, "AXFocusedUIElement");
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut pending: VecDeque<_> = roots
             .into_iter()
@@ -493,11 +518,15 @@ impl Store {
         let mut truncated = false;
         let mut text_remaining = MAX_TEXT;
         while let Some((element, path, parent, protected)) = pending.pop_front() {
-            if nodes.len() >= MAX_NODES || Instant::now() >= deadline || text_remaining == 0 {
+            if nodes.len() >= MAX_NODES
+                || visited.len() >= MAX_VISITED
+                || Instant::now() >= deadline
+                || text_remaining == 0
+            {
                 truncated = true;
                 break;
             }
-            if path.len() > 32 {
+            if path.len() > 64 {
                 truncated = true;
                 continue;
             }
@@ -524,6 +553,23 @@ impl Store {
             let role = sig["role"].as_str().unwrap_or("");
             let subrole = sig["subrole"].as_str();
             let settable = !protected && text_role(role) && value_settable(&element);
+            let exposed = expose_node(&sig, &advertised, settable, path.len() == 1);
+            let id = format!("e{}", elements.len() + 1);
+            let child_parent = if exposed {
+                Some(id.clone())
+            } else {
+                parent.clone()
+            };
+            // Depth-first traversal preserves reading order. Collapsing layout
+            // wrappers changes public parents, never the native validation path.
+            for (index, child) in children(&element).into_iter().enumerate().rev() {
+                let mut child_path = path.clone();
+                child_path.push(index);
+                pending.push_front((child, child_path, child_parent.clone(), protected));
+            }
+            if !exposed {
+                continue;
+            }
             let enabled = sig["enabled"] != false;
             let allowed: Vec<_> = advertised
                 .iter()
@@ -538,15 +584,21 @@ impl Store {
                 && settable
                 && (policy == DeliveryPolicy::AllowForeground
                     || background_input::ax_allowed(&rules, role, subrole, "AXValue"));
-            let id = format!("e{}", elements.len() + 1);
             let mut public = sig.clone();
-            clip(&mut public, &mut text_remaining, &mut truncated);
+            // Only user-visible text consumes the text budget, not role names,
+            // identifiers and repeated protocol fields.
+            for field in ["title", "description", "value"] {
+                if let Some(value) = public.get_mut(field) {
+                    clip(value, &mut text_remaining, &mut truncated);
+                }
+            }
             public["element_id"] = json!(id);
             public["parent_id"] = json!(parent);
             public["actions"] = json!(advertised);
             public["allowed_actions"] = json!(allowed);
             public["value_settable"] = json!(settable);
             public["allow_set_value"] = json!(allow_value);
+            public["focused"] = json!(focused.as_ref() == Some(&element));
             // AX geometry is informative only: it can be zoomed relative to pixel
             // coordinates. Coordinate fallback always requires a fresh screenshot.
             public["ax_frame"] = mac_ax_frame(&element).map(|r| json!({"x": r.origin.x, "y": r.origin.y, "width": r.size.width, "height": r.size.height})).unwrap_or(Value::Null);
@@ -554,11 +606,6 @@ impl Store {
                 fields.retain(|_, value| !value.is_null());
             }
             elements.push(public);
-            for (index, child) in children(&element).into_iter().enumerate() {
-                let mut child_path = path.clone();
-                child_path.push(index);
-                pending.push_back((child, child_path, Some(id.clone()), protected));
-            }
             nodes.insert(
                 id,
                 Node {
@@ -582,7 +629,8 @@ impl Store {
             self.sequence
         );
         let observation = json!({"snapshot_id": id, "window_id": target.window_id.to_string(), "elements": elements,
-            "truncated": truncated, "max_nodes": MAX_NODES, "expires_in_ms": SNAPSHOT_TTL.as_millis(),
+            "truncated": truncated, "max_nodes": MAX_NODES, "visited_nodes": visited.len(),
+            "expires_in_ms": SNAPSHOT_TTL.as_millis(),
             "coordinate_space": "ax_screen_units_not_screenshot_pixels",
             "strict_background_ax_available": !rules.is_empty()});
         Ok(Snapshot {

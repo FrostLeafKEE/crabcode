@@ -33,6 +33,8 @@ def test_ax_capability_exposes_semantic_actions_and_returns_text_without_images(
     assert not result.is_error
     assert not result.images
     assert json.loads(result.result_for_model)["accessibility"]["snapshot_id"] == "snapshot"
+    assert json.loads(result.result_for_model)["accessibility"]["tree"] == 'e1 text field (settable) "hello"'
+    assert "elements" in result.data["accessibility"]  # UI/native diagnostics retain structured data.
     assert "SAME delivery policy" in asyncio.run(tool.get_prompt())
 
 

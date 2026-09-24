@@ -3304,6 +3304,45 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
         &before,
         after.as_ref().map(Vec::as_slice).map_err(String::as_str),
     );
+    if request.owner.is_some()
+        && !read_only
+        && !matches!(
+            action.action.as_str(),
+            "press" | "set_value" | "perform_action"
+        )
+        && result["action_dispatched"] != false
+        && result["window_lifecycle"]["target_resolvable"] == true
+    {
+        if action.action == "scroll" {
+            thread::sleep(Duration::from_millis(SCROLL_SETTLE_MS));
+        }
+        // Observe only: an input receipt is never replaced or replayed. The
+        // lifecycle check above must confirm the target before reading it again.
+        let observed = mac_accessibility::observe(&request, target);
+        if observed["ok"] == true {
+            result["accessibility"] = observed["accessibility"].clone();
+            if action.include_screenshot != Some(true) {
+                result.as_object_mut().unwrap().remove("screenshot");
+            }
+            result["observation_kind"] = json!(if result.get("screenshot").is_some() {
+                "ax_and_screenshot"
+            } else {
+                "ax"
+            });
+        } else {
+            result["ax_error"] = observed["error"].clone();
+            result["fallback_reason"] = observed["error_code"].clone();
+            if action.include_screenshot != Some(false) && result.get("screenshot").is_none() {
+                match mac_capture_window_group(target).and_then(encode_screenshot_capture) {
+                    Ok(frame) => result["screenshot"] = frame,
+                    Err(error) => result["screenshot_error"] = json!(error),
+                }
+            }
+            if result.get("screenshot").is_some() {
+                result["observation_kind"] = json!("screenshot");
+            }
+        }
+    }
     result["retry_safe"] =
         json!(result["action_dispatched"] == false && result["retry_safe"] != false);
     Ok(result)
@@ -3624,10 +3663,10 @@ fn execute_background_inner(
     }
 
     let capture = action.action == "observe"
-        || action.include_screenshot.unwrap_or(!matches!(
-            action.action.as_str(),
-            "list_windows" | "wait" | "open_app"
-        ));
+        || action.include_screenshot.unwrap_or(
+            request.owner.is_none()
+                && !matches!(action.action.as_str(), "list_windows" | "wait" | "open_app"),
+        );
     if capture {
         result["observation_kind"] = json!("screenshot");
         if action.action == "scroll" {

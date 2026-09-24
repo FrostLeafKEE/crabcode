@@ -128,6 +128,84 @@ fn validates_element_input_before_any_native_dispatch() {
 }
 
 #[test]
+fn anonymous_layout_does_not_hide_document_content_or_controls() {
+    let wrapper = json!({"role":"AXGroup", "enabled":true});
+    let generic = vec!["AXShowMenu".into(), "AXScrollToVisible".into()];
+    assert!(!expose_node(&wrapper, &generic, false, false));
+    assert!(expose_node(&wrapper, &generic, false, true));
+    assert!(expose_node(&wrapper, &["AXPress".into()], false, false));
+    assert!(expose_node(
+        &json!({"role":"AXGroup", "description":"Chat"}),
+        &generic,
+        false,
+        false
+    ));
+    assert!(expose_node(
+        &json!({"role":"AXStaticText", "value":"Message body"}),
+        &generic,
+        false,
+        false
+    ));
+    assert!(expose_node(&json!({"role":"AXTextArea"}), &[], true, false));
+    assert!(expose_node(
+        &json!({"role":"AXGroup", "protected":true}),
+        &[],
+        false,
+        false
+    ));
+    assert!(expose_node(
+        &json!({"role":"AXButton", "enabled":false}),
+        &[],
+        false,
+        false
+    ));
+}
+
+#[test]
+#[ignore = "read-only live probe; requires an explicitly selected CRABCODE_AX_PROBE_WINDOW_ID"]
+fn macos_ax_observes_selected_live_window_without_images_or_input() {
+    let id = std::env::var("CRABCODE_AX_PROBE_WINDOW_ID").expect("select a live window explicitly");
+    let mut previous_snapshot = Value::Null;
+    for policy in ["strict_background", "allow_foreground"] {
+        let started = Instant::now();
+        let result = execute(serde_json::from_value(json!({
+            "target_scope":"app_window", "delivery_policy":policy,
+            "owner":{"host_id":"ax-probe", "connection_id":"read-only", "session_id":"probe", "agent_id":null},
+            "action":{"action":"observe", "observation":"ax", "window_id":id}
+        })).unwrap()).unwrap();
+        assert_eq!(result["ok"], true, "{}", result["error"]);
+        assert_eq!(result["action_dispatched"], false);
+        assert!(result.get("screenshot").is_none());
+        let tree = &result["accessibility"];
+        assert_ne!(tree["snapshot_id"], previous_snapshot);
+        previous_snapshot = tree["snapshot_id"].clone();
+        let elements = tree["elements"].as_array().unwrap();
+        if let Ok(expected) = std::env::var("CRABCODE_AX_PROBE_EXPECT_TEXT") {
+            assert!(
+                elements.iter().any(
+                    |node| ["title", "value", "description"]
+                        .iter()
+                        .any(|field| node[*field]
+                            .as_str()
+                            .is_some_and(|text| text.contains(&expected)))
+                ),
+                "Expected visible content is absent from the AX observation"
+            );
+        }
+        eprintln!(
+            "AX probe: policy={policy}, nodes={}, visited={}, truncated={}, elapsed_ms={}",
+            elements.len(),
+            tree["visited_nodes"],
+            tree["truncated"],
+            started.elapsed().as_millis()
+        );
+        if let Ok(path) = std::env::var("CRABCODE_AX_PROBE_OUTPUT") {
+            std::fs::write(path, serde_json::to_vec(&result).unwrap()).unwrap();
+        }
+    }
+}
+
+#[test]
 #[ignore = "requires Accessibility; reads and edits only isolated native test windows"]
 fn macos_ax_tree_edits_by_reference_and_rejects_stale_and_cross_session_input() {
     mac_require_input_permission().expect("Accessibility permission required");
@@ -254,6 +332,31 @@ fn macos_ax_tree_edits_by_reference_and_rejects_stale_and_cross_session_input() 
         json!({"action":"set_value", "snapshot_id":tree["snapshot_id"], "element_id":editor["element_id"], "text":"must not be sent"}),
     );
     assert_eq!(released["error_code"], "ax_reference_stale");
+    assert_eq!(
+        host.state().unwrap()["first_text"],
+        "AX 编辑成功\nsecond line"
+    );
+    let mut snapshot = Value::Null;
+    for action in [
+        json!({"action":"focus_window"}),
+        json!({"action":"keypress", "keys":["RIGHT"]}),
+        json!({"action":"scroll", "x":200, "y":150, "delta_y":100}),
+    ] {
+        let result = request("a", "allow_foreground", action);
+        assert_eq!(result["ok"], true, "{}", result["error"]);
+        assert_eq!(result["observation_kind"], "ax");
+        assert!(result.get("screenshot").is_none());
+        assert!(result["accessibility"]["elements"].is_array());
+        assert_ne!(result["accessibility"]["snapshot_id"], snapshot);
+        snapshot = result["accessibility"]["snapshot_id"].clone();
+    }
+    let with_pixels = request(
+        "a",
+        "allow_foreground",
+        json!({"action":"keypress", "keys":["LEFT"], "include_screenshot":true}),
+    );
+    assert_eq!(with_pixels["observation_kind"], "ax_and_screenshot");
+    assert!(with_pixels["screenshot"]["data"].is_string());
     assert_eq!(
         host.state().unwrap()["first_text"],
         "AX 编辑成功\nsecond line"
@@ -426,6 +529,8 @@ fn macos_chrome_ax_write_and_explicit_pixel_input_update_local_page() {
     let clicked = send(json!({"action":"click", "x":150, "y":164}));
     assert_eq!(clicked["action_dispatched"], true, "{clicked}");
     assert_eq!(clicked["input_method"], "quartz_event", "{clicked}");
+    assert_eq!(clicked["observation_kind"], "ax");
+    assert!(clicked.get("screenshot").is_none());
     let observed = send(json!({"action":"observe", "observation":"ax"}));
     let state = page_state(&observed);
     assert_eq!(state["clicks"], before + 1, "{observed}");
