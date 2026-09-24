@@ -16,6 +16,9 @@ export interface ComputerUseCapabilities {
   paused?: boolean;
   gui_available: boolean;
   input_available: boolean;
+  capture_available?: boolean;
+  ax_available?: boolean;
+  ax_protocol_version?: number | null;
   platform: string;
   displays: Array<{ id: string; name: string; x: number; y: number; width: number; height: number; primary: boolean }>;
   supported_modes: Array<"background_app" | "foreground_desktop">;
@@ -50,6 +53,9 @@ export interface ComputerUsePreview {
   action: string;
   summary: string;
   frame: ComputerUseFrame | null;
+  frameUpdatedAt?: number;
+  observationKind?: "ax" | "screenshot" | "ax_and_screenshot";
+  axElementCount?: number;
   cursor: ComputerUseCursor | null;
   updatedAt: number;
 }
@@ -83,6 +89,8 @@ interface HostResult {
   error?: string;
   action?: string;
   screenshot?: ComputerUseFrame;
+  observation_kind?: ComputerUsePreview["observationKind"];
+  accessibility?: { elements?: unknown[] };
   cursor?: ComputerUseCursor;
   [key: string]: unknown;
 }
@@ -133,6 +141,7 @@ export class ComputerUseChannel {
   private disposed = false;
   private enabled: boolean;
   private capabilities: ComputerUseCapabilities | null = null;
+  private axConnectionId = randomUuid();
   private state: ComputerUseState;
 
   constructor(
@@ -173,6 +182,8 @@ export class ComputerUseChannel {
       });
       socket.addEventListener("close", () => {
         if (this.socket !== socket) return;
+        void this.releaseAx();
+        this.axConnectionId = randomUuid();
         this.socket = null;
         if (!this.disposed) {
           this.publish({ status: this.enabled ? "connecting" : "disabled" });
@@ -236,6 +247,7 @@ export class ComputerUseChannel {
 
   setEnabled(enabled: boolean): void {
     const changed = this.enabled !== enabled;
+    if (!enabled && changed) void this.releaseAx();
     if (!enabled && changed && this.vm) {
       for (const preview of this.state.previews) void this.releaseVm(preview.sessionId, preview.agentId);
     }
@@ -282,6 +294,7 @@ export class ComputerUseChannel {
   }
 
   dispose(): void {
+    void this.releaseAx();
     if (this.vm) {
       for (const preview of this.state.previews) void this.releaseVm(preview.sessionId, preview.agentId);
     }
@@ -300,6 +313,14 @@ export class ComputerUseChannel {
       await invoke("computer_use_vm_release", { config: this.vm, instanceId: this.capabilities.instance_id,
         owner: `${this.hostId}:${sessionId}${allAgents ? "" : `:${agentId ?? "main"}`}`, allAgents });
     } catch { /* A stopped VM has already lost its lease. Never retry input. */ }
+  }
+
+  private async releaseAx(sessionId?: string, agentId?: string, allAgents = true): Promise<void> {
+    if (this.vm || this.capabilities?.ax_protocol_version !== 1) return;
+    try {
+      await invoke("computer_use_release_ax", { hostId: this.hostId, connectionId: this.axConnectionId,
+        sessionId: sessionId ?? null, agentId: agentId ?? null, allAgents });
+    } catch { /* A stopped host has already discarded native references. */ }
   }
 
   private sendRegistration(): void {
@@ -393,6 +414,9 @@ export class ComputerUseChannel {
         action: String(item.action || "unknown"),
         summary: String(item.summary || (status === "busy" ? "Executing…" : item.action || "Computer Use")),
         frame: item.frame && typeof item.frame === "object" ? item.frame as ComputerUseFrame : null,
+        frameUpdatedAt: typeof item.frame_updated_at_ms === "number" ? item.frame_updated_at_ms : undefined,
+        observationKind: item.observation_kind === "ax" || item.observation_kind === "screenshot" || item.observation_kind === "ax_and_screenshot" ? item.observation_kind : undefined,
+        axElementCount: typeof item.ax_element_count === "number" ? item.ax_element_count : undefined,
         cursor: item.cursor && typeof item.cursor === "object" ? item.cursor as ComputerUseCursor : null,
         updatedAt: typeof item.updated_at_ms === "number" ? item.updated_at_ms : Date.now(),
       });
@@ -445,6 +469,7 @@ export class ComputerUseChannel {
       if (!sessionId) return;
       const agentId = typeof message.agent_id === "string" ? message.agent_id : undefined;
       await this.releaseVm(sessionId, agentId, message.all_agents === true);
+      await this.releaseAx(sessionId, agentId, message.all_agents === true);
       const keys = message.all_agents === true
         ? this.state.previews
           .filter((preview) => preview.sessionId === sessionId)
@@ -487,6 +512,9 @@ export class ComputerUseChannel {
       action: actionName,
       summary: "Executing…",
       frame: previousPreview?.frame ?? null,
+      frameUpdatedAt: previousPreview?.frameUpdatedAt,
+      observationKind: previousPreview?.observationKind,
+      axElementCount: previousPreview?.axElementCount,
       cursor: previousPreview?.cursor ?? null,
       updatedAt: Date.now(),
     };
@@ -518,6 +546,11 @@ export class ComputerUseChannel {
       if (!["observe", "list_windows", "list_displays", "wait"].includes(actionName)
         && this.capabilities.delivery_policy_version !== 1) throw new Error("The host must be upgraded before it can enforce the foreground-delivery policy");
       const request = { mode, target_scope: scope, delivery_policy: policy, action };
+      const axOperation = ["press", "set_value", "perform_action"].includes(actionName)
+        || ["observation", "snapshot_id", "element_id", "ax_action"].some((key) => key in action);
+      if (axOperation && (this.vm || scope !== "app_window" || this.capabilities.ax_protocol_version !== 1 || !this.capabilities.ax_available)) {
+        throw new Error("AX operations require an AX-capable macOS window host");
+      }
       if (this.vm) {
         if (message.environment_id !== vmEnvironmentId(this.vm) || !this.capabilities.instance_id
           || message.instance_id !== this.capabilities.instance_id) throw new Error("VM binding changed; refresh and observe again");
@@ -527,8 +560,16 @@ export class ComputerUseChannel {
         });
       } else {
         if (message.environment_id) throw new Error("A VM request cannot execute on the host desktop");
-        invoked = true;
-        result = await invoke<HostResult>("computer_use_execute", { request });
+        if (this.capabilities.ax_protocol_version === 1) {
+          if (!sessionId) throw new Error("AX-capable host requests require a session identity");
+          invoked = true;
+          result = await invoke<HostResult>("computer_use_execute", { request: { ...request,
+            owner: { host_id: this.hostId, connection_id: this.axConnectionId, session_id: sessionId, agent_id: agentId ?? null },
+          } });
+        } else {
+          invoked = true;
+          result = await invoke<HostResult>("computer_use_execute", { request });
+        }
       }
     } catch (error) {
       result = { ok: false, action: actionName, error: error instanceof Error ? error.message : String(error),
@@ -559,6 +600,9 @@ export class ComputerUseChannel {
       action: String(result.action || actionName),
       summary: String(result.summary || result.error || actionName),
       frame: result.screenshot ?? currentPreview?.frame ?? null,
+      frameUpdatedAt: result.screenshot ? Date.now() : currentPreview?.frameUpdatedAt,
+      observationKind: result.observation_kind,
+      axElementCount: result.accessibility?.elements?.length,
       cursor: result.cursor ?? currentPreview?.cursor ?? null,
       updatedAt: Date.now(),
     };

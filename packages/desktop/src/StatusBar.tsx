@@ -107,7 +107,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
   const strictInputUnavailable = configuredPolicy === "strict_background"
     && computerUse?.capabilities?.strict_background_input_available === false;
   const computerStatusLabel = computerUse?.status === "ready"
-    ? computerUse.capabilities?.input_available === false || strictInputUnavailable ? "有限可用" : "可用"
+    ? computerUse.capabilities?.input_available === false || computerUse.capabilities?.capture_available === false || strictInputUnavailable ? "有限可用" : "可用"
     : computerUse?.status === "busy" ? "Agent 正在操作"
       : computerUse?.status === "connecting" ? "正在连接"
         : computerUse?.status === "unavailable" ? "不可用"
@@ -181,6 +181,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                     <strong title={preview.agentId || preview.sessionId}>{identity}</strong>
                     <span>{computerUse.capabilities?.environment === "local_vm" ? "虚拟机独立桌面" : `操作时：${computerUseLabel(preview.mode, preview.deliveryPolicy)}`}</span>
                     <code>{preview.action}</code>
+                    {preview.observationKind?.startsWith("ax") && <span>辅助功能 · {preview.axElementCount ?? 0} 个元素</span>}
                     <em>{preview.status === "busy" ? "正在操作" : preview.status === "error" ? "失败" : "等待后续"}</em>
                   </header>
                   <button
@@ -194,7 +195,8 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                   >
                     {frame ? (
                       <div className="computer-use-frame">
-                        <img src={`data:${frame.media_type};base64,${frame.data}`} alt={`${identity} 当前看到的桌面`} />
+                        <img src={`data:${frame.media_type};base64,${frame.data}`} alt={`${identity} 最近一次桌面截图`} />
+                        {preview.observationKind === "ax" && <span className="computer-use-frame-age">上次截图{preview.frameUpdatedAt ? ` · ${new Date(preview.frameUpdatedAt).toLocaleTimeString("zh-CN", { hour12: false })}` : ""}；本次通过辅助功能观察</span>}
                         {cursor && cursorLeft >= 0 && cursorLeft <= 100 && cursorTop >= 0 && cursorTop <= 100 && (
                           <MousePointer2
                             className="computer-use-cursor"
@@ -242,6 +244,9 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
           )}
           {computerUse.enabled && strictInputUnavailable && (
             <p className="computer-use-warning">当前宿主尚不支持严格后台输入；可以查看窗口，但输入动作会被拒绝。若要操作，请在设置中选择允许前台操作。</p>
+          )}
+          {computerUse.enabled && computerUse.capabilities?.ax_available && computerUse.capabilities.capture_available === false && (
+            <p className="computer-use-warning">辅助功能可用；录屏不可用时仍可读取和操作界面元素，截图操作需要录屏权限。</p>
           )}
           <div className="computer-use-log" aria-label="Agent 操作记录">
             {computerUse.logs.length ? [...computerUse.logs].reverse().map((entry) => (
@@ -315,6 +320,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
               <div className="computer-use-detail-badges">
                 <span>{computerUse?.capabilities?.environment === "local_vm" ? "虚拟机独立桌面" : `操作时：${computerUseLabel(computerDetail.mode, computerDetail.deliveryPolicy)}`}</span>
                 <code>{computerDetail.action}</code>
+                {computerDetail.observationKind?.startsWith("ax") && <span>辅助功能 · {computerDetail.axElementCount ?? 0} 个元素</span>}
                 <em className={computerDetail.status}>{computerDetail.status === "busy" ? "正在操作" : computerDetail.status === "error" ? "失败" : "等待后续"}</em>
               </div>
               <button
@@ -330,6 +336,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                 {detailFrame ? (
                   <div className="computer-use-detail-frame">
                     <img src={`data:${detailFrame.media_type};base64,${detailFrame.data}`} alt={`${previewIdentity(computerDetail, 0)} Computer Use 完整截图`} />
+                    {computerDetail.observationKind === "ax" && <span className="computer-use-frame-age">上次截图{computerDetail.frameUpdatedAt ? ` · ${new Date(computerDetail.frameUpdatedAt).toLocaleTimeString("zh-CN", { hour12: false })}` : ""}；本次通过辅助功能观察</span>}
                     {detailCursor && detailCursorLeft >= 0 && detailCursorLeft <= 100 && detailCursorTop >= 0 && detailCursorTop <= 100 && (
                       <MousePointer2
                         className="computer-use-cursor"

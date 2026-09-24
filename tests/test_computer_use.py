@@ -152,7 +152,7 @@ def test_background_mode_allows_focus_changes_but_keeps_window_coordinates():
     assert "fall back to window-targeted mouse events" in prompt
     assert "focus changes are allowed" in prompt
     assert "action_dispatched reports submission, not UI success" in prompt
-    assert "Use the returned screenshot to judge the intended effect" in prompt
+    assert "Use the returned observation to judge the intended effect" in prompt
     assert "Uncertain dispatch" in prompt
     assert "A click succeeds when ok and effect_verified are true" not in prompt
     assert asyncio.run(tool.validate_input({"action": "observe"})) == (

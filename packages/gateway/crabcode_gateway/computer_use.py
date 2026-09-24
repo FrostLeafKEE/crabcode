@@ -155,6 +155,10 @@ class ComputerUseBroker:
                         "shared_directory", "shared_read_only", "forwarded_ports")
         }
 
+    def capabilities(self, host_id: str | None) -> dict[str, Any]:
+        host = self._hosts.get(host_id or "")
+        return dict(host.capabilities) if host and host.enabled else {}
+
     def resolve(self, host_id: str, request_id: str, result: dict[str, Any]) -> bool:
         pending = self._pending.get(request_id)
         if pending is None or pending.host_id != host_id:
@@ -177,6 +181,9 @@ class ComputerUseBroker:
                 or "Computer Use action completed"
             ),
             "frame": result.get("screenshot") or previous.get("frame"),
+            "frame_updated_at_ms": self._now_ms() if result.get("screenshot") else previous.get("frame_updated_at_ms"),
+            "observation_kind": result.get("observation_kind"),
+            "ax_element_count": len(result.get("accessibility", {}).get("elements", [])) if isinstance(result.get("accessibility"), dict) else None,
             "cursor": result.get("cursor") or previous.get("cursor"),
             "updated_at_ms": self._now_ms(),
             "release_deadline_ms": previous.get("release_deadline_ms"),
@@ -283,6 +290,12 @@ class ComputerUseBroker:
                     elif not read_only and host.capabilities.get("delivery_policy_version") != 1:
                         # Old hosts can silently ignore unknown policy fields.
                         error = "This host must be upgraded before it can enforce delivery policy"
+                    elif (action.get("action") in ("press", "set_value", "perform_action")
+                          or any(key in action for key in ("observation", "snapshot_id", "element_id", "ax_action"))):
+                        if (target_scope != "app_window" or host.capabilities.get("environment") == "local_vm"
+                                or host.capabilities.get("ax_protocol_version") != 1
+                                or host.capabilities.get("ax_available") is not True):
+                            error = "AX actions require an AX-capable macOS window host"
                     if error:
                         return {
                             "ok": False, "action": action.get("action"), "error": error, "summary": error,

@@ -23,6 +23,10 @@ func makeWindow(_ title: String, _ x: CGFloat) -> (NSWindow, Editor) {
 }
 let (first, firstEditor) = makeWindow("first", 200)
 let (second, secondEditor) = makeWindow("second", 600)
+if CommandLine.arguments.contains("--empty-ax") {
+    first.setAccessibilityChildren([])
+    second.setAccessibilityChildren([])
+}
 let panel = NSPanel(contentRect: NSRect(x: 260, y: 280, width: 280, height: 80),
                     styleMask: [.titled], backing: .buffered, defer: false)
 panel.title = "Name"

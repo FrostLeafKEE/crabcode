@@ -38,6 +38,65 @@ describe("ComputerUseChannel", () => {
     window.sessionStorage.clear();
   });
 
+  it("binds AX references to a host connection and releases them before preview retention expires", async () => {
+    const caps = { gui_available: true, input_available: true, capture_available: false,
+      ax_available: true, ax_protocol_version: 1, platform: "macos", displays: [],
+      supported_modes: ["background_app"], delivery_policy_version: 1 };
+    invokeMock.mockResolvedValueOnce(caps).mockResolvedValue({ ok: true, observation_kind: "ax",
+      accessibility: { snapshot_id: "s1", elements: [{ element_id: "e1" }] } });
+    const publish = vi.fn();
+    const channel = new ComputerUseChannel({ authenticate: vi.fn().mockResolvedValue(undefined),
+      computerUseWebSocketUrl: () => "ws://localhost/test" } as unknown as GatewayApi, "ax-host", true, publish);
+    await channel.connect();
+    const socket = FakeWebSocket.instances[0]; socket.emit("open");
+    const action = { action: "observe", window_id: "7" };
+    socket.emit("message", { data: JSON.stringify({ type: "computer_use_request", request_id: "ax-1",
+      session_id: "session", agent_id: "child", target_scope: "app_window", delivery_policy: "strict_background", action }) });
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("computer_use_execute", { request: {
+      mode: "background_app", target_scope: "app_window", delivery_policy: "strict_background", action,
+      owner: { host_id: "ax-host", connection_id: expect.any(String), session_id: "session", agent_id: "child" },
+    } }));
+    await vi.waitFor(() => expect(publish).toHaveBeenLastCalledWith(expect.objectContaining({ status: "ready",
+      previews: [expect.objectContaining({ observationKind: "ax", axElementCount: 1, frame: null })] })));
+    const connectionId = invokeMock.mock.calls.find(([name]) => name === "computer_use_execute")![1].request.owner.connection_id;
+    socket.emit("message", { data: JSON.stringify({ type: "computer_use_release", session_id: "session", agent_id: "child" }) });
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("computer_use_release_ax", {
+      hostId: "ax-host", connectionId, sessionId: "session", agentId: "child", allAgents: false,
+    }));
+    expect((publish.mock.lastCall![0] as ComputerUseState).previews).toHaveLength(1);
+    socket.emit("close");
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("computer_use_release_ax", {
+      hostId: "ax-host", connectionId, sessionId: null, agentId: null, allAgents: true,
+    }));
+    channel.dispose();
+  });
+
+  it("keeps the screenshot timestamp when a later observation contains only AX text", async () => {
+    const frame = { data: "AAAA", media_type: "image/png", width: 10, height: 10, origin_x: 0, origin_y: 0, frame_id: "f" };
+    invokeMock.mockResolvedValueOnce({ gui_available: true, input_available: true, platform: "macos", displays: [],
+      ax_available: true, ax_protocol_version: 1, supported_modes: ["background_app"], delivery_policy_version: 1 })
+      .mockResolvedValueOnce({ ok: true, screenshot: frame, observation_kind: "screenshot" })
+      .mockResolvedValue({ ok: true, observation_kind: "ax", accessibility: { elements: [] } });
+    const publish = vi.fn();
+    const channel = new ComputerUseChannel({ authenticate: vi.fn().mockResolvedValue(undefined),
+      computerUseWebSocketUrl: () => "ws://localhost/test" } as unknown as GatewayApi, "ax-host", true, publish);
+    await channel.connect();
+    const socket = FakeWebSocket.instances[0]; socket.emit("open");
+    const send = (id: string, observation: string) => socket.emit("message", { data: JSON.stringify({
+      type: "computer_use_request", request_id: id, session_id: "session", target_scope: "app_window",
+      delivery_policy: "allow_foreground", action: { action: "observe", window_id: "7", observation },
+    }) });
+    send("image", "screenshot");
+    await vi.waitFor(() => expect((publish.mock.lastCall![0] as ComputerUseState).previews[0].frame).toEqual(frame));
+    const capturedAt = (publish.mock.lastCall![0] as ComputerUseState).previews[0].frameUpdatedAt;
+    send("ax", "ax");
+    await vi.waitFor(() => expect((publish.mock.lastCall![0] as ComputerUseState).previews[0].observationKind).toBe("ax"));
+    const preview = (publish.mock.lastCall![0] as ComputerUseState).previews[0];
+    expect(preview.frame).toEqual(frame);
+    expect(preview.frameUpdatedAt).toBe(capturedAt);
+    channel.dispose();
+  });
+
   it("routes VM input only to the pinned guest and refuses stale instances", async () => {
     const caps = { gui_available: true, input_available: true, platform: "macos", displays: [],
       supported_modes: ["foreground_desktop"], delivery_policy_version: 1, instance_id: "boot-1" };

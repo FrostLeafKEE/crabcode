@@ -76,6 +76,11 @@ fn handle(message: Value, instance: &str, lease: &mut Lease) -> Value {
         "capabilities" => {
             let mut value = serde_json::to_value(computer_use::detect_capabilities())
                 .unwrap_or(json!({"gui_available":false}));
+            // Guest control still uses desktop screenshots. Host-only AX
+            // availability must not make a capture-disabled VM look ready.
+            value["gui_available"] = json!(value["capture_available"] == true);
+            value["ax_available"] = json!(false);
+            value["ax_protocol_version"] = Value::Null;
             value["isolated_vm"] = json!(true);
             value["instance_id"] = json!(instance);
             value["paused"] = json!(lease.paused);

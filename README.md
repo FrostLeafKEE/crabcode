@@ -992,9 +992,13 @@ After a Crab Desktop Computer Use host is connected, agents can inspect and oper
 }
 ```
 
+On AX-capable macOS hosts, window observation prefers the accessibility tree. `observe` accepts `observation: "auto" | "ax" | "screenshot"`; `auto` falls back to pixels when AX observation is unavailable. Use `press`, `set_value` (replace the whole text value), or `perform_action` with the returned `window_id`, `snapshot_id` and `element_id`. Element actions return a fresh bounded tree; screenshots are optional. References belong to one host connection, session and agent, expire, and are invalidated by new observations, input and release. Re-observe stale references; never replay uncertain AX input through mouse events. An AX acknowledgement alone does not prove the intended effect occurred. After fresh observation, the agent can make a new decision using a screenshot: coordinate clicks on the new protocol use mouse delivery directly, without another AXPress attempt. `allow_foreground` also permits explicitly focusing the window before re-observing.
+
+AX observation works with Accessibility permission even without Screen Recording. Strict background still requires an exact validated OS/app/element/action profile and sampled isolation checks: currently TextEdit 1.20/415 on macOS build 25D125 arm64 supports `AXValue` on its `AXTextArea`. Other AX actions remain gated, and existing validated coordinate routes remain available. Desktop scope and local VMs retain their screenshot workflow.
+
 The target and delivery policy are independent:
 
-- `app_window` captures and sends input to a selected macOS application window; call `list_windows` first and pass `window_id`. `desktop` controls the complete desktop and real pointer/keyboard.
+- `app_window` observes and sends input to a selected macOS application window; call `list_windows` first and pass `window_id`. `desktop` controls the complete desktop and real pointer/keyboard.
 - `strict_background` uses process/window-targeted delivery and does not expose `focus_window`; applications that require activation may ignore input.
 - `allow_foreground` permits activating the target window when background delivery is insufficient and can interrupt the current user. Desktop scope requires this policy.
 

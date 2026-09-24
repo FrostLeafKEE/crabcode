@@ -16,6 +16,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             computer_use::computer_use_capabilities,
             computer_use::computer_use_execute,
+            computer_use::computer_use_release_ax,
             computer_use::computer_use_open_input_settings,
             virtual_machine::computer_use_vm_list,
             virtual_machine::computer_use_vm_manage,

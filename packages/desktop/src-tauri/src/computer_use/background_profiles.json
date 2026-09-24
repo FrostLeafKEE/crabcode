@@ -12,7 +12,10 @@
     "keyboard": "quartz",
     "prepare_active": true,
     "primer": false,
-    "semantic_click": false
+    "semantic_click": false,
+    "ax_actions": [
+      { "role": "AXTextArea", "subrole": null, "operation": "AXValue" }
+    ]
   },
   {
     "identity": {

@@ -1,3 +1,5 @@
+import json
+
 from crabcode_core.query.loop import _prepend_user_context
 from crabcode_core.query.computer_use_history import project_computer_use_history
 from crabcode_core.types.message import (
@@ -44,3 +46,22 @@ def test_user_images_other_tools_and_ambiguous_mixed_messages_are_preserved():
     assert projected[3] is history[3]  # Read result
     assert projected[-1] is history[-1]
     assert not any(isinstance(b, ImageBlock) for b in projected[-3].content)
+
+
+def test_ax_text_history_is_bounded_without_losing_receipts_or_persisted_trees():
+    history = []
+    for index in range(6):
+        history.extend([
+            create_assistant_message([ToolUseBlock(id=str(index), name="ComputerUse", input={"action": "observe"})]),
+            create_tool_result_message(str(index), json.dumps({"action_dispatched": False, "window_id": "7",
+                "accessibility": {"snapshot_id": f"s{index}", "elements": [{"element_id": "e1", "value": str(index)}]}}),
+                images=[{"data": f"frame-{index}"}] if index % 2 == 0 else None),
+        ])
+    originals = [message.model_dump() for message in history]
+    projected = project_computer_use_history(history, keep=1)
+    for index in range(6):
+        receipt = json.loads(projected[index * 2 + 1].content[0].content)
+        assert receipt["action_dispatched"] is False
+        assert receipt["accessibility"]["snapshot_id"] == f"s{index}"
+        assert ("elements" in receipt["accessibility"]) == (index >= 4)
+    assert [message.model_dump() for message in history] == originals

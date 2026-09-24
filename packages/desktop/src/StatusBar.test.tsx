@@ -174,6 +174,24 @@ describe("desktop status bar", () => {
     expect(container.querySelector(".computer-use-mode")?.textContent).toContain("允许前台");
   });
 
+  it("labels AX observations and a retained screenshot without calling it the current view", () => {
+    const computerUse: ComputerUseState = {
+      ...initialComputerUseState("desktop-test", true), status: "ready", active: true,
+      capabilities: { gui_available: true, input_available: true, platform: "macos", displays: [],
+        supported_modes: ["background_app"], capture_available: false, ax_available: true },
+      previews: [{ key: "s", sessionId: "s", mode: "background_app", status: "ready", action: "observe",
+        summary: "Observed accessibility tree", observationKind: "ax", axElementCount: 12,
+        frame: { data: "AAAA", media_type: "image/png", width: 10, height: 10, origin_x: 0, origin_y: 0, frame_id: "f" },
+        frameUpdatedAt: Date.now() - 60000, cursor: null, updatedAt: Date.now() }],
+    };
+    act(() => root.render(<StatusBar computerUse={computerUse} />));
+    act(() => container.querySelector<HTMLButtonElement>(".status-computer-use")!.click());
+    expect(container.textContent).toContain("辅助功能 · 12 个元素");
+    expect(container.textContent).toContain("本次通过辅助功能观察");
+    expect(container.textContent).toContain("录屏不可用时仍可读取和操作界面元素");
+    expect(container.querySelector(".computer-use-frame img")?.getAttribute("alt")).toContain("最近一次");
+  });
+
   it("shows the current configured policy while keeping preview policy as action history", () => {
     const computerUse: ComputerUseState = {
       ...initialComputerUseState("desktop-test", true),

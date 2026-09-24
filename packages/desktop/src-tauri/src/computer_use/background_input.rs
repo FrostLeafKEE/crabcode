@@ -55,7 +55,7 @@ fn attribute(element: &CFType, name: &str) -> Result<CFType, String> {
     mac_ax_copy_attribute(element, name).map_err(|status| mac_ax_error(name, status))
 }
 
-fn enable_accessibility(application: &CFType) {
+pub(super) fn enable_accessibility(application: &CFType) {
     for name in ["AXManualAccessibility", "AXEnhancedUserInterface"] {
         if mac_ax_copy_attribute(application, name)
             .ok()
@@ -86,13 +86,13 @@ fn enable_accessibility(application: &CFType) {
 /// Keep the target's remote AX connection serviced throughout an operation.
 /// Registration alone on a spawn_blocking thread leaves its source unserviced.
 /// ABI reference: Cua 8a4c51337cfdc91a1818ee2f92ceb427272a6247 AppState.swift.
-struct AccessibilityLease {
+pub(super) struct AccessibilityLease {
     stop: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
 impl AccessibilityLease {
-    fn start(pid: i32) -> Result<Self, String> {
+    pub(super) fn start(pid: i32) -> Result<Self, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
@@ -399,6 +399,83 @@ struct Profile {
     prepare_active: bool,
     primer: bool,
     semantic_click: bool,
+    #[serde(default)]
+    ax_actions: Vec<AxRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct AxRule {
+    pub role: String,
+    pub subrole: Option<String>,
+    // Exact advertised AX action, or AXValue for a writable text field.
+    pub operation: String,
+}
+
+pub(super) fn ax_rules(target: WindowTarget) -> Vec<AxRule> {
+    identity(target.pid)
+        .ok()
+        .and_then(|id| profiles().iter().find(|p| p.identity == id))
+        .map(|p| p.ax_actions.clone())
+        .unwrap_or_default()
+}
+
+pub(super) fn ax_allowed(
+    rules: &[AxRule],
+    role: &str,
+    subrole: Option<&str>,
+    operation: &str,
+) -> bool {
+    rules.iter().any(|rule| {
+        rule.role == role && rule.subrole.as_deref() == subrole && rule.operation == operation
+    })
+}
+
+/// Semantic input does not prepare/activate a process or synthesize mouse events.
+/// It uses the same focus, cursor, Space and window-order observation as the
+/// validated event provider. Profile eligibility is checked before starting it.
+pub(super) struct AxIsolation {
+    monitor: IsolationMonitor,
+    _accessibility: AccessibilityLease,
+}
+
+impl AxIsolation {
+    pub(super) fn start(target: WindowTarget) -> Result<Self, String> {
+        let monitor = IsolationMonitor::start(target)?;
+        let accessibility = AccessibilityLease::start(target.pid)?;
+        monitor.check()?;
+        Ok(Self {
+            monitor,
+            _accessibility: accessibility,
+        })
+    }
+
+    pub(super) fn check(&self) -> Result<(), String> {
+        self.monitor.check()
+    }
+
+    pub(super) fn finish(&mut self, result: &mut Value) {
+        // Retain monitoring through the post-action AX observation and delayed UI work.
+        thread::sleep(Duration::from_millis(500));
+        let isolation = self.monitor.finish();
+        result["focus_isolation"] = json!(if isolation.is_ok() {
+            "preserved"
+        } else {
+            "violated"
+        });
+        result["isolation_verification"] = json!(
+            "sampled_front_process_cursor_all_display_spaces_window_order_and_foreground_ax_focus"
+        );
+        result["isolation_samples"] = self.monitor.evidence.clone();
+        result["cleanup_succeeded"] = json!(true);
+        if let Err(reason) = isolation {
+            result["ok"] = json!(false);
+            result["error_code"] = json!("background_isolation_interrupted");
+            result["error"] = json!(reason);
+            result["summary"] = json!("Background isolation changed; observe before continuing");
+            result["requires_observation"] = json!(true);
+            result["retry_safe"] = json!(false);
+        }
+    }
 }
 
 fn profiles() -> &'static [Profile] {

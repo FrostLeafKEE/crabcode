@@ -60,6 +60,8 @@ mod background_experiment;
 mod background_input;
 mod diagnostics;
 #[cfg(target_os = "macos")]
+mod mac_accessibility;
+#[cfg(target_os = "macos")]
 mod mac_ax_relations;
 mod policy;
 #[cfg(all(test, target_os = "macos"))]
@@ -114,6 +116,9 @@ pub struct DisplayInfo {
 pub struct ComputerUseCapabilities {
     gui_available: bool,
     input_available: bool,
+    capture_available: bool,
+    ax_available: bool,
+    ax_protocol_version: Option<u8>,
     platform: &'static str,
     displays: Vec<DisplayInfo>,
     supported_modes: Vec<&'static str>,
@@ -121,6 +126,15 @@ pub struct ComputerUseCapabilities {
     strict_background_input_available: bool,
     strict_background_reason: &'static str,
     reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct AxOwner {
+    host_id: String,
+    connection_id: String,
+    session_id: String,
+    agent_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +146,8 @@ pub struct ExecuteRequest {
     target_scope: Option<TargetScope>,
     #[serde(default)]
     delivery_policy: DeliveryPolicy,
+    #[serde(default)]
+    owner: Option<AxOwner>,
     action: ComputerAction,
 }
 
@@ -148,7 +164,7 @@ impl Default for ComputerUseMode {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComputerAction {
     action: String,
@@ -165,6 +181,10 @@ pub struct ComputerAction {
     window_id: Option<String>,
     duration_ms: Option<u64>,
     include_screenshot: Option<bool>,
+    observation: Option<String>,
+    snapshot_id: Option<String>,
+    element_id: Option<String>,
+    ax_action: Option<String>,
 }
 
 fn display_info(monitor: &Monitor) -> Result<DisplayInfo, String> {
@@ -201,60 +221,47 @@ fn capability_status(
 }
 
 pub(crate) fn detect_capabilities() -> ComputerUseCapabilities {
-    let found = match monitors() {
-        Ok(found) if !found.is_empty() => found,
-        Ok(_) => {
-            return ComputerUseCapabilities {
-                gui_available: false,
-                input_available: false,
-                platform: std::env::consts::OS,
-                displays: Vec::new(),
-                supported_modes: supported_modes(),
-                delivery_policy_version: 1,
-                strict_background_input_available: strict_background_input_available(),
-                strict_background_reason: strict_background_reason(),
-                reason: Some("No graphical displays were detected".to_string()),
-            }
-        }
-        Err(error) => {
-            return ComputerUseCapabilities {
-                gui_available: false,
-                input_available: false,
-                platform: std::env::consts::OS,
-                displays: Vec::new(),
-                supported_modes: supported_modes(),
-                delivery_policy_version: 1,
-                strict_background_input_available: strict_background_input_available(),
-                strict_background_reason: strict_background_reason(),
-                reason: Some(error),
-            }
-        }
-    };
-
+    let found = monitors();
     let displays = found
-        .iter()
-        .map(|(_, info)| info.clone())
-        .collect::<Vec<_>>();
-    let capture_target = found
-        .iter()
-        .find(|(_, info)| info.primary)
-        .or_else(|| found.first());
-    let capture_error = capture_target
-        .and_then(|(monitor, _)| monitor.capture_image().err())
-        .map(|error| format!("Screen capture is unavailable: {error}"));
+        .as_ref()
+        .map(|items| items.iter().map(|(_, info)| info.clone()).collect())
+        .unwrap_or_default();
+    let capture_error = match &found {
+        Ok(items) => match items
+            .iter()
+            .find(|(_, info)| info.primary)
+            .or_else(|| items.first())
+        {
+            Some((monitor, _)) => monitor
+                .capture_image()
+                .err()
+                .map(|error| format!("Screen capture is unavailable: {error}")),
+            None => Some("No graphical displays were detected".to_string()),
+        },
+        Err(reason) => Some(reason.clone()),
+    };
     let input_error = Enigo::new(&Settings::default())
         .err()
         .map(|error| format!("Desktop input permission is unavailable: {error}"));
-    // A missing input permission must not hide ComputerUse from the model. The
-    // agent can still observe the desktop and use non-input actions such as
-    // open_app. Only a missing/capture-inaccessible GUI disables the tool.
-    let (gui_available, input_available, reason) = capability_status(capture_error, input_error);
+    let (capture_available, input_available, reason) =
+        capability_status(capture_error, input_error);
+    #[cfg(target_os = "macos")]
+    let ax_available = mac_accessibility::available();
+    #[cfg(not(target_os = "macos"))]
+    let ax_available = false;
+    let mut modes = supported_modes();
+    if !capture_available {
+        modes.retain(|mode| *mode != "foreground_desktop");
+    }
     ComputerUseCapabilities {
-        gui_available,
-        input_available,
+        gui_available: capture_available || ax_available,
+        input_available: input_available || ax_available,
+        capture_available,
+        ax_available,
+        ax_protocol_version: cfg!(target_os = "macos").then_some(1),
         platform: std::env::consts::OS,
         displays,
-        supported_modes: supported_modes(),
+        supported_modes: modes,
         delivery_policy_version: 1,
         strict_background_input_available: strict_background_input_available(),
         strict_background_reason: strict_background_reason(),
@@ -269,6 +276,9 @@ pub async fn computer_use_capabilities() -> ComputerUseCapabilities {
         .unwrap_or_else(|error| ComputerUseCapabilities {
             gui_available: false,
             input_available: false,
+            capture_available: false,
+            ax_available: false,
+            ax_protocol_version: cfg!(target_os = "macos").then_some(1),
             platform: std::env::consts::OS,
             displays: Vec::new(),
             supported_modes: supported_modes(),
@@ -3078,6 +3088,7 @@ fn record_click_outcome(result: &mut Value, dispatched: bool, visual_change: Opt
 fn execute_foreground_allowed_window_click(
     action: &ComputerAction,
     target: WindowTarget,
+    legacy_ax_hit_test: bool,
 ) -> Result<Value, String> {
     let point = background_local_point(action, target)?;
     let (x, y) = background_point(action, target)?;
@@ -3121,10 +3132,12 @@ fn execute_foreground_allowed_window_click(
     }
     let foreground_monitor = MacForegroundMonitor::start(target.pid);
 
-    // Strict input is handled exclusively by background_input. Foreground-
-    // enabled mode keeps semantic AX actions first, then prepares the target.
-    // Never retry an acknowledged/uncertain action through another input path.
-    let semantic_dispatch = if is_single_left_click {
+    // AX-capable channels expose semantic press separately. Their coordinate
+    // click is an explicit pixel-based decision and must not invoke AX again.
+    // Preserve AX hit-testing for legacy channels; neither route replays an
+    // acknowledged/uncertain action automatically. Strict input stays below
+    // background_input's exact profile gate.
+    let semantic_dispatch = if legacy_ax_hit_test && is_single_left_click {
         mac_ax_press(event_target, x, y)
     } else {
         MacAxPressOutcome::Unsupported {
@@ -3305,6 +3318,53 @@ fn execute_background_inner(
     let action = &request.action;
     if matches!(
         action.action.as_str(),
+        "press" | "set_value" | "perform_action"
+    ) {
+        return Ok(mac_accessibility::act(
+            request,
+            pinned_target.ok_or("Element actions require window_id")?,
+        ));
+    }
+    if action.action == "observe"
+        && action.observation.as_deref() != Some("screenshot")
+        && request.owner.is_some()
+    {
+        let target = pinned_target.ok_or("AX observe requires window_id")?;
+        let mut observed = mac_accessibility::observe(request, target);
+        if observed["ok"] == true || action.observation.as_deref() == Some("ax") {
+            if action.include_screenshot == Some(true) {
+                match mac_capture_window_group(target).and_then(encode_screenshot_capture) {
+                    Ok(frame) => {
+                        observed["screenshot"] = frame;
+                        observed["observation_kind"] = json!("ax_and_screenshot");
+                    }
+                    Err(reason) => observed["screenshot_error"] = json!(reason),
+                }
+            }
+            return Ok(observed);
+        }
+        // AX is unavailable or contains no useful content. Pixel observation
+        // is read-only and does not change the input delivery policy.
+        let mut pixel_request = ExecuteRequest {
+            mode: request.mode,
+            target_scope: request.target_scope,
+            delivery_policy,
+            owner: request.owner.clone(),
+            action: action.clone(),
+        };
+        pixel_request.action.observation = Some("screenshot".into());
+        let mut result = execute_background_inner(&pixel_request, Some(target))?;
+        result["ax_error"] = observed["error"].clone();
+        result["fallback_reason"] = observed["error_code"].clone();
+        return Ok(result);
+    }
+    if action.action == "observe" || !policy::observation_only(&action.action) {
+        if let Some(owner) = &request.owner {
+            mac_accessibility::invalidate(owner);
+        }
+    }
+    if matches!(
+        action.action.as_str(),
         "move"
             | "click"
             | "double_click"
@@ -3365,7 +3425,11 @@ fn execute_background_inner(
             "Moved application pointer".to_string()
         }
         "click" | "double_click" => {
-            return execute_foreground_allowed_window_click(action, target()?);
+            return execute_foreground_allowed_window_click(
+                action,
+                target()?,
+                request.owner.is_none(),
+            );
         }
         "drag" => {
             let target = target()?;
@@ -3385,6 +3449,10 @@ fn execute_background_inner(
                 window_id: action.window_id.clone(),
                 duration_ms: None,
                 include_screenshot: None,
+                observation: None,
+                snapshot_id: None,
+                element_id: None,
+                ax_action: None,
             };
             let end_local = background_local_point(&end_action, target)?;
             let end = background_point(&end_action, target)?;
@@ -3561,6 +3629,7 @@ fn execute_background_inner(
             "list_windows" | "wait" | "open_app"
         ));
     if capture {
+        result["observation_kind"] = json!("screenshot");
         if action.action == "scroll" {
             thread::sleep(Duration::from_millis(SCROLL_SETTLE_MS));
         }
@@ -3625,6 +3694,13 @@ fn execute_inner(request: ExecuteRequest) -> Result<Value, String> {
         .unwrap_or(TargetScope::AppWindow);
     let policy = request.delivery_policy;
     let action_name = request.action.action.clone();
+    if let Some(reason) = validate_ax_request(&request, scope) {
+        return Ok(
+            json!({"ok": false, "action": action_name, "error_code": "invalid_ax_request",
+            "error": reason, "summary": reason, "action_dispatched": false,
+            "dispatch_succeeded": false, "retry_safe": true, "effect_verified": false}),
+        );
+    }
     if let Some(reason) = policy::rejection(scope, policy, &action_name) {
         return Ok(json!({
             "ok": false, "action": action_name,
@@ -3638,6 +3714,12 @@ fn execute_inner(request: ExecuteRequest) -> Result<Value, String> {
         }));
     }
     let read_only = policy::observation_only(&action_name);
+    #[cfg(target_os = "macos")]
+    if scope == TargetScope::Desktop && (action_name == "observe" || !read_only) {
+        if let Some(owner) = &request.owner {
+            mac_accessibility::invalidate(owner);
+        }
+    }
     let outcome = match scope {
         TargetScope::AppWindow => execute_background(request),
         TargetScope::Desktop => execute_foreground(request),
@@ -3687,6 +3769,109 @@ fn execute_inner(request: ExecuteRequest) -> Result<Value, String> {
         result["effect_verified"] = json!(false);
     }
     Ok(result)
+}
+
+fn validate_ax_request(request: &ExecuteRequest, scope: TargetScope) -> Option<&'static str> {
+    let action = &request.action;
+    let element_action = matches!(
+        action.action.as_str(),
+        "press" | "set_value" | "perform_action"
+    );
+    let has_references =
+        action.snapshot_id.is_some() || action.element_id.is_some() || action.ax_action.is_some();
+    if !element_action && !has_references && action.observation.is_none() {
+        return None;
+    }
+    if scope != TargetScope::AppWindow || !cfg!(target_os = "macos") {
+        return Some("AX operations require a macOS application window");
+    }
+    if let Some(observation) = action.observation.as_deref() {
+        if action.action != "observe" || !matches!(observation, "auto" | "ax" | "screenshot") {
+            return Some(
+                "observation is only valid for observe and must be auto, ax or screenshot",
+            );
+        }
+    }
+    let Some(owner) = &request.owner else {
+        return Some("AX operations require a session owner supplied by the host channel");
+    };
+    if [&owner.host_id, &owner.connection_id, &owner.session_id]
+        .iter()
+        .any(|v| v.is_empty() || v.len() > 256)
+        || owner
+            .agent_id
+            .as_ref()
+            .is_some_and(|v| v.is_empty() || v.len() > 256)
+    {
+        return Some("Invalid AX session owner");
+    }
+    if !element_action {
+        return has_references.then_some("Element references are only valid for element actions");
+    }
+    if [
+        action.window_id.as_deref(),
+        action.snapshot_id.as_deref(),
+        action.element_id.as_deref(),
+    ]
+    .iter()
+    .any(|v| v.is_none_or(|v| v.is_empty() || v.len() > 256))
+    {
+        return Some("Element actions require window_id, snapshot_id and element_id");
+    }
+    if action.x.is_some()
+        || action.y.is_some()
+        || action.to_x.is_some()
+        || action.to_y.is_some()
+        || action.button.is_some()
+        || action.keys.is_some()
+        || action.delta_x.is_some()
+        || action.delta_y.is_some()
+    {
+        return Some("Element actions cannot contain coordinate or keyboard input");
+    }
+    if action.action == "set_value" && action.text.as_ref().is_none_or(|v| v.len() > 65536) {
+        return Some("set_value requires text of at most 65536 UTF-8 bytes");
+    }
+    if action.action != "set_value" && action.text.is_some() {
+        return Some("Only set_value accepts text among element actions");
+    }
+    if action.action != "perform_action" && action.ax_action.is_some() {
+        return Some("ax_action is only valid for perform_action");
+    }
+    if action.action == "perform_action"
+        && action
+            .ax_action
+            .as_ref()
+            .is_none_or(|v| v.is_empty() || v.len() > 128)
+    {
+        return Some("perform_action requires an advertised ax_action");
+    }
+    None
+}
+
+#[tauri::command]
+pub async fn computer_use_release_ax(
+    host_id: String,
+    connection_id: String,
+    session_id: Option<String>,
+    agent_id: Option<String>,
+    all_agents: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    tauri::async_runtime::spawn_blocking(move || {
+        mac_accessibility::release(
+            &host_id,
+            &connection_id,
+            session_id.as_deref(),
+            agent_id.as_deref(),
+            all_agents,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = (host_id, connection_id, session_id, agent_id, all_agents);
+    Ok(())
 }
 
 #[tauri::command]
@@ -5198,6 +5383,7 @@ mod tests {
                 mode: Some(ComputerUseMode::BackgroundApp),
                 target_scope: Some(TargetScope::AppWindow),
                 delivery_policy: DeliveryPolicy::AllowForeground,
+                owner: None,
                 action: serde_json::from_value(request).unwrap(),
             })
             .unwrap();

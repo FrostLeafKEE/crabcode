@@ -968,9 +968,13 @@ CrabCode 集成了 **Language Server Protocol (LSP)** 服务器，为 AI agent �
 }
 ```
 
+支持 AX 的 macOS 宿主在指定窗口模式下优先返回辅助功能树。`observe` 支持 `observation: "auto" | "ax" | "screenshot"`；`auto` 在 AX 观察不可用时回退截图。模型可使用返回的 `window_id`、`snapshot_id`、`element_id` 调用 `press`、`set_value`（替换完整文本值）或 `perform_action`。元素操作默认返回更新的树，不强制截图。引用绑定宿主连接、会话和 Agent，会过期，并在重新观察、输入或释放时失效；旧引用必须重新观察，结果不确定的 AX 动作不能直接补发鼠标操作。AX 确认不代表预期效果已经发生；重新观察后，模型可以基于新截图作出下一步决定。新协议的坐标点击直接使用鼠标投递，不会再次尝试 AXPress；允许前台模式也可以显式聚焦窗口后重新观察。
+
+AX 观察只需辅助功能权限，录屏不可用时仍可使用。严格后台的 AX 输入仍按精确系统、应用、元素和动作配置放行，并检查焦点、鼠标、Space 和窗口顺序；当前已验证 macOS 25D125 arm64 上 TextEdit 1.20/415 的 `AXTextArea` 写值。其他 AX 动作仍受限制，已有的后台坐标路径继续保留。整个屏幕和本地虚拟机维持截图流程。
+
 操作目标和投递策略彼此独立：
 
-- `app_window`：macOS 上定向截图并操作指定应用窗口；必须先通过 `list_windows` 取得 `window_id`。`desktop` 则控制完整桌面和真实鼠标键盘。
+- `app_window`：macOS 上观察并操作指定应用窗口；必须先通过 `list_windows` 取得 `window_id`。`desktop` 则控制完整桌面和真实鼠标键盘。
 - `strict_background`：只做进程/窗口定向投递，不提供 `focus_window`；部分要求激活状态的应用可能忽略输入。
 - `allow_foreground`：后台投递不适配目标控件时允许激活目标窗口，可能打断当前用户。完整桌面需要此策略。
 

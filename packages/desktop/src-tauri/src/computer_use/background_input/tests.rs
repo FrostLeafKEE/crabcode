@@ -16,6 +16,7 @@ fn candidate(pid: i32) -> Profile {
         prepare_active: true,
         primer: false,
         semantic_click: false,
+        ax_actions: Vec::new(),
     }
 }
 
@@ -67,6 +68,7 @@ fn profiles_do_not_generalize_across_os_app_or_gesture() {
         prepare_active: true,
         primer: false,
         semantic_click: false,
+        ax_actions: Vec::new(),
     };
     let action: ComputerAction = serde_json::from_value(json!({"action":"click"})).unwrap();
     assert!(supported(&profile, &id, &action));

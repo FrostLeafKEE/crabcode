@@ -15574,6 +15574,19 @@ html[data-theme="light"] .project-file-code .token.class-name {
   object-fit: contain;
 }
 
+.computer-use-frame-age {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  right: 4px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .computer-use-frame .computer-use-cursor {
   position: absolute;
   width: 22px;
