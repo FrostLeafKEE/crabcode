@@ -52,6 +52,72 @@ fn timings_are_per_request_and_do_not_change_receipts() {
 }
 
 #[test]
+fn retina_capture_keeps_window_coordinates_color_and_alpha_through_png() {
+    let space = CGColorSpace::create_with_name(unsafe { kCGColorSpaceSRGB }).unwrap();
+    let source = CGContext::create_bitmap_context(
+        None,
+        80,
+        60,
+        8,
+        80 * 4,
+        &space,
+        CGImageAlphaInfo::CGImageAlphaPremultipliedLast as u32
+            | CGImageByteOrderInfo::CGImageByteOrder32Big as u32,
+    );
+    source.set_rgb_fill_color(1.0, 0.0, 0.0, 1.0);
+    source.fill_rect(CGRect::new(
+        &CGPoint::new(0.0, 0.0),
+        &CGSize::new(80.0, 30.0),
+    ));
+    source.set_rgb_fill_color(0.0, 1.0, 0.0, 0.5);
+    source.fill_rect(CGRect::new(
+        &CGPoint::new(0.0, 30.0),
+        &CGSize::new(80.0, 30.0),
+    ));
+    let image = source.create_image().unwrap();
+    let target = WindowTarget {
+        window_id: 1,
+        pid: 1,
+        x: 33,
+        y: 50,
+        width: 40,
+        height: 30,
+    };
+    // Compare interior pixels at 1x and 2x to catch inverted rows, color-space
+    // changes and double-applied alpha, independently of interpolation edges.
+    let full = mac_decode_window_image(
+        image.clone(),
+        WindowTarget {
+            width: 80,
+            height: 60,
+            ..target
+        },
+    )
+    .unwrap();
+    let scaled = mac_decode_window_image(image, target).unwrap();
+    assert_eq!(scaled.dimensions(), (40, 30));
+    for y in [5, 25] {
+        let actual = scaled.get_pixel(10, y).0;
+        assert!(actual
+            .iter()
+            .zip(full.get_pixel(20, y * 2).0)
+            .all(|(a, b)| a.abs_diff(b) <= 1));
+        assert!(
+            actual[0] == 255 || actual[1] == 255,
+            "straight alpha: {actual:?}"
+        );
+    }
+    let frame = encode_screenshot(scaled.clone(), target.x, target.y, "window:1".into()).unwrap();
+    assert_eq!(frame["origin_x"], 33);
+    assert_eq!(frame["origin_y"], 50);
+    let decoded =
+        xcap::image::load_from_memory(&STANDARD.decode(frame["data"].as_str().unwrap()).unwrap())
+            .unwrap()
+            .to_rgba8();
+    assert_eq!(decoded, scaled);
+}
+
+#[test]
 #[ignore = "requires Accessibility and Screen Recording; opens an isolated real NSSavePanel"]
 fn macos_real_save_sheet_receives_one_ax_click_and_saves_file() {
     mac_require_input_permission().expect("Accessibility permission required");

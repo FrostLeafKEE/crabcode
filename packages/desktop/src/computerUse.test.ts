@@ -144,6 +144,37 @@ describe("ComputerUseChannel", () => {
     channel.dispose();
   });
 
+  it("forwards independent popup images while keeping the root monitor frame separate", async () => {
+    const frame = { data: "cG5n", media_type: "image/png", width: 100, height: 80, origin_x: 20, origin_y: 30, frame_id: "root" };
+    const observations = [{ window_id: "9", owner_window_id: null, relationship_uncertain: true,
+      screenshot: { ...frame, frame_id: "popup", target: "window:9" } }];
+    const caps = { gui_available: true, input_available: true, platform: "macos", displays: [],
+      ax_available: true, ax_protocol_version: 1, window_observation_version: 1,
+      supported_modes: ["background_app"], delivery_policy_version: 1 };
+    invokeMock.mockResolvedValueOnce(caps).mockResolvedValue({ ok: true, observation_kind: "ax_and_screenshot",
+      accessibility: { elements: [{ element_id: "e1" }] }, preview_screenshot: frame, window_observations: observations });
+    const publish = vi.fn();
+    const channel = new ComputerUseChannel({ authenticate: vi.fn().mockResolvedValue(undefined),
+      computerUseWebSocketUrl: () => "ws://localhost/test" } as unknown as GatewayApi, "popup-host", true, publish);
+    await channel.connect();
+    const socket = FakeWebSocket.instances[0];
+    const sendSpy = vi.spyOn(socket, "send");
+    socket.emit("open");
+    expect(JSON.parse((sendSpy.mock.lastCall as unknown as [string])[0]).capabilities.window_observation_version).toBe(1);
+    const action = { action: "observe", window_id: "7", include_window_observations: true };
+    socket.emit("message", { data: JSON.stringify({ type: "computer_use_request", request_id: "popup",
+      session_id: "s", target_scope: "app_window", delivery_policy: "allow_foreground", action }) });
+    await vi.waitFor(() => expect((publish.mock.lastCall![0] as ComputerUseState).previews[0].status).toBe("ready"));
+    const sent = JSON.parse((sendSpy.mock.lastCall as unknown as [string])[0]);
+    expect(sent.result.window_observations).toEqual(observations);
+    expect(sent.result.screenshot).toBeUndefined();
+    expect(sent.result.preview_screenshot).toBeUndefined();
+    expect(sent.preview_screenshot).toEqual(frame);
+    expect((publish.mock.lastCall![0] as ComputerUseState).previews[0].frame).toEqual(frame);
+    expect(invokeMock.mock.calls.find(([name]) => name === "computer_use_execute")![1].request.action).toEqual(action);
+    channel.dispose();
+  });
+
   it("does not probe or fall back to host input when a VM is disconnected", async () => {
     invokeMock.mockRejectedValue(new Error("VM stopped"));
     const publish = vi.fn();

@@ -7,7 +7,12 @@ let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 var copies = 0
 final class Editor: NSTextView {
+    var clicks = 0
     override func copy(_ sender: Any?) { copies += 1 }
+    override func mouseDown(with event: NSEvent) {
+        clicks += 1
+        super.mouseDown(with: event)
+    }
 }
 func makeWindow(_ title: String, _ x: CGFloat) -> (NSWindow, Editor) {
     let window = NSWindow(contentRect: NSRect(x: x, y: 200, width: 360, height: 240),
@@ -26,6 +31,15 @@ let (second, secondEditor) = makeWindow("second", 600)
 if CommandLine.arguments.contains("--empty-ax") {
     first.setAccessibilityChildren([])
     second.setAccessibilityChildren([])
+}
+if CommandLine.arguments.contains("--chrome-only-ax") {
+    for window in [first, second] {
+        window.setAccessibilityChildren([
+            window.standardWindowButton(.closeButton),
+            window.standardWindowButton(.miniaturizeButton),
+            window.standardWindowButton(.zoomButton),
+        ].compactMap { $0 })
+    }
 }
 let panel = NSPanel(contentRect: NSRect(x: 260, y: 280, width: 280, height: 80),
                     styleMask: [.titled], backing: .buffered, defer: false)
@@ -48,6 +62,9 @@ while true {
         app.sendEvent(event)
     }
     _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+    if CommandLine.arguments.contains("--hide-ax-after-input"), firstEditor.string != "first" {
+        first.setAccessibilityChildren([first.standardWindowButton(.closeButton)!])
+    }
     if let command = try? String(contentsOf: commandURL, encoding: .utf8), command != phase {
         if command == "panel" {
             first.addChildWindow(panel, ordered: .above)
@@ -61,6 +78,7 @@ while true {
         "pid": ProcessInfo.processInfo.processIdentifier,
         "first": first.windowNumber, "second": second.windowNumber, "panel": panel.windowNumber,
         "first_text": firstEditor.string, "second_text": secondEditor.string,
+        "first_clicks": firstEditor.clicks, "second_clicks": secondEditor.clicks,
         "name": name.string, "copies": copies, "phase": phase,
         "key": app.keyWindow?.windowNumber ?? 0,
     ]

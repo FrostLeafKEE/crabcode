@@ -31,7 +31,7 @@ use core_foundation::string::{CFString, CFStringRef};
 #[cfg(target_os = "macos")]
 use core_graphics::color_space::{kCGColorSpaceSRGB, CGColorSpace};
 #[cfg(target_os = "macos")]
-use core_graphics::context::CGContext;
+use core_graphics::context::{CGContext, CGInterpolationQuality};
 #[cfg(target_os = "macos")]
 use core_graphics::display::CGRectNull;
 #[cfg(target_os = "macos")]
@@ -68,6 +68,8 @@ mod policy;
 mod regression_tests;
 #[cfg(target_os = "macos")]
 mod window_lifecycle;
+#[cfg(target_os = "macos")]
+mod window_observation;
 #[cfg(target_os = "macos")]
 mod window_relations;
 use policy::{DeliveryPolicy, TargetScope};
@@ -119,6 +121,7 @@ pub struct ComputerUseCapabilities {
     capture_available: bool,
     ax_available: bool,
     ax_protocol_version: Option<u8>,
+    window_observation_version: Option<u8>,
     platform: &'static str,
     displays: Vec<DisplayInfo>,
     supported_modes: Vec<&'static str>,
@@ -181,6 +184,8 @@ pub struct ComputerAction {
     window_id: Option<String>,
     duration_ms: Option<u64>,
     include_screenshot: Option<bool>,
+    // Internal Core/host negotiation; not a model-facing action argument.
+    include_window_observations: Option<bool>,
     observation: Option<String>,
     snapshot_id: Option<String>,
     element_id: Option<String>,
@@ -259,6 +264,7 @@ pub(crate) fn detect_capabilities() -> ComputerUseCapabilities {
         capture_available,
         ax_available,
         ax_protocol_version: cfg!(target_os = "macos").then_some(1),
+        window_observation_version: cfg!(target_os = "macos").then_some(1),
         platform: std::env::consts::OS,
         displays,
         supported_modes: modes,
@@ -279,6 +285,7 @@ pub async fn computer_use_capabilities() -> ComputerUseCapabilities {
             capture_available: false,
             ax_available: false,
             ax_protocol_version: cfg!(target_os = "macos").then_some(1),
+            window_observation_version: cfg!(target_os = "macos").then_some(1),
             platform: std::env::consts::OS,
             displays: Vec::new(),
             supported_modes: supported_modes(),
@@ -746,6 +753,7 @@ fn mac_window_group_from_info(
 
 #[cfg(target_os = "macos")]
 fn mac_window_group(root: WindowTarget) -> Result<MacWindowGroup, String> {
+    let _timing = diagnostics::Stage::new("capture_layout");
     let windows = mac_all_window_info()?;
     if !windows
         .iter()
@@ -2274,6 +2282,7 @@ struct ScreenshotCapture {
 
 #[cfg(target_os = "macos")]
 fn mac_capture_window(target: WindowTarget) -> Result<RgbaImage, String> {
+    let readback = diagnostics::Stage::new("capture_readback");
     let bounds = CGRect::new(
         &CGPoint::new(f64::from(target.x), f64::from(target.y)),
         &CGSize::new(f64::from(target.width), f64::from(target.height)),
@@ -2292,16 +2301,17 @@ fn mac_capture_window(target: WindowTarget) -> Result<RgbaImage, String> {
             kCGWindowImageBoundsIgnoreFraming,
         )
     }) else {
+        drop(readback);
         return mac_capture_hidden_window_with_screencapture(target);
     };
+    drop(readback);
     mac_decode_window_image(image, target)
 }
 
 #[cfg(target_os = "macos")]
 fn mac_decode_window_image(image: CGImage, target: WindowTarget) -> Result<RgbaImage, String> {
-    let width = image.width();
-    let height = image.height();
-    if width == 0 || height == 0 {
+    let _timing = diagnostics::Stage::new("capture_decode");
+    if image.width() == 0 || image.height() == 0 || target.width == 0 || target.height == 0 {
         return Err(format!(
             "Window {} returned an empty capture",
             target.window_id
@@ -2309,7 +2319,11 @@ fn mac_decode_window_image(image: CGImage, target: WindowTarget) -> Result<RgbaI
     }
     // Let CoreGraphics handle the source color space and byte order. Captured
     // windows can use the display profile; the PNG and image compositor need
-    // a consistent sRGB, RGBA buffer.
+    // a consistent sRGB, RGBA buffer. Draw directly at window-coordinate size:
+    // decoding a Retina buffer and then resizing it in Rust adds a full-image
+    // allocation and a costly CPU resample, especially in development builds.
+    let width = target.width as usize;
+    let height = target.height as usize;
     let color_space = CGColorSpace::create_with_name(unsafe { kCGColorSpaceSRGB })
         .ok_or_else(|| "Unable to create the screenshot color space".to_string())?;
     let mut context = CGContext::create_bitmap_context(
@@ -2322,6 +2336,7 @@ fn mac_decode_window_image(image: CGImage, target: WindowTarget) -> Result<RgbaI
         CGImageAlphaInfo::CGImageAlphaPremultipliedLast as u32
             | CGImageByteOrderInfo::CGImageByteOrder32Big as u32,
     );
+    context.set_interpolation_quality(CGInterpolationQuality::CGInterpolationQualityHigh);
     context.draw_image(
         CGRect::new(
             &CGPoint::new(0.0, 0.0),
@@ -2333,9 +2348,8 @@ fn mac_decode_window_image(image: CGImage, target: WindowTarget) -> Result<RgbaI
     for pixel in rgba.chunks_exact_mut(4) {
         mac_unpremultiply_pixel(pixel);
     }
-    let image = RgbaImage::from_raw(width as u32, height as u32, rgba)
-        .ok_or_else(|| format!("Unable to decode window {} capture", target.window_id))?;
-    Ok(normalize_image(image, target.width, target.height))
+    RgbaImage::from_raw(target.width, target.height, rgba)
+        .ok_or_else(|| format!("Unable to decode window {} capture", target.window_id))
 }
 
 #[cfg(target_os = "macos")]
@@ -2358,22 +2372,43 @@ fn mac_unpremultiply_pixel(pixel: &mut [u8]) {
 
 #[cfg(target_os = "macos")]
 fn mac_capture_hidden_window_with_screencapture(target: WindowTarget) -> Result<RgbaImage, String> {
+    let _timing = diagnostics::Stage::new("capture_fallback");
     let output = tempfile::Builder::new()
         .prefix("crabcode-window-")
         .suffix(".png")
         .tempfile()
         .map_err(|error| format!("Unable to prepare hidden-window capture: {error}"))?;
     let path = output.path();
-    let status = Command::new("/usr/sbin/screencapture")
+    let mut child = Command::new("/usr/sbin/screencapture")
         .args(["-x", "-o", "-l", &target.window_id.to_string()])
         .arg(path)
-        .status()
+        .spawn()
         .map_err(|error| {
             format!(
                 "Unable to invoke hidden-window capture for {}: {error}",
                 target.window_id
             )
         })?;
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < Duration::from_secs(5) => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            outcome => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(match outcome {
+                    Err(error) => format!("Unable to wait for window capture: {error}"),
+                    _ => format!(
+                        "Window {} capture timed out after 5 seconds",
+                        target.window_id
+                    ),
+                });
+            }
+        }
+    };
     if !status.success() {
         return Err(format!(
             "Unable to capture hidden window {}; screencapture exited with {status}",
@@ -3097,18 +3132,6 @@ fn execute_foreground_allowed_window_click(
         Err(reason) => return Ok(unresolved_pointer_target(action, reason)),
     };
     let event_target = event_window.target;
-    let mut before = match mac_capture_window_group(target) {
-        Ok(frame) => frame,
-        Err(reason) => {
-            return Ok(failed_background_click_preparation(
-                action,
-                target,
-                event_target,
-                point,
-                ClickFailureStage::BaselineCapture.failure(reason),
-            ))
-        }
-    };
     let is_single_left_click = action.action == "click"
         && action
             .button
@@ -3127,9 +3150,28 @@ fn execute_foreground_allowed_window_click(
                 point,
                 ClickFailureStage::TargetVisibility.failure(reason),
             ),
-            Ok(before),
+            mac_capture_window_group(target),
         ));
     }
+    // Only the legacy semantic path can compare a pre-input screenshot without
+    // activation contaminating the comparison. Coordinate clicks need one
+    // resulting frame, not two unused baselines before dispatch.
+    let before = if legacy_ax_hit_test && is_single_left_click {
+        match mac_capture_window_group(target) {
+            Ok(frame) => Some(frame),
+            Err(reason) => {
+                return Ok(failed_background_click_preparation(
+                    action,
+                    target,
+                    event_target,
+                    point,
+                    ClickFailureStage::BaselineCapture.failure(reason),
+                ))
+            }
+        }
+    } else {
+        None
+    };
     let foreground_monitor = MacForegroundMonitor::start(target.pid);
 
     // AX-capable channels expose semantic press separately. Their coordinate
@@ -3146,11 +3188,12 @@ fn execute_foreground_allowed_window_click(
     };
     let uses_mouse = matches!(&semantic_dispatch, MacAxPressOutcome::Unsupported { .. });
     if uses_mouse {
+        // All image work is before activation or after input. A prepared-window
+        // screenshot used to leave seconds between activation and mouse-down.
+        // A legacy baseline also includes activation changes, so only semantic
+        // input can use it as click-effect evidence below.
         let preparation = mac_prepare_mouse_window(event_target).and_then(|_| {
-                // Activation alone can change title-bar pixels. Compare the click
-                // against the prepared window, so that is not counted as its effect.
-                let baseline = mac_capture_window_group(target)
-                    .map_err(|reason| ClickFailureStage::BaselineCapture.failure(reason))?;
+                let _timing = diagnostics::Stage::new("mouse_ready_to_dispatch");
                 mac_validate_mouse_layout(target, event_target, (x, y))
                     .map_err(|reason| ClickFailureStage::LayoutValidation.failure(reason))?;
                 if mac_front_process_serial_number()
@@ -3159,10 +3202,10 @@ fn execute_foreground_allowed_window_click(
                         .map_err(|reason| ClickFailureStage::Activation.failure(reason))? {
                     return Err(ClickFailureStage::Activation.failure("The target lost activation before mouse input; no click was sent. Observe again before clicking".to_string()));
                 }
-                Ok(baseline)
+                Ok(())
             });
         match preparation {
-            Ok(baseline) => before = baseline,
+            Ok(()) => {}
             Err(failure) => {
                 let mut result = failed_background_click_preparation(
                     action,
@@ -3200,14 +3243,20 @@ fn execute_foreground_allowed_window_click(
     let mut visual_change = after
         .as_ref()
         .ok()
-        .and_then(|frame| screenshot_visual_change(&before, frame, (x, y)));
-    if !visual_change.map(|change| change.detected).unwrap_or(false) && after.is_ok() {
+        .filter(|_| !uses_mouse)
+        .and_then(|frame| {
+            before
+                .as_ref()
+                .and_then(|before| screenshot_visual_change(before, frame, (x, y)))
+        });
+    if visual_change.is_some_and(|change| !change.detected) && after.is_ok() {
         thread::sleep(Duration::from_millis(CLICK_SETTLE_MS));
         after = mac_capture_window_group(target);
-        visual_change = after
-            .as_ref()
-            .ok()
-            .and_then(|frame| screenshot_visual_change(&before, frame, (x, y)));
+        visual_change = after.as_ref().ok().and_then(|frame| {
+            before
+                .as_ref()
+                .and_then(|before| screenshot_visual_change(before, frame, (x, y)))
+        });
     }
     let mut result = json!({
         "mode": "background_app",
@@ -3231,6 +3280,11 @@ fn execute_foreground_allowed_window_click(
         uses_mouse || matches!(&semantic_dispatch, MacAxPressOutcome::Performed { .. }),
         visual_change.map(|change| change.detected),
     );
+    if uses_mouse {
+        result["verification_warning"] = json!(
+            "Click dispatched. No screenshot was taken between activation and input, so pixel changes cannot independently verify the click's effect. Inspect the returned state; do not repeat input solely because effect_verified is false."
+        );
+    }
     match semantic_dispatch {
         MacAxPressOutcome::Performed { action: ax_action } => {
             result["accessibility_action"] = json!(ax_action);
@@ -3334,15 +3388,26 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
         } else {
             result["ax_error"] = observed["error"].clone();
             result["fallback_reason"] = observed["error_code"].clone();
-            if action.include_screenshot != Some(false) && result.get("screenshot").is_none() {
-                match mac_capture_window_group(target).and_then(encode_screenshot_capture) {
-                    Ok(frame) => result["screenshot"] = frame,
-                    Err(error) => result["screenshot_error"] = json!(error),
-                }
+        }
+    }
+    // Both coordinate and semantic input must return pixels when the resulting
+    // AX tree has no content. Preserve the input receipt even if observation
+    // fails; never retry input to obtain a better observation.
+    if request.owner.is_some()
+        && !read_only
+        && result["action_dispatched"] != false
+        && result["window_lifecycle"]["target_resolvable"] == true
+        && result.get("accessibility").is_none()
+        && result.get("ax_error").is_some()
+    {
+        if action.include_screenshot != Some(false) && result.get("screenshot").is_none() {
+            match mac_capture_window_group(target).and_then(encode_screenshot_capture) {
+                Ok(frame) => result["screenshot"] = frame,
+                Err(error) => result["screenshot_error"] = json!(error),
             }
-            if result.get("screenshot").is_some() {
-                result["observation_kind"] = json!("screenshot");
-            }
+        }
+        if result.get("screenshot").is_some() {
+            result["observation_kind"] = json!("screenshot");
         }
     }
     // The monitor keeps a visual preview even when the model observes AX only.
@@ -3359,6 +3424,13 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
             Ok(frame) => result["preview_screenshot"] = frame,
             Err(error) => result["preview_screenshot_error"] = json!(error),
         }
+    }
+    if action.include_window_observations == Some(true)
+        && action.include_screenshot != Some(false)
+        && (action.observation.as_deref() != Some("ax") || action.include_screenshot == Some(true))
+        && result["window_lifecycle"]["target_resolvable"] == true
+    {
+        window_observation::attach(&mut result, target);
     }
     result["retry_safe"] =
         json!(result["action_dispatched"] == false && result["retry_safe"] != false);
@@ -3392,7 +3464,12 @@ fn execute_background_inner(
                 match mac_capture_window_group(target).and_then(encode_screenshot_capture) {
                     Ok(frame) => {
                         observed["screenshot"] = frame;
-                        observed["observation_kind"] = json!("ax_and_screenshot");
+                        observed["observation_kind"] =
+                            json!(if observed.get("accessibility").is_some() {
+                                "ax_and_screenshot"
+                            } else {
+                                "screenshot"
+                            });
                     }
                     Err(reason) => observed["screenshot_error"] = json!(reason),
                 }
@@ -3491,6 +3568,7 @@ fn execute_background_inner(
             let target = target()?;
             let start = background_point(action, target)?;
             let end_action = ComputerAction {
+                include_window_observations: action.include_window_observations,
                 action: action.action.clone(),
                 x: action.to_x,
                 y: action.to_y,

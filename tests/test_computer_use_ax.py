@@ -174,6 +174,33 @@ def test_core_never_promotes_monitor_frames_to_model_images_or_history(with_mode
     assert json.loads(result.result_for_model)["accessibility"]["tree"]
 
 
+@pytest.mark.parametrize("action", ["observe", "click", "focus_window", "press"])
+def test_empty_ax_fallback_delivers_an_image_to_the_model(action):
+    class EmptyAxBackend(AxBackend):
+        async def execute(self, *args, **kwargs):
+            return {
+                "ok": True, "action": action, "action_dispatched": action != "observe",
+                "observation_kind": "screenshot", "fallback_reason": "ax_empty",
+                "ax_error": "The window exposes only window chrome",
+                "screenshot": {"data": "cG5n", "media_type": "image/png"},
+            }
+
+    tool, context = tool_for_window(EmptyAxBackend())
+    command = {"action": action, "window_id": "7"}
+    if action == "click":
+        command.update(x=10, y=20)
+    if action == "press":
+        command.update(snapshot_id="s", element_id="e1")
+    result = asyncio.run(tool.call(command, context))
+    assert not result.is_error
+    assert len(result.images) == 1
+    assert result.images[0]["data"] == "cG5n"
+    receipt = json.loads(result.result_for_model)
+    assert receipt["fallback_reason"] == "ax_empty"
+    assert receipt["observation_kind"] == "screenshot"
+    assert receipt["action_dispatched"] == (action != "observe")
+
+
 def test_host_socket_retains_preview_image_without_including_it_in_the_tool_result():
     from types import SimpleNamespace
     from fastapi import WebSocketDisconnect

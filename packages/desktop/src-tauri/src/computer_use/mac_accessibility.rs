@@ -158,6 +158,7 @@ pub(super) fn release(
 }
 
 pub(super) fn observe(request: &ExecuteRequest, target: WindowTarget) -> Value {
+    let _timing = diagnostics::Stage::new("ax_observe");
     let Some(owner) = request.owner.clone() else {
         return failure(
             "observe",
@@ -219,7 +220,11 @@ pub(super) fn act(request: &ExecuteRequest, target: WindowTarget) -> Value {
         match mac_capture_window_group(target).and_then(encode_screenshot_capture) {
             Ok(frame) => {
                 result["screenshot"] = frame;
-                result["observation_kind"] = json!("ax_and_screenshot");
+                result["observation_kind"] = json!(if result.get("accessibility").is_some() {
+                    "ax_and_screenshot"
+                } else {
+                    "screenshot"
+                });
             }
             Err(reason) => result["screenshot_error"] = json!(reason),
         }
@@ -391,6 +396,48 @@ fn expose_node(signature: &Value, actions: &[String], settable: bool, root: bool
             .any(|action| !matches!(action.as_str(), "AXShowMenu" | "AXScrollToVisible"))
 }
 
+fn content_node(signature: &Value, actions: &[String], settable: bool) -> bool {
+    let role = signature["role"].as_str().unwrap_or("");
+    // A window title and the traffic-light buttons are present even when an
+    // app exposes none of its contents (for example, WeChat). They remain in a
+    // useful tree, but cannot justify withholding the pixel observation.
+    if matches!(role, "AXApplication" | "AXWindow" | "AXSheet" | "AXPopover")
+        || matches!(
+            signature["subrole"].as_str(),
+            Some(
+                "AXCloseButton"
+                    | "AXMinimizeButton"
+                    | "AXZoomButton"
+                    | "AXFullScreenButton"
+                    | "AXToolbarButton"
+                    | "AXGrowArea"
+            )
+        )
+    {
+        return false;
+    }
+    if settable || signature["protected"] == true || text_role(role) {
+        return true;
+    }
+    if actions.iter().any(|action| {
+        !matches!(
+            action.as_str(),
+            "AXRaise" | "AXShowMenu" | "AXScrollToVisible"
+        )
+    }) {
+        return true;
+    }
+    // Labels on otherwise empty layout/scroll containers are not document
+    // content. Static text, labelled controls and read-only values are.
+    !matches!(
+        role,
+        "AXGroup" | "AXUnknown" | "AXScrollArea" | "AXSplitGroup" | "AXLayoutArea" | "AXToolbar"
+    ) && ["title", "description", "value"].iter().any(|field| {
+        let value = &signature[*field];
+        !value.is_null() && value.as_str().is_none_or(|text| !text.trim().is_empty())
+    })
+}
+
 fn clip(value: &mut Value, remaining: &mut usize, truncated: &mut bool) {
     match value {
         Value::String(text) => {
@@ -466,11 +513,11 @@ impl Store {
             Ok(snapshot) => snapshot,
             Err(reason) => return failure("observe", "ax_unavailable", &reason),
         };
-        if snapshot.nodes.len() <= 1 {
+        if snapshot.observation["content_nodes"] == 0 {
             return failure(
                 "observe",
                 "ax_empty",
-                "The window exposes no useful accessibility content; request a screenshot",
+                "The window exposes no useful accessibility content beyond window chrome or empty containers; request a screenshot",
             );
         }
         let result = json!({"ok": true, "action": "observe", "summary": "Observed application accessibility tree",
@@ -514,6 +561,7 @@ impl Store {
         };
         let mut nodes = HashMap::new();
         let mut elements = Vec::new();
+        let mut content_nodes = 0;
         let mut visited = Vec::new();
         let mut truncated = false;
         let mut text_remaining = MAX_TEXT;
@@ -569,6 +617,9 @@ impl Store {
             }
             if !exposed {
                 continue;
+            }
+            if content_node(&sig, &advertised, settable) {
+                content_nodes += 1;
             }
             let enabled = sig["enabled"] != false;
             let allowed: Vec<_> = advertised
@@ -629,7 +680,7 @@ impl Store {
             self.sequence
         );
         let observation = json!({"snapshot_id": id, "window_id": target.window_id.to_string(), "elements": elements,
-            "truncated": truncated, "max_nodes": MAX_NODES, "visited_nodes": visited.len(),
+            "truncated": truncated, "max_nodes": MAX_NODES, "visited_nodes": visited.len(), "content_nodes": content_nodes,
             "expires_in_ms": SNAPSHOT_TTL.as_millis(),
             "coordinate_space": "ax_screen_units_not_screenshot_pixels",
             "strict_background_ax_available": !rules.is_empty()});
@@ -821,6 +872,7 @@ impl Store {
             result["observation_kind"] = json!("ax");
         } else {
             result["ax_error"] = after["error"].clone();
+            result["fallback_reason"] = after["error_code"].clone();
             result["requires_observation"] = json!(true);
         }
         if result["effect_verified"] != true && status == AX_ERROR_SUCCESS {

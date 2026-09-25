@@ -42,6 +42,7 @@ _AX_FIELDS = {"observation", "snapshot_id", "element_id", "ax_action"}
 _READ_ONLY_ACTIONS = {"observe", "list_displays", "list_windows", "wait"}
 _COMPUTER_USE_MODES = {"background_app", "foreground_desktop"}
 _MAX_SCROLL_DELTA = 10_000
+_MAX_WINDOW_OBSERVATIONS = 3
 
 
 class ComputerUseTool(Tool):
@@ -297,6 +298,10 @@ class ComputerUseTool(Tool):
                 "sibling documents are excluded even when they share a process and overlap. "
                 "window_components report kind, owner_window_id and relationship_evidence; "
                 "excluded_windows report surfaces whose ownership is unproven or which are separate documents. "
+                "window_observations may supply additional, independent screenshots of visible auxiliaries with unconfirmed ownership. "
+                "Inspect these images: search results and menus may be absent from the main screenshot. "
+                "Each screenshot's image_index is its 1-based attachment position. Use its own window_id and window-local coordinates; "
+                "do not use an auxiliary image's coordinates with the root window_id or infer ownership from its presence. "
                 "Keyboard receipts report requested_window_id, resolved_window_id, focused_window_id, "
                 "focused_element_role, focus_resolution and focus_changed_by_tool. "
                 "type/keypress preserve a confirmed responder and never raise another document on a focus mismatch. "
@@ -308,7 +313,8 @@ class ComputerUseTool(Tool):
                 "target_stale means the original window ID is no longer usable; window_lifecycle reports "
                 "new/disappeared windows and current focus. Check action_dispatched: the target may disappear "
                 "after input was sent. Never substitute a similar window ID and replay automatically. "
-                "When requires_observation is true, list/observe the relevant window before further input. "
+                "When requires_observation is true, inspect fresh returned window_observations; "
+                "list/observe any relevant window still missing before further input. "
                 "stale hidden backing stores are ignored. When background_observation_limited is reported, "
                 "do not infer or click content absent from the captured pixels. "
                 "A hidden auxiliary window is not clicked from stale pixels. "
@@ -444,12 +450,19 @@ class ComputerUseTool(Tool):
             )
 
         policy = self._delivery_policy()
+        host_action = dict(tool_input)
+        capabilities = getattr(backend, "capabilities", None)
+        caps = capabilities(host_id) if mode == "background_app" and callable(capabilities) else {}
+        if isinstance(caps, dict) and caps.get("window_observation_version") == 1:
+            # Older hosts reject unknown action fields; older Core versions must
+            # never receive image payloads they would leave in model JSON text.
+            host_action["include_window_observations"] = True
         try:
             result = await backend.execute(
                 host_id,
                 session_id=context.session_id,
                 agent_id=context.agent_id,
-                action=dict(tool_input),
+                action=host_action,
                 mode=mode,
                 target_scope="desktop" if mode == "foreground_desktop" else "app_window",
                 delivery_policy=policy,
@@ -478,32 +491,58 @@ class ComputerUseTool(Tool):
         model_result.pop("preview_screenshot", None)
         model_result.pop("preview_screenshot_error", None)
         screenshot = model_result.pop("screenshot", None)
+        observations = model_result.pop("window_observations", None)
         images: list[dict[str, str]] = []
-        if isinstance(screenshot, dict):
-            encoded = screenshot.get("data")
-            media_type = str(screenshot.get("media_type") or "image/png")
-            if isinstance(encoded, str) and encoded:
-                if not media_type.lower().startswith("image/"):
-                    model_result["screenshot_error"] = "host returned a non-image media type"
-                    encoded = ""
-            if isinstance(encoded, str) and encoded:
-                try:
-                    raw = base64.b64decode(encoded, validate=True)
-                except (binascii.Error, ValueError):
-                    model_result["screenshot_error"] = "host returned invalid base64 image data"
+        remaining = MAX_INLINE_IMAGE_BYTES
+
+        def attach_frame(container: dict[str, Any], frame: Any, description: str) -> None:
+            nonlocal remaining
+            if not isinstance(frame, dict):
+                return
+            encoded = frame.get("data")
+            media_type = str(frame.get("media_type") or "image/png")
+            if not isinstance(encoded, str) or not encoded:
+                return
+            if not media_type.lower().startswith("image/"):
+                container["screenshot_error"] = "host returned a non-image media type"
+                return
+            try:
+                raw = base64.b64decode(encoded, validate=True)
+            except (binascii.Error, ValueError):
+                container["screenshot_error"] = "host returned invalid base64 image data"
+                return
+            if len(raw) > remaining:
+                container["screenshot_error"] = "host screenshots exceed the combined 20MB image limit"
+                return
+            if raw:
+                remaining -= len(raw)
+                images.append({"media_type": media_type, "data": encoded, "description": description})
+                container["screenshot"] = {
+                    **{key: value for key, value in frame.items() if key != "data"},
+                    "image_index": len(images),
+                }
+
+        root_description = (f"Computer Use window {tool_input.get('window_id')} · window-local coordinates"
+                            if mode == "background_app" else "Computer Use desktop observation")
+        attach_frame(model_result, screenshot, root_description)
+        if isinstance(observations, list):
+            projected = []
+            for observation in observations[:_MAX_WINDOW_OBSERVATIONS]:
+                if not isinstance(observation, dict):
+                    continue
+                entry = dict(observation)
+                frame = entry.pop("screenshot", None)
+                entry.pop("preview_screenshot", None)
+                entry.pop("preview_screenshot_error", None)
+                window_id = entry.get("window_id")
+                if isinstance(window_id, str) and window_id.isdecimal():
+                    attach_frame(entry, frame, f"Computer Use window {window_id} · independent auxiliary · window-local coordinates")
                 else:
-                    if len(raw) > MAX_INLINE_IMAGE_BYTES:
-                        model_result["screenshot_error"] = "host screenshot exceeds the 20MB image limit"
-                        raw = b""
-                    if raw:
-                        images.append({
-                            "media_type": media_type,
-                            "data": encoded,
-                            "description": "Computer Use desktop observation",
-                        })
-                        model_result["screenshot"] = {
-                            key: value for key, value in screenshot.items() if key != "data"
-                        }
+                    entry["screenshot_error"] = "auxiliary observation has no valid window_id"
+                projected.append(entry)
+            model_result["window_observations"] = projected
+            if len(observations) > _MAX_WINDOW_OBSERVATIONS:
+                model_result["window_observation_error"] = "Additional window observations omitted; observe the required window separately"
 
         failed = result.get("ok") is False
         return ToolResult(

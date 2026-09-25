@@ -19,6 +19,7 @@ export interface ComputerUseCapabilities {
   capture_available?: boolean;
   ax_available?: boolean;
   ax_protocol_version?: number | null;
+  window_observation_version?: number | null;
   platform: string;
   displays: Array<{ id: string; name: string; x: number; y: number; width: number; height: number; primary: boolean }>;
   supported_modes: Array<"background_app" | "foreground_desktop">;

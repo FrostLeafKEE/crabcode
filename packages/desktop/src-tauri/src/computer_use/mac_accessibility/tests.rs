@@ -162,6 +162,52 @@ fn anonymous_layout_does_not_hide_document_content_or_controls() {
 }
 
 #[test]
+fn window_chrome_and_empty_containers_are_not_content() {
+    assert!(!content_node(
+        &json!({"role":"AXWindow", "title":"wechat"}),
+        &["AXRaise".into()],
+        false
+    ));
+    for subrole in [
+        "AXCloseButton",
+        "AXMinimizeButton",
+        "AXZoomButton",
+        "AXFullScreenButton",
+    ] {
+        assert!(!content_node(
+            &json!({"role":"AXButton", "subrole":subrole, "description":"window control"}),
+            &["AXPress".into()],
+            false
+        ));
+    }
+    for role in ["AXGroup", "AXScrollArea", "AXSplitGroup", "AXUnknown"] {
+        assert!(!content_node(
+            &json!({"role":role, "description":"layout"}),
+            &["AXShowMenu".into(), "AXScrollToVisible".into()],
+            false
+        ));
+    }
+    assert!(!content_node(
+        &json!({"role":"AXStaticText", "value":"  "}),
+        &[],
+        false
+    ));
+    for node in [
+        json!({"role":"AXStaticText", "value":"Message body"}),
+        json!({"role":"AXTextArea", "value":""}),
+        json!({"role":"AXTextField", "protected":true}),
+        json!({"role":"AXButton", "title":"Send", "enabled":false}),
+    ] {
+        assert!(content_node(&node, &[], false), "{node}");
+    }
+    assert!(content_node(
+        &json!({"role":"AXButton"}),
+        &["AXPress".into()],
+        false
+    ));
+}
+
+#[test]
 #[ignore = "read-only live probe; requires an explicitly selected CRABCODE_AX_PROBE_WINDOW_ID"]
 fn macos_ax_observes_selected_live_window_without_images_or_input() {
     let id = std::env::var("CRABCODE_AX_PROBE_WINDOW_ID").expect("select a live window explicitly");
@@ -392,6 +438,149 @@ fn macos_ax_empty_auto_observation_falls_back_to_window_screenshot() {
     assert_eq!(result["action_dispatched"], false);
     assert_eq!(result["delivery_policy"], "strict_background");
     assert!(result["screenshot"]["data"].is_string());
+}
+
+#[test]
+#[ignore = "requires Accessibility and Screen Recording; operates only an isolated chrome-only AX window"]
+fn macos_ax_chrome_only_returns_screenshots_after_observation_and_input() {
+    let host = super::super::tests::MacInputTestHost::start_fixture(
+        "tests/fixtures/keyboard_host.swift",
+        &["--chrome-only-ax"],
+    );
+    let state = (0..200)
+        .find_map(|_| {
+            let state = host.state();
+            if state.is_none() {
+                thread::sleep(Duration::from_millis(50));
+            }
+            state
+        })
+        .expect("fixture ready");
+    let request = |mut action: Value| {
+        action["window_id"] = json!(state["first"].to_string());
+        execute(serde_json::from_value(json!({"target_scope":"app_window", "delivery_policy":"allow_foreground",
+            "owner":{"host_id":"chrome-only-test", "connection_id":"fixture", "session_id":"test", "agent_id":null},
+            "action":action})).unwrap()).unwrap()
+    };
+    for action in [
+        json!({"action":"observe"}),
+        json!({"action":"focus_window"}),
+        json!({"action":"click", "x":150, "y":100}),
+    ] {
+        let read_only = action["action"] == "observe";
+        let result = request(action);
+        assert_eq!(result["ok"], true, "{}", result["error"]);
+        assert_eq!(result["observation_kind"], "screenshot");
+        assert_eq!(result["fallback_reason"], "ax_empty");
+        assert_eq!(result["action_dispatched"], !read_only);
+        assert!(result.get("preview_screenshot").is_none());
+        assert!(result["screenshot"]["data"].is_string());
+        eprintln!(
+            "chrome-only {} timings: {}",
+            result["action"], result["timings_ms"]
+        );
+    }
+    let suppressed =
+        request(json!({"action":"keypress", "keys":["RIGHT"], "include_screenshot":false}));
+    assert_eq!(suppressed["action_dispatched"], true);
+    assert_eq!(suppressed["fallback_reason"], "ax_empty");
+    assert!(suppressed.get("screenshot").is_none());
+    let state = host.state().unwrap();
+    assert_eq!(state["first_clicks"], 1);
+    assert_eq!(state["second_clicks"], 0);
+}
+
+#[test]
+#[ignore = "requires Accessibility and Screen Recording; edits only an isolated native test window"]
+fn macos_ax_content_disappearing_after_semantic_input_returns_screenshot() {
+    let host = super::super::tests::MacInputTestHost::start_fixture(
+        "tests/fixtures/keyboard_host.swift",
+        &["--hide-ax-after-input"],
+    );
+    let state = (0..200)
+        .find_map(|_| {
+            let state = host.state();
+            if state.is_none() {
+                thread::sleep(Duration::from_millis(50));
+            }
+            state
+        })
+        .expect("fixture ready");
+    let request = |mut action: Value| {
+        action["window_id"] = json!(state["first"].to_string());
+        execute(serde_json::from_value(json!({"target_scope":"app_window", "delivery_policy":"allow_foreground",
+            "owner":{"host_id":"ax-disappearing-test", "connection_id":"fixture", "session_id":"test", "agent_id":null},
+            "action":action})).unwrap()).unwrap()
+    };
+    let initial = request(json!({"action":"observe"}));
+    let tree = &initial["accessibility"];
+    let editor = tree["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["role"] == "AXTextArea")
+        .unwrap();
+    let result = request(
+        json!({"action":"set_value", "snapshot_id":tree["snapshot_id"], "element_id":editor["element_id"], "text":"hidden AX content"}),
+    );
+    assert_eq!(result["ok"], true, "{}", result["error"]);
+    assert_eq!(result["action_dispatched"], true);
+    assert_eq!(result["observation_kind"], "screenshot");
+    assert_eq!(result["fallback_reason"], "ax_empty");
+    assert!(result["screenshot"]["data"].is_string());
+    assert!(result.get("preview_screenshot").is_none());
+    assert_eq!(host.state().unwrap()["first_text"], "hidden AX content");
+}
+
+#[test]
+#[ignore = "read-only timing probe; requires an explicitly selected CRABCODE_AX_PROBE_WINDOW_ID"]
+fn macos_selected_live_window_observation_timings() {
+    let id = std::env::var("CRABCODE_AX_PROBE_WINDOW_ID").expect("select a live window explicitly");
+    for observation in ["screenshot", "auto", "screenshot"] {
+        let result = execute(serde_json::from_value(json!({
+            "target_scope":"app_window", "delivery_policy":"strict_background",
+            "owner":{"host_id":"timing-probe", "connection_id":"read-only", "session_id":"probe", "agent_id":null},
+            "action":{"action":"observe", "observation":observation, "window_id":id, "include_window_observations":true}
+        })).unwrap()).unwrap();
+        assert_eq!(result["ok"], true, "{}", result["error"]);
+        assert_eq!(result["action_dispatched"], false);
+        if std::env::var_os("CRABCODE_AX_PROBE_EXPECT_AUXILIARY").is_some() {
+            assert!(
+                result["window_observations"]
+                    .as_array()
+                    .is_some_and(|windows| {
+                        windows
+                            .iter()
+                            .any(|window| window["screenshot"]["data"].is_string())
+                    }),
+                "independent auxiliary screenshot missing"
+            );
+        }
+        if let Ok(reason) = std::env::var("CRABCODE_AX_PROBE_EXPECT_FALLBACK") {
+            if observation == "auto" {
+                assert_eq!(result["fallback_reason"], reason);
+                assert_eq!(result["observation_kind"], "screenshot");
+            }
+        }
+        if observation == "auto" {
+            if let Ok(path) = std::env::var("CRABCODE_AX_PROBE_OUTPUT") {
+                std::fs::write(path, serde_json::to_vec(&result).unwrap()).unwrap();
+            }
+        }
+        let frame = result
+            .get("screenshot")
+            .or_else(|| result.get("preview_screenshot"))
+            .expect("frame");
+        eprintln!(
+            "{observation}: {}x{}, base64_bytes={}, fallback={}, independent_windows={}, timings={}",
+            frame["width"],
+            frame["height"],
+            frame["data"].as_str().unwrap().len(),
+            result["fallback_reason"],
+            result["window_observations"].as_array().map_or(0, Vec::len),
+            result["timings_ms"]
+        );
+    }
 }
 
 #[test]
