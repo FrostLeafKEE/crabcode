@@ -95,11 +95,89 @@ def test_pagination_exact_names_and_mcp_instructions_only_when_loaded():
 
 def test_discovery_directory_requires_real_search_before_tool_use():
     directory = catalog(Example("ComputerUse")).directory()
-    assert "computer: ComputerUse" in directory
+    assert 'names=["ComputerUse"] (group="computer")' in directory
     assert "names below are NOT callable yet" in directory
     assert "first make a real ToolSearch call" in directory
     assert "Never guess its arguments or print a textual/pseudo tool call" in directory
     assert "callable in the NEXT response only" in directory
+    assert "group is a category, not a namespace or name prefix" in directory
+
+
+def test_directory_omits_exposed_tools_and_disappears_when_all_are_loaded():
+    computer, browser = Example("ComputerUse"), Example("Browser")
+    state = ToolLoadingState()
+    first = catalog(computer, browser, state=state)
+    first.load([computer.name])
+    # A load cannot make the tool callable during the same response.
+    assert 'names=["ComputerUse"]' in first.directory()
+    following = catalog(computer, browser, state=state)
+    assert computer.name in [tool.name for tool in following.loaded]
+    assert computer.name not in following.directory()
+    assert 'names=["Browser"]' in following.directory()
+    assert catalog(computer, browser, state=state, pinned=(browser.name,)).directory() == ""
+
+
+def test_qualified_names_load_and_persist_only_canonical_names():
+    computer, browser = Example("ComputerUse"), Example("Browser")
+    state = ToolLoadingState()
+    updates = []
+    c = ToolCatalog([ToolSearchTool(), computer, browser], ToolContext(),
+                    ToolLoadingSettings(), state, on_change=lambda names: updates.append(names))
+    result = json.loads(c.search(names=["computer.ComputerUse", "ComputerUse", "web.Browser"],
+                                group="", query="", list_only=False, offset=0, limit=5))
+    assert result["loaded"] == ["ComputerUse", "Browser"]
+    assert [tool["name"] for tool in result["tools"]] == ["ComputerUse", "Browser"]
+    assert state.names == updates[-1] == ["ToolSearch", "ComputerUse", "Browser"]
+    resumed = catalog(computer, browser, state=ToolLoadingState.restore(state.names))
+    assert resumed.directory() == ""
+
+
+def test_qualified_lookup_preserves_listing_filters_and_atomic_failure():
+    c = catalog(Example("ComputerUse"))
+    kwargs = dict(group="", query="", list_only=True, offset=0, limit=5)
+    listed = json.loads(c.search(names=["computer.ComputerUse"], **kwargs))
+    assert listed["tools"][0]["name"] == "ComputerUse"
+    assert listed["tools"][0]["loaded"] is False
+    assert listed["loaded"] == []
+    filtered = json.loads(c.search(
+        names=["computer.ComputerUse"], **{**kwargs, "group": "web", "list_only": False}
+    ))
+    assert filtered["tools"] == []
+    for invalid in ("web.ComputerUse", "other.ComputerUse", "computer.computeruse"):
+        result = json.loads(c.search(
+            names=["computer.ComputerUse", invalid], **{**kwargs, "list_only": False}
+        ))
+        assert result["error"] == "Unknown or unavailable tools"
+        assert result["names"] == [invalid]
+        assert c.state.names == ["ToolSearch"]
+
+
+@pytest.mark.parametrize("unavailable", ["disabled", "model", "plan", "registry"])
+def test_qualified_lookup_cannot_load_unavailable_tools(unavailable):
+    tool = Example("ComputerUse", read_only=False)
+    if unavailable == "disabled":
+        tool.is_enabled = False
+    elif unavailable == "model":
+        tool.is_available = lambda context: context.model == "supported"
+    c = catalog(*([] if unavailable == "registry" else [tool]), plan=unavailable == "plan")
+    result = json.loads(c.search(names=["computer.ComputerUse"], group="", query="",
+                                list_only=False, offset=0, limit=5))
+    assert result["error"] == "Unknown or unavailable tools"
+    assert c.state.names == ["ToolSearch"]
+
+
+def test_qualified_mcp_names_require_unique_match_and_exact_names_take_precedence():
+    first, second = Example("Fetch"), Example("docs.Fetch")
+    first._server_name = "srv.docs"
+    second._server_name = "srv"
+    qualified = "mcp:srv.docs.Fetch"
+    kwargs = dict(names=[qualified], group="", query="", list_only=False, offset=0, limit=5)
+    assert json.loads(catalog(first).search(**kwargs))["loaded"] == ["Fetch"]
+    ambiguous = catalog(first, second)
+    assert "error" in json.loads(ambiguous.search(**kwargs))
+    assert ambiguous.state.names == ["ToolSearch"]
+    exact = catalog(first, second, Example(qualified))
+    assert json.loads(exact.search(**kwargs))["loaded"] == [qualified]
 
 
 def call(name, ident, inputs=None):
@@ -137,15 +215,18 @@ def run(adapter, tool, **options):
     return asyncio.run(collect()), params
 
 
-def test_loading_takes_effect_on_next_request_not_same_batch():
-    tool = Example()
+@pytest.mark.parametrize("search_name", ["ComputerUse", "computer.ComputerUse"])
+def test_loading_takes_effect_on_next_request_not_same_batch(search_name):
+    tool = Example("ComputerUse")
     adapter = Adapter([
-        [*call("ToolSearch", "search", {"names": [tool.name]}), *call(tool.name, "too-early")],
+        [*call("ToolSearch", "search", {"names": [search_name]}), *call(tool.name, "too-early")],
         call(tool.name, "allowed"), [StreamChunk(type="text", text="done")],
     ])
     events, params = run(adapter, tool)
     assert adapter.requests[0] == ["ToolSearch"]
     assert adapter.requests[1] == ["ToolSearch", tool.name]
+    assert 'names=["ComputerUse"]' in "\n".join(adapter.systems[0])
+    assert not any("# Tool discovery" in "\n".join(system) for system in adapter.systems[1:])
     assert tool.calls == 1
     assert any(isinstance(e, ToolResultEvent) and e.tool_use_id == "too-early" and e.is_error for e in events)
     last = next(e for e in reversed(events) if isinstance(e, TurnCompleteEvent))
@@ -165,7 +246,7 @@ def test_undiscovered_call_is_rejected_and_permissions_still_apply():
     async def deny(*args):
         return PermissionResult(behavior=PermissionBehavior.DENY, reason="denied for test")
     tool.check_permissions = deny
-    adapter = Adapter([call("ToolSearch", "s", {"names": [tool.name]}), call(tool.name, "denied"),
+    adapter = Adapter([call("ToolSearch", "s", {"names": [f"extensions.{tool.name}"]}), call(tool.name, "denied"),
                        [StreamChunk(type="text", text="done")]])
     from crabcode_core.permissions.manager import PermissionManager
     events, _ = run(adapter, tool, permission_manager=PermissionManager(), permission_queue=asyncio.Queue())

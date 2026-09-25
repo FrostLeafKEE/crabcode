@@ -101,13 +101,24 @@ class ToolCatalog:
         server = getattr(self.tools[name], "_server_name", None)
         return f"mcp:{server}" if server else "extensions"
 
+    def _resolve_name(self, name: str) -> str | None:
+        if name in self.tools:
+            return name
+        # Accept an accidentally qualified name only within this agent's
+        # available registry. Never strip arbitrary prefixes or override an
+        # exact registered name (MCP/extension names may contain dots).
+        matches = [n for n in self.tools if name == f"{self.group(n)}.{n}"]
+        return matches[0] if len(matches) == 1 else None
+
     def directory(self) -> str:
         if self.mode == "eager":
             return ""
         groups: dict[str, list[str]] = {}
         for name in self.tools:
-            if name not in CORE_TOOLS:
+            if name not in self.exposed_names:
                 groups.setdefault(self.group(name), []).append(name)
+        if not groups:
+            return ""
         # Large MCP registries stay compact; ToolSearch list pagination is the
         # lossless fallback, so truncation here cannot hide a tool permanently.
         lines = [
@@ -115,13 +126,16 @@ class ToolCatalog:
             "The names below are NOT callable yet and do not include their schemas. When a task needs one, "
             "first make a real ToolSearch call using its exact name, group or a query. Never guess its "
             "arguments or print a textual/pseudo tool call. A loaded tool becomes callable in the NEXT "
-            "response only. Use list=true to browse all tools.",
+            "response only. Use names exactly as listed; group is a category, "
+            "not a namespace or name prefix. Tools whose schemas are already supplied "
+            "are callable directly and need no further search. "
+            "Use list=true to browse all tools.",
         ]
         for group, names in sorted(groups.items())[:20]:
-            summary = ", ".join(names[:12])
+            summary = json.dumps(names[:12], ensure_ascii=False)
+            line = f"names={summary} (group={json.dumps(group, ensure_ascii=False)})"
             if len(names) > 12:
-                summary += f" (+{len(names) - 12} more)"
-            line = f"{group}: {summary}"
+                line += f" (+{len(names) - 12} more)"
             if sum(map(len, lines)) + len(line) > 1800:
                 lines.append("More tools available through ToolSearch list=true.")
                 break
@@ -142,11 +156,14 @@ class ToolCatalog:
                list_only: bool, offset: int, limit: int) -> str:
         candidates = list(self.tools)
         if names:
-            missing = [n for n in names if n not in self.tools]
+            resolved = [(name, self._resolve_name(name)) for name in names]
+            missing = [name for name, canonical in resolved if canonical is None]
             if missing:
                 return json.dumps({"error": "Unknown or unavailable tools", "names": missing,
                                    "hint": "Use list=true to browse available tools."})
-            candidates = list(dict.fromkeys(names))
+            candidates = list(dict.fromkeys(
+                canonical for _, canonical in resolved if canonical is not None
+            ))
         if group:
             candidates = [n for n in candidates if self.group(n) == group]
         if query:

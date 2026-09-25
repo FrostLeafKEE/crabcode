@@ -63,8 +63,10 @@ def test_plan_language_and_ultra_are_preserved():
 
 def test_default_prompt_requires_real_tool_search_before_deferred_tools():
     text = "\n".join(get_system_prompt(["ToolSearch"], "test"))
-    assert "entries in the Tool discovery directory are names only, not callable tools" in text
+    assert "directory lists only tools whose schemas are not supplied yet" in text
     assert "first call ToolSearch with its exact listed name" in text
+    assert "group is a category, not a name prefix" in text
+    assert "Tools with supplied schemas are callable directly and need no further search" in text
     assert "never print pseudo-calls such as `<tool_call>`" in text
     assert "use the newly supplied schema in the next response" in text
 

@@ -15,8 +15,17 @@ class ToolSearchTool(Tool):
     input_schema = {
         "type": "object",
         "properties": {
-            "names": {"type": "array", "items": {"type": "string"}},
-            "group": {"type": "string"},
+            "names": {
+                "type": "array", "items": {"type": "string"},
+                "description": (
+                    "Exact registered tool names from the directory's names field; "
+                    "do not add a group prefix."
+                ),
+            },
+            "group": {
+                "type": "string",
+                "description": "Tool category to search or load. This is not a tool-name namespace.",
+            },
             "query": {"type": "string"},
             "list": {"type": "boolean", "default": False},
             "offset": {"type": "integer", "minimum": 0, "default": 0},
