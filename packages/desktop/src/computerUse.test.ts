@@ -94,6 +94,19 @@ describe("ComputerUseChannel", () => {
     const preview = (publish.mock.lastCall![0] as ComputerUseState).previews[0];
     expect(preview.frame).toEqual(frame);
     expect(preview.frameUpdatedAt).toBe(capturedAt);
+    const tree = 'e1 window "Demo"\n\te2 text "Content"';
+    socket.emit("message", { data: JSON.stringify({ type: "computer_use_ax_preview", request_id: "ax",
+      session_id: "session", agent_id: null, ax_tree: tree, ax_element_count: 2, ax_truncated: true }) });
+    expect((publish.mock.lastCall![0] as ComputerUseState).previews[0]).toMatchObject({
+      axTree: tree, axElementCount: 2, axTruncated: true, frame,
+    });
+    socket.emit("message", { data: JSON.stringify({ type: "computer_use_ax_preview", request_id: "image",
+      session_id: "session", ax_tree: "stale" }) });
+    expect((publish.mock.lastCall![0] as ComputerUseState).previews[0].axTree).toBe(tree);
+    channel.setEnabled(false);
+    socket.emit("message", { data: JSON.stringify({ type: "computer_use_ax_preview", request_id: "ax",
+      session_id: "session", ax_tree: "late" }) });
+    expect((publish.mock.lastCall![0] as ComputerUseState).previews).toEqual([]);
     channel.dispose();
   });
 
@@ -468,6 +481,7 @@ describe("ComputerUseChannel", () => {
             action: "observe",
             summary: "Observed window",
             frame: { data: "MQ==", media_type: "image/png", width: 10, height: 10, origin_x: 0, origin_y: 0, frame_id: "restored-frame" },
+            observation_kind: "ax", ax_tree: 'e1 window "Restored"', ax_element_count: 1, ax_truncated: false,
             release_deadline_ms: Date.now() + COMPUTER_USE_RELEASE_RETENTION_MS,
           }],
         }),
@@ -476,6 +490,7 @@ describe("ComputerUseChannel", () => {
       expect(states.at(-1)).toMatchObject({ active: true, deliveryPolicy: "allow_foreground" });
       expect(states.at(-1)?.previews[0]?.deliveryPolicy).toBe("allow_foreground");
       expect(states.at(-1)?.previews[0]?.frame?.frame_id).toBe("restored-frame");
+      expect(states.at(-1)?.previews[0]?.axTree).toBe('e1 window "Restored"');
       await vi.advanceTimersByTimeAsync(COMPUTER_USE_RELEASE_RETENTION_MS - 1);
       expect(states.at(-1)).toMatchObject({ active: true });
       await vi.advanceTimersByTimeAsync(1);

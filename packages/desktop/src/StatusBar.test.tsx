@@ -220,6 +220,36 @@ describe("desktop status bar", () => {
     expect(container.querySelector(".computer-use-mode")?.textContent).toBe("整个桌面 · 允许前台");
   });
 
+  it("shows compact AX text in the preview and detail instead of an older screenshot, then switches to fresh pixels", () => {
+    const tree = 'e1 window "Demo"\n\te2 text "<img src=x>"\n\te3 button (press) "Send"';
+    const preview = { key: "ax", sessionId: "session", mode: "background_app" as const, status: "ready" as const,
+      action: "observe", summary: "Observed accessibility tree", observationKind: "ax" as const,
+      axElementCount: 3, axTree: tree, axTruncated: true, frame: null, cursor: null, updatedAt: Date.now() };
+    let computerUse: ComputerUseState = { ...initialComputerUseState("desktop-test", true),
+      status: "ready", active: true, previews: [preview] };
+    act(() => root.render(<StatusBar computerUse={computerUse} />));
+    act(() => container.querySelector<HTMLButtonElement>(".status-computer-use")!.click());
+    expect(container.querySelector(".computer-use-ax-tree pre")?.textContent).toBe(tree);
+    expect(container.textContent).toContain("内容已截断");
+    const frame = { data: "AAAA", media_type: "image/png", width: 10, height: 10, origin_x: 0, origin_y: 0, frame_id: "f" };
+    computerUse = { ...computerUse, previews: [{ ...preview, frame }] };
+    act(() => root.render(<StatusBar computerUse={computerUse} />));
+    expect(container.querySelector(".computer-use-preview img")).toBeNull();
+    act(() => container.querySelector<HTMLButtonElement>(".computer-use-preview-content")!.click());
+    expect(document.body.querySelector(".computer-use-detail pre")?.textContent).toBe(tree);
+    expect(document.body.querySelector(".computer-use-detail img")).toBeNull();
+    // The Gateway's formatted tree can arrive without a new action timestamp.
+    const updated = { ...computerUse.previews[0], axTree: tree + '\n\te4 text "Updated"' };
+    computerUse = { ...computerUse, previews: [updated] };
+    act(() => root.render(<StatusBar computerUse={computerUse} />));
+    expect(document.body.querySelector(".computer-use-detail pre")?.textContent).toContain("Updated");
+    computerUse = { ...computerUse, previews: [{ ...updated, observationKind: "ax_and_screenshot" }] };
+    act(() => root.render(<StatusBar computerUse={computerUse} />));
+    expect(container.querySelector(".computer-use-preview img")).not.toBeNull();
+    expect(document.body.querySelector(".computer-use-detail img")).not.toBeNull();
+    expect(document.body.querySelector(".computer-use-detail pre")).toBeNull();
+  });
+
   it.each([
     { label: "background window at a positive screen origin", mode: "background_app", origin: [320, 180], cursor: { x: 25, y: 15 }, expected: ["25%", "30%"] },
     { label: "background window on a display with a negative origin", mode: "background_app", origin: [-1600, -900], cursor: { x: 25, y: 15 }, expected: ["25%", "30%"] },

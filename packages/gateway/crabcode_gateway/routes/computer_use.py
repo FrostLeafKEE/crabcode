@@ -78,11 +78,13 @@ async def computer_use_socket(websocket: WebSocket) -> None:
             elif kind == "computer_use_result":
                 request_id = str(message.get("request_id") or "")
                 result = message.get("result")
-                broker.resolve(
+                resolved = broker.resolve(
                     host_id,
                     request_id,
                     result if isinstance(result, dict) else {"ok": False, "error": "invalid host result"},
                 )
+                if resolved and isinstance(result, dict) and isinstance(result.get("accessibility"), dict):
+                    await broker.publish_ax_preview(host_id, websocket, request_id)
             else:
                 await websocket.send_json({"type": "computer_use_error", "error": f"unknown message type: {kind}"})
     except WebSocketDisconnect:

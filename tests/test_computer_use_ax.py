@@ -5,6 +5,7 @@ import pytest
 
 from test_computer_use import FakeBackend, FakeSocket, prepared_tool
 from crabcode_gateway.computer_use import ComputerUseBroker
+from crabcode_core.computer_use_observation import compact_ax_result
 
 
 class AxBackend(FakeBackend):
@@ -101,4 +102,93 @@ def test_gateway_negotiates_ax_and_preserves_preview_age_without_an_image():
         assert preview["observation_kind"] == "ax"
         assert preview["ax_element_count"] == 1
         assert preview["frame"] is None
+    asyncio.run(scenario())
+
+
+def test_gateway_replays_the_full_compact_ax_preview_and_routes_it_to_the_completed_request():
+    async def scenario():
+        broker = ComputerUseBroker(timeout_seconds=1)
+        socket = FakeSocket()
+        caps = {"supported_modes": ["background_app"], "delivery_policy_version": 1}
+        broker.register("h", socket, enabled=True, gui_available=True, capabilities=caps)
+        async def complete(result):
+            task = asyncio.create_task(broker.execute("h", session_id="s", agent_id="a",
+                action={"action":"observe", "window_id":"7"}, target_scope="app_window"))
+            await asyncio.sleep(0)
+            request_id = socket.messages[-1]["request_id"]
+            assert broker.resolve("h", request_id, result)
+            assert await task == result
+            return request_id
+
+        frame = {"data":"cG5n", "frame_id":"older"}
+        await complete({"ok":True, "screenshot":frame})
+        result = {"ok":True, "observation_kind":"ax", "accessibility": {
+            "snapshot_id":"s1", "truncated":True, "elements":[
+                {"element_id":"e1", "role":"AXWindow", "title":"Demo"},
+                {"element_id":"e2", "parent_id":"e1", "role":"AXStaticText", "value":"Content"},
+            ]}}
+        request_id = await complete(result)
+        expected = compact_ax_result(result)["accessibility"]["tree"]
+        await broker.publish_ax_preview("h", socket, request_id)
+        assert socket.messages[-1] == {"type":"computer_use_ax_preview", "request_id":request_id,
+            "session_id":"s", "agent_id":"a", "ax_tree":expected, "ax_element_count":2, "ax_truncated":True}
+        retained = broker.restorable_previews("h")[0]
+        assert retained["ax_tree"] == expected and retained["frame"] == frame
+        assert "tree" not in result["accessibility"]  # Native result remains unchanged.
+        broker.unregister("h", socket)
+        reconnected = FakeSocket()
+        broker.register("h", reconnected, enabled=True, gui_available=True, capabilities=caps)
+        assert broker.restorable_previews("h")[0] == retained
+        before = len(socket.messages)
+        await broker.publish_ax_preview("h", socket, request_id)
+        assert len(socket.messages) == before  # Never send through a replaced connection.
+        socket = reconnected
+        await complete({"ok":True, "screenshot":frame})
+        assert broker.restorable_previews("h")[0]["ax_tree"] is None
+        before = len(socket.messages)
+        await broker.publish_ax_preview("h", socket, request_id)
+        assert len(socket.messages) == before  # An old result cannot update the newer preview.
+    asyncio.run(scenario())
+
+
+def test_host_socket_delivers_formatted_ax_text_after_the_native_result():
+    from types import SimpleNamespace
+    from fastapi import WebSocketDisconnect
+    from crabcode_gateway.routes.computer_use import computer_use_socket
+
+    async def scenario():
+        broker = ComputerUseBroker(timeout_seconds=1)
+        incoming, outgoing = asyncio.Queue(), asyncio.Queue()
+
+        class Socket:
+            app = SimpleNamespace(state=SimpleNamespace(computer_use_broker=broker, sessions={}))
+            async def accept(self):
+                pass
+            async def receive_json(self):
+                message = await incoming.get()
+                if message is None:
+                    raise WebSocketDisconnect()
+                return message
+            async def send_json(self, message):
+                await outgoing.put(message)
+
+        route = asyncio.create_task(computer_use_socket(Socket()))
+        try:
+            await incoming.put({"type":"computer_use_host_register", "host_id":"h", "enabled":True,
+                "gui_available":True, "capabilities":{"supported_modes":["background_app"]}})
+            assert (await asyncio.wait_for(outgoing.get(), 1))["type"] == "computer_use_host_registered"
+            pending = asyncio.create_task(broker.execute("h", session_id="s", agent_id=None,
+                action={"action":"observe", "window_id":"7"}))
+            request = await asyncio.wait_for(outgoing.get(), 1)
+            await incoming.put({"type":"computer_use_result", "request_id":request["request_id"], "result":{
+                "ok":True, "observation_kind":"ax", "accessibility":{
+                    "snapshot_id":"s1", "elements":[{"element_id":"e1", "role":"AXWindow", "title":"Demo"}]}}})
+            preview = await asyncio.wait_for(outgoing.get(), 1)
+            assert preview["type"] == "computer_use_ax_preview"
+            assert preview["request_id"] == request["request_id"]
+            assert preview["ax_tree"] == 'e1 window "Demo"'
+            assert (await pending)["ok"]
+        finally:
+            await incoming.put(None)
+            await route
     asyncio.run(scenario())
