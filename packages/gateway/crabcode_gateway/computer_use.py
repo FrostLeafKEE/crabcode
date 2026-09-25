@@ -10,8 +10,6 @@ from typing import Any
 
 from fastapi import WebSocket
 
-from crabcode_core.computer_use_observation import compact_ax_result
-
 COMPUTER_USE_RELEASE_RETENTION_MS = 15_000
 
 
@@ -166,14 +164,19 @@ class ComputerUseBroker:
             return False
         self._pending.pop(request_id, None)
         previous = self._lease_previews.get(pending.lease, {})
-        accessibility = compact_ax_result(result).get("accessibility")
+        # This frame is exclusively for the human monitor and reconnect replay.
+        # Remove it before returning the tool result to Core/model history.
+        result = dict(result)
+        preview_frame = result.pop("preview_screenshot", None)
+        result.pop("preview_screenshot_error", None)
+        frame = result.get("screenshot") or preview_frame
+        accessibility = result.get("accessibility")
         ax = accessibility if isinstance(accessibility, dict) else {}
-        has_ax = isinstance(ax.get("tree"), str)
+        has_ax = isinstance(accessibility, dict)
         has_frame = bool(result.get("screenshot"))
         keep_observation = not has_ax and not has_frame
         self._lease_previews[pending.lease] = {
             **previous,
-            "request_id": request_id,
             "session_id": pending.lease[1],
             "agent_id": pending.lease[2],
             "mode": previous.get("mode", "background_app"),
@@ -187,15 +190,13 @@ class ComputerUseBroker:
                 or previous.get("summary")
                 or "Computer Use action completed"
             ),
-            "frame": result.get("screenshot") or previous.get("frame"),
-            "frame_updated_at_ms": self._now_ms() if result.get("screenshot") else previous.get("frame_updated_at_ms"),
+            "frame": frame or previous.get("frame"),
+            "frame_updated_at_ms": self._now_ms() if frame else previous.get("frame_updated_at_ms"),
             "observation_kind": result.get("observation_kind") or (
                 previous.get("observation_kind") if keep_observation else
                 "ax_and_screenshot" if has_ax and has_frame else "ax" if has_ax else "screenshot"
             ),
-            "ax_tree": ax["tree"] if has_ax else previous.get("ax_tree") if keep_observation else None,
-            "ax_truncated": bool(ax.get("truncated")) if has_ax else previous.get("ax_truncated") if keep_observation else None,
-            "ax_element_count": ax.get("element_count") if has_ax else previous.get("ax_element_count") if keep_observation else None,
+            "ax_element_count": ax.get("element_count", len(ax.get("elements", []))) if has_ax else previous.get("ax_element_count") if keep_observation else None,
             "cursor": result.get("cursor") or previous.get("cursor"),
             "updated_at_ms": self._now_ms(),
             "release_deadline_ms": previous.get("release_deadline_ms"),
@@ -203,29 +204,6 @@ class ComputerUseBroker:
         if not pending.future.done():
             pending.future.set_result(result)
         return True
-
-    async def publish_ax_preview(self, host_id: str, websocket: WebSocket, request_id: str) -> None:
-        """Send the same full compact tree used by Core, without image payloads.
-
-        Binding to the completed request lets the UI discard delayed updates.
-        Deltas belong to model context; a preview must remain readable by itself.
-        """
-        host = self._hosts.get(host_id)
-        if host is None or host.websocket is not websocket:
-            return
-        async with host.send_lock:
-            if self._hosts.get(host_id) is not host or not host.enabled:
-                return
-            preview = next((p for lease, p in self._lease_previews.items()
-                            if lease[0] == host_id and p.get("request_id") == request_id), None)
-            if preview is None or not isinstance(preview.get("ax_tree"), str):
-                return
-            await websocket.send_json({
-                "type": "computer_use_ax_preview",
-                **{key: preview.get(key) for key in (
-                    "request_id", "session_id", "agent_id", "ax_tree", "ax_truncated", "ax_element_count",
-                )},
-            })
 
     async def release(
         self,

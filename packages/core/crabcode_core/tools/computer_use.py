@@ -473,6 +473,10 @@ class ComputerUseTool(Tool):
             }
 
         model_result = dict(result)
+        # Monitor-only frames must never become tool data, history, or model images,
+        # including when a backend bypasses the Gateway broker.
+        model_result.pop("preview_screenshot", None)
+        model_result.pop("preview_screenshot_error", None)
         screenshot = model_result.pop("screenshot", None)
         images: list[dict[str, str]] = []
         if isinstance(screenshot, dict):

@@ -187,7 +187,7 @@ describe("desktop status bar", () => {
     act(() => root.render(<StatusBar computerUse={computerUse} />));
     act(() => container.querySelector<HTMLButtonElement>(".status-computer-use")!.click());
     expect(container.textContent).toContain("辅助功能 · 12 个元素");
-    expect(container.textContent).toContain("本次通过辅助功能观察");
+    expect(container.textContent).toContain("本次模型读取 AX Tree");
     expect(container.textContent).toContain("录屏不可用时仍可读取和操作界面元素");
     expect(container.querySelector(".computer-use-frame img")?.getAttribute("alt")).toContain("最近一次");
   });
@@ -220,29 +220,27 @@ describe("desktop status bar", () => {
     expect(container.querySelector(".computer-use-mode")?.textContent).toBe("整个桌面 · 允许前台");
   });
 
-  it("shows compact AX text in the preview and detail instead of an older screenshot, then switches to fresh pixels", () => {
-    const tree = 'e1 window "Demo"\n\te2 text "<img src=x>"\n\te3 button (press) "Send"';
+  it("keeps the monitor and its detail screenshot-only during AX observations", () => {
     const preview = { key: "ax", sessionId: "session", mode: "background_app" as const, status: "ready" as const,
       action: "observe", summary: "Observed accessibility tree", observationKind: "ax" as const,
-      axElementCount: 3, axTree: tree, axTruncated: true, frame: null, cursor: null, updatedAt: Date.now() };
+      axElementCount: 3, frame: null, cursor: null, updatedAt: Date.now() };
     let computerUse: ComputerUseState = { ...initialComputerUseState("desktop-test", true),
       status: "ready", active: true, previews: [preview] };
     act(() => root.render(<StatusBar computerUse={computerUse} />));
     act(() => container.querySelector<HTMLButtonElement>(".status-computer-use")!.click());
-    expect(container.querySelector(".computer-use-ax-tree pre")?.textContent).toBe(tree);
-    expect(container.textContent).toContain("内容已截断");
+    expect(container.textContent).toContain("暂无截图");
+    expect(container.querySelector(".computer-use-preview pre")).toBeNull();
     const frame = { data: "AAAA", media_type: "image/png", width: 10, height: 10, origin_x: 0, origin_y: 0, frame_id: "f" };
     computerUse = { ...computerUse, previews: [{ ...preview, frame }] };
     act(() => root.render(<StatusBar computerUse={computerUse} />));
-    expect(container.querySelector(".computer-use-preview img")).toBeNull();
+    expect(container.querySelector(".computer-use-preview img")?.getAttribute("src")).toBe("data:image/png;base64,AAAA");
     act(() => container.querySelector<HTMLButtonElement>(".computer-use-preview-content")!.click());
-    expect(document.body.querySelector(".computer-use-detail pre")?.textContent).toBe(tree);
-    expect(document.body.querySelector(".computer-use-detail img")).toBeNull();
-    // The Gateway's formatted tree can arrive without a new action timestamp.
-    const updated = { ...computerUse.previews[0], axTree: tree + '\n\te4 text "Updated"' };
+    expect(document.body.querySelector(".computer-use-detail pre")).toBeNull();
+    expect(document.body.querySelector(".computer-use-detail img")).not.toBeNull();
+    const updated = { ...computerUse.previews[0], frame: { ...frame, data: "BBBB" } };
     computerUse = { ...computerUse, previews: [updated] };
     act(() => root.render(<StatusBar computerUse={computerUse} />));
-    expect(document.body.querySelector(".computer-use-detail pre")?.textContent).toContain("Updated");
+    expect(document.body.querySelector(".computer-use-detail img")?.getAttribute("src")).toBe("data:image/png;base64,BBBB");
     computerUse = { ...computerUse, previews: [{ ...updated, observationKind: "ax_and_screenshot" }] };
     act(() => root.render(<StatusBar computerUse={computerUse} />));
     expect(container.querySelector(".computer-use-preview img")).not.toBeNull();

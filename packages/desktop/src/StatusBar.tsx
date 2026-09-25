@@ -40,23 +40,6 @@ function previewCursorPosition(preview: ComputerUsePreview | null): { left: numb
   };
 }
 
-function showsAxTree(preview: ComputerUsePreview | null): boolean {
-  return typeof preview?.axTree === "string" && (preview.observationKind === "ax" || !preview.frame);
-}
-
-function AxTreePreview({ preview, compact = false }: { preview: ComputerUsePreview; compact?: boolean }) {
-  return (
-    <div className={`computer-use-ax-tree${compact ? " compact" : ""}`}>
-      <div className="computer-use-ax-heading">
-        <span>AX Tree · 紧凑文本树</span>
-        {preview.axTruncated && <span>内容已截断</span>}
-      </div>
-      <pre aria-label="AX Tree 紧凑文本树" tabIndex={compact ? undefined : 0}>{preview.axTree || "未返回可用的界面元素"}</pre>
-      {compact && <span className="computer-use-preview-expand" aria-hidden="true"><Maximize2 /></span>}
-    </div>
-  );
-}
-
 export function StatusBar({ connection, gateway, startup, project, loading, error, activity, onRetry, onConnections, computerUse, computerUseConfig, onComputerUseEnabledChange, onComputerUseOpenInputSettings, onComputerUseRefresh }: StatusBarProps) {
   const [expanded, setExpanded] = useState(false);
   const [computerExpanded, setComputerExpanded] = useState(false);
@@ -137,7 +120,6 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
     (entry) => entry.sessionId === computerDetail.sessionId && entry.agentId === computerDetail.agentId,
   ) : [];
   const detailFrame = computerDetail?.frame;
-  const detailShowsAx = showsAxTree(computerDetail);
   const detailCursor = computerDetail?.cursor;
   const { left: detailCursorLeft, top: detailCursorTop } = previewCursorPosition(computerDetail);
 
@@ -211,12 +193,10 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                       setComputerDetail(preview);
                     }}
                   >
-                    {showsAxTree(preview) ? (
-                      <AxTreePreview preview={preview} compact />
-                    ) : frame ? (
+                    {frame ? (
                       <div className="computer-use-frame">
                         <img src={`data:${frame.media_type};base64,${frame.data}`} alt={`${identity} 最近一次桌面截图`} />
-                        {preview.observationKind === "ax" && <span className="computer-use-frame-age">上次截图{preview.frameUpdatedAt ? ` · ${new Date(preview.frameUpdatedAt).toLocaleTimeString("zh-CN", { hour12: false })}` : ""}；本次通过辅助功能观察</span>}
+                        {preview.observationKind === "ax" && <span className="computer-use-frame-age">监看截图{preview.frameUpdatedAt ? ` · ${new Date(preview.frameUpdatedAt).toLocaleTimeString("zh-CN", { hour12: false })}` : ""}；本次模型读取 AX Tree</span>}
                         {cursor && cursorLeft >= 0 && cursorLeft <= 100 && cursorTop >= 0 && cursorTop <= 100 && (
                           <MousePointer2
                             className="computer-use-cursor"
@@ -229,7 +209,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                     ) : (
                       <div className="computer-use-empty compact">
                         <MonitorUp />
-                        <span>{preview.summary}</span>
+                        <span>暂无截图</span>
                       </div>
                     )}
                   </button>
@@ -353,12 +333,10 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
             </header>
             <div className="computer-use-detail-body">
               <div className="computer-use-detail-image">
-                {detailShowsAx ? (
-                  <AxTreePreview preview={computerDetail} />
-                ) : detailFrame ? (
+                {detailFrame ? (
                   <div className="computer-use-detail-frame">
                     <img src={`data:${detailFrame.media_type};base64,${detailFrame.data}`} alt={`${previewIdentity(computerDetail, 0)} Computer Use 完整截图`} />
-                    {computerDetail.observationKind === "ax" && <span className="computer-use-frame-age">上次截图{computerDetail.frameUpdatedAt ? ` · ${new Date(computerDetail.frameUpdatedAt).toLocaleTimeString("zh-CN", { hour12: false })}` : ""}；本次通过辅助功能观察</span>}
+                    {computerDetail.observationKind === "ax" && <span className="computer-use-frame-age">监看截图{computerDetail.frameUpdatedAt ? ` · ${new Date(computerDetail.frameUpdatedAt).toLocaleTimeString("zh-CN", { hour12: false })}` : ""}；本次模型读取 AX Tree</span>}
                     {detailCursor && detailCursorLeft >= 0 && detailCursorLeft <= 100 && detailCursorTop >= 0 && detailCursorTop <= 100 && (
                       <MousePointer2
                         className="computer-use-cursor"
@@ -368,7 +346,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                     )}
                   </div>
                 ) : (
-                  <div className="computer-use-empty"><MonitorUp /><span>{computerDetail.summary}</span></div>
+                  <div className="computer-use-empty"><MonitorUp /><span>暂无截图</span></div>
                 )}
               </div>
               <aside className="computer-use-detail-sidebar">
@@ -376,7 +354,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                   <div><dt>会话</dt><dd title={computerDetail.sessionId}>{computerDetail.sessionId || "未知"}</dd></div>
                   <div><dt>Agent</dt><dd title={computerDetail.agentId}>{computerDetail.agentId || "主 Agent"}</dd></div>
                   <div><dt>更新时间</dt><dd>{new Date(computerDetail.updatedAt).toLocaleTimeString("zh-CN", { hour12: false })}</dd></div>
-                  {detailFrame && !detailShowsAx && <div><dt>截图</dt><dd>{detailFrame.width} × {detailFrame.height} · ({detailFrame.origin_x}, {detailFrame.origin_y})</dd></div>}
+                  {detailFrame && <div><dt>截图</dt><dd>{detailFrame.width} × {detailFrame.height} · ({detailFrame.origin_x}, {detailFrame.origin_y})</dd></div>}
                 </dl>
                 <section>
                   <h3>操作记录</h3>

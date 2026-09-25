@@ -3322,7 +3322,9 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
         if observed["ok"] == true {
             result["accessibility"] = observed["accessibility"].clone();
             if action.include_screenshot != Some(true) {
-                result.as_object_mut().unwrap().remove("screenshot");
+                if let Some(frame) = result.as_object_mut().unwrap().remove("screenshot") {
+                    result["preview_screenshot"] = frame;
+                }
             }
             result["observation_kind"] = json!(if result.get("screenshot").is_some() {
                 "ax_and_screenshot"
@@ -3341,6 +3343,21 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
             if result.get("screenshot").is_some() {
                 result["observation_kind"] = json!("screenshot");
             }
+        }
+    }
+    // The monitor keeps a visual preview even when the model observes AX only.
+    // Capture under the same pinned target/lock without issuing another AX
+    // observation, which would invalidate the element references just returned.
+    // Gateway consumes this transport-only frame before resolving the Core call.
+    if request.owner.is_some()
+        && result.get("accessibility").is_some()
+        && result.get("screenshot").is_none()
+        && result.get("preview_screenshot").is_none()
+        && result["window_lifecycle"]["target_resolvable"] == true
+    {
+        match mac_capture_window_group(target).and_then(encode_screenshot_capture) {
+            Ok(frame) => result["preview_screenshot"] = frame,
+            Err(error) => result["preview_screenshot_error"] = json!(error),
         }
     }
     result["retry_safe"] =

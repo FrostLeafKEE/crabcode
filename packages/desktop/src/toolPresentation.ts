@@ -422,6 +422,27 @@ export function getToolPresentation(toolName: string, input: Record<string, unkn
   };
 }
 
+// Read the full per-call tree, not the summary or the model's history delta.
+// Both live events and restored conversations carry this compact JSON result.
+export function computerUseDisplayResult(toolName: string, value: unknown): string | null {
+  if (normalizedName(toolName) !== "computeruse") return null;
+  let parsed = value;
+  if (typeof parsed === "string") {
+    try { parsed = JSON.parse(parsed); } catch { return null; }
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const result = parsed as Record<string, unknown>;
+  const accessibility = result.accessibility;
+  if (!accessibility || typeof accessibility !== "object") return null;
+  const ax = accessibility as Record<string, unknown>;
+  if (typeof ax.tree !== "string") return null;
+  const summary = typeof result.summary === "string" ? result.summary
+    : typeof result.error === "string" ? result.error : "";
+  const count = typeof ax.element_count === "number" ? ` · ${ax.element_count} 个元素` : "";
+  const truncated = ax.truncated === true ? " · 内容已截断" : "";
+  return `${summary ? `${summary}\n\n` : ""}AX Tree · 紧凑文本树${count}${truncated}\n${ax.tree || "未返回可用的界面元素"}`;
+}
+
 export function parseChecklistResult(value: unknown): ChecklistResult[] {
   if (typeof value !== "string") return [];
   const blocks: ChecklistResult[] = [];

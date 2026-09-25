@@ -94,19 +94,21 @@ describe("ComputerUseChannel", () => {
     const preview = (publish.mock.lastCall![0] as ComputerUseState).previews[0];
     expect(preview.frame).toEqual(frame);
     expect(preview.frameUpdatedAt).toBe(capturedAt);
-    const tree = 'e1 window "Demo"\n\te2 text "Content"';
-    socket.emit("message", { data: JSON.stringify({ type: "computer_use_ax_preview", request_id: "ax",
-      session_id: "session", agent_id: null, ax_tree: tree, ax_element_count: 2, ax_truncated: true }) });
-    expect((publish.mock.lastCall![0] as ComputerUseState).previews[0]).toMatchObject({
-      axTree: tree, axElementCount: 2, axTruncated: true, frame,
-    });
-    socket.emit("message", { data: JSON.stringify({ type: "computer_use_ax_preview", request_id: "image",
-      session_id: "session", ax_tree: "stale" }) });
-    expect((publish.mock.lastCall![0] as ComputerUseState).previews[0].axTree).toBe(tree);
-    channel.setEnabled(false);
-    socket.emit("message", { data: JSON.stringify({ type: "computer_use_ax_preview", request_id: "ax",
-      session_id: "session", ax_tree: "late" }) });
-    expect((publish.mock.lastCall![0] as ComputerUseState).previews).toEqual([]);
+    const monitorFrame = { ...frame, frame_id: "monitor-only" };
+    invokeMock.mockResolvedValueOnce({ ok: true, observation_kind: "ax", preview_screenshot: monitorFrame,
+      accessibility: { elements: [{ element_id: "e1" }] } });
+    const sendSpy = vi.spyOn(socket, "send");
+    send("ax-with-preview", "ax");
+    await vi.waitFor(() => expect((publish.mock.lastCall![0] as ComputerUseState).previews[0].frame).toEqual(monitorFrame));
+    expect((publish.mock.lastCall![0] as ComputerUseState).previews[0]).toMatchObject({ observationKind: "ax", axElementCount: 1 });
+    // The broker receives a separate preview field; it is never promoted to a model screenshot.
+    expect(JSON.parse((sendSpy.mock.lastCall as unknown as [string])[0]).result).toMatchObject({ preview_screenshot: monitorFrame });
+    expect(JSON.parse((sendSpy.mock.lastCall as unknown as [string])[0]).result.screenshot).toBeUndefined();
+    const monitorCapturedAt = (publish.mock.lastCall![0] as ComputerUseState).previews[0].frameUpdatedAt;
+    send("ax-without-capture", "ax");
+    await vi.waitFor(() => expect((publish.mock.lastCall![0] as ComputerUseState).previews[0].status).toBe("ready"));
+    expect((publish.mock.lastCall![0] as ComputerUseState).previews[0].frame).toEqual(monitorFrame);
+    expect((publish.mock.lastCall![0] as ComputerUseState).previews[0].frameUpdatedAt).toBe(monitorCapturedAt);
     channel.dispose();
   });
 
@@ -481,7 +483,7 @@ describe("ComputerUseChannel", () => {
             action: "observe",
             summary: "Observed window",
             frame: { data: "MQ==", media_type: "image/png", width: 10, height: 10, origin_x: 0, origin_y: 0, frame_id: "restored-frame" },
-            observation_kind: "ax", ax_tree: 'e1 window "Restored"', ax_element_count: 1, ax_truncated: false,
+            observation_kind: "ax", ax_element_count: 1,
             release_deadline_ms: Date.now() + COMPUTER_USE_RELEASE_RETENTION_MS,
           }],
         }),
@@ -490,7 +492,7 @@ describe("ComputerUseChannel", () => {
       expect(states.at(-1)).toMatchObject({ active: true, deliveryPolicy: "allow_foreground" });
       expect(states.at(-1)?.previews[0]?.deliveryPolicy).toBe("allow_foreground");
       expect(states.at(-1)?.previews[0]?.frame?.frame_id).toBe("restored-frame");
-      expect(states.at(-1)?.previews[0]?.axTree).toBe('e1 window "Restored"');
+      expect(states.at(-1)?.previews[0]?.observationKind).toBe("ax");
       await vi.advanceTimersByTimeAsync(COMPUTER_USE_RELEASE_RETENTION_MS - 1);
       expect(states.at(-1)).toMatchObject({ active: true });
       await vi.advanceTimersByTimeAsync(1);

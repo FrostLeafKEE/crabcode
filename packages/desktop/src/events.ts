@@ -1,5 +1,6 @@
 import type { ChatItem, GatewayEvent, ImageAttachment, SessionViewState } from "./types";
 import { randomUuid } from "./uuid";
+import { computerUseDisplayResult } from "./toolPresentation";
 
 function stringify(value: unknown): string {
   if (typeof value === "string") return value;
@@ -167,7 +168,10 @@ function historyItems(messages: Array<Record<string, unknown>>): ChatItem[] {
         flushText();
         const toolUseId = typeof block.tool_use_id === "string" ? block.tool_use_id : "";
         if (!toolUseId) return;
-        const result = stringify(block.content ?? block.result ?? "");
+        const toolIndex = tools.get(toolUseId);
+        const rawResult = block.content ?? block.result ?? "";
+        const result = computerUseDisplayResult(toolIndex === undefined ? "Tool" : items[toolIndex].title ?? "Tool", rawResult)
+          ?? stringify(rawResult);
         const images = content
           .filter((rawImage) => rawImage && typeof rawImage === "object" && (rawImage as Record<string, unknown>).type === "image")
           .map((rawImage) => {
@@ -181,7 +185,6 @@ function historyItems(messages: Array<Record<string, unknown>>): ChatItem[] {
             };
           })
           .filter((image) => image.data);
-        const toolIndex = tools.get(toolUseId);
         if (toolIndex !== undefined) {
           items[toolIndex] = {
             ...items[toolIndex],
@@ -408,7 +411,9 @@ export function applyGatewayEvent(
       };
     case "tool_result": {
       const toolUseId = event.tool_use_id ?? "";
-      const result = event.result_for_display ?? event.result ?? "";
+      const toolName = event.tool_name ?? state.items.find((item) => item.kind === "tool" && item.tool_use_id === toolUseId)?.title ?? "Tool";
+      const result = computerUseDisplayResult(toolName, event.result)
+        ?? event.result_for_display ?? event.result ?? "";
       const hasTool = state.items.some((item) => item.kind === "tool" && item.tool_use_id === toolUseId);
       const items = hasTool
         ? updateByToolId(state.items, toolUseId, (item) => ({

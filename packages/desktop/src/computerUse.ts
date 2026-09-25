@@ -45,7 +45,6 @@ export interface ComputerUseCursor {
 
 export interface ComputerUsePreview {
   key: string;
-  requestId?: string;
   sessionId?: string;
   agentId?: string;
   mode: "background_app" | "foreground_desktop";
@@ -57,8 +56,6 @@ export interface ComputerUsePreview {
   frameUpdatedAt?: number;
   observationKind?: "ax" | "screenshot" | "ax_and_screenshot";
   axElementCount?: number;
-  axTree?: string;
-  axTruncated?: boolean;
   cursor: ComputerUseCursor | null;
   updatedAt: number;
 }
@@ -92,6 +89,7 @@ interface HostResult {
   error?: string;
   action?: string;
   screenshot?: ComputerUseFrame;
+  preview_screenshot?: ComputerUseFrame;
   observation_kind?: ComputerUsePreview["observationKind"];
   accessibility?: { elements?: unknown[]; tree?: string; element_count?: number; truncated?: boolean };
   cursor?: ComputerUseCursor;
@@ -408,7 +406,6 @@ export class ComputerUseChannel {
       if (deadline !== undefined && deadline <= Date.now()) continue;
       restored.push({
         key,
-        requestId: typeof item.request_id === "string" ? item.request_id : undefined,
         sessionId,
         agentId,
         mode: item.mode === "foreground_desktop" ? "foreground_desktop" : "background_app",
@@ -421,8 +418,6 @@ export class ComputerUseChannel {
         frameUpdatedAt: typeof item.frame_updated_at_ms === "number" ? item.frame_updated_at_ms : undefined,
         observationKind: item.observation_kind === "ax" || item.observation_kind === "screenshot" || item.observation_kind === "ax_and_screenshot" ? item.observation_kind : undefined,
         axElementCount: typeof item.ax_element_count === "number" ? item.ax_element_count : undefined,
-        axTree: typeof item.ax_tree === "string" ? item.ax_tree : undefined,
-        axTruncated: item.ax_truncated === true,
         cursor: item.cursor && typeof item.cursor === "object" ? item.cursor as ComputerUseCursor : null,
         updatedAt: typeof item.updated_at_ms === "number" ? item.updated_at_ms : Date.now(),
       });
@@ -470,20 +465,6 @@ export class ComputerUseChannel {
       this.publish({ status: "error", error: String(message.error || "Computer Use Host error") });
       return;
     }
-    if (message.type === "computer_use_ax_preview") {
-      if (!this.enabled || typeof message.ax_tree !== "string" || typeof message.request_id !== "string") return;
-      const current = this.state.previews.find((preview) => preview.requestId === message.request_id
-        && preview.sessionId === message.session_id && (preview.agentId ?? null) === (message.agent_id ?? null));
-      // A late response cannot recreate a released preview or replace newer state.
-      if (!current || current.status === "busy") return;
-      this.publish({ previews: this.state.previews.map((preview) => preview !== current ? preview : {
-        ...preview,
-        axTree: message.ax_tree as string,
-        axElementCount: typeof message.ax_element_count === "number" ? message.ax_element_count : current.axElementCount,
-        axTruncated: message.ax_truncated === true,
-      }) });
-      return;
-    }
     if (message.type === "computer_use_release") {
       const sessionId = typeof message.session_id === "string" ? message.session_id : undefined;
       if (!sessionId) return;
@@ -524,7 +505,6 @@ export class ComputerUseChannel {
     const previousPreview = this.state.previews.find((preview) => preview.key === previewKey);
     const busyPreview: ComputerUsePreview = {
       key: previewKey,
-      requestId,
       sessionId,
       agentId,
       mode,
@@ -536,8 +516,6 @@ export class ComputerUseChannel {
       frameUpdatedAt: previousPreview?.frameUpdatedAt,
       observationKind: previousPreview?.observationKind,
       axElementCount: previousPreview?.axElementCount,
-      axTree: previousPreview?.axTree,
-      axTruncated: previousPreview?.axTruncated,
       cursor: previousPreview?.cursor ?? null,
       updatedAt: Date.now(),
     };
@@ -615,9 +593,9 @@ export class ComputerUseChannel {
     const shouldPublishCompletion = requestIsCurrent && currentPreview !== undefined;
     const hasAx = result.accessibility !== undefined;
     const keepObservation = !hasAx && !result.screenshot;
+    const frame = result.screenshot ?? result.preview_screenshot;
     const completedPreview: ComputerUsePreview = {
       key: previewKey,
-      requestId,
       sessionId,
       agentId,
       mode,
@@ -625,14 +603,12 @@ export class ComputerUseChannel {
       status: result.ok === false ? "error" : "ready",
       action: String(result.action || actionName),
       summary: String(result.summary || result.error || actionName),
-      frame: result.screenshot ?? currentPreview?.frame ?? null,
-      frameUpdatedAt: result.screenshot ? Date.now() : currentPreview?.frameUpdatedAt,
+      frame: frame ?? currentPreview?.frame ?? null,
+      frameUpdatedAt: frame ? Date.now() : currentPreview?.frameUpdatedAt,
       observationKind: result.observation_kind ?? (keepObservation ? currentPreview?.observationKind
         : hasAx ? result.screenshot ? "ax_and_screenshot" : "ax" : "screenshot"),
       axElementCount: hasAx ? result.accessibility?.element_count ?? result.accessibility?.elements?.length
         : keepObservation ? currentPreview?.axElementCount : undefined,
-      axTree: hasAx ? result.accessibility?.tree : keepObservation ? currentPreview?.axTree : undefined,
-      axTruncated: hasAx ? result.accessibility?.truncated : keepObservation ? currentPreview?.axTruncated : undefined,
       cursor: result.cursor ?? currentPreview?.cursor ?? null,
       updatedAt: Date.now(),
     };

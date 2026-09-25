@@ -6075,7 +6075,7 @@ function ToolResultView({ toolName, result, isError = false }: { toolName: strin
   if (checklist.length) return <ChecklistResultView result={result} />;
   const text = textFromUnknown(result);
   const isDiff = text.startsWith("---") || text.startsWith("diff --git") || text.includes("\n+++");
-  return <CopyablePre text={text} label={isError ? "复制错误" : isDiff ? "复制 diff" : "复制执行结果"} className={`tool-result ${isDiff ? "diff-view" : ""}`}>{isDiff ? diffLines(text) : text}</CopyablePre>;
+  return <CopyablePre text={text} label={isError ? "复制错误" : isDiff ? "复制 diff" : "复制执行结果"} className={`tool-result ${isDiff ? "diff-view" : ""} ${toolName.toLowerCase() === "computeruse" ? "computer-use-tool-result" : ""}`}>{isDiff ? diffLines(text) : text}</CopyablePre>;
 }
 
 function CopyablePre({ text, label = "复制", className = "", containerClassName = "", children }: { text: string; label?: string; className?: string; containerClassName?: string; children?: ReactNode }) {
