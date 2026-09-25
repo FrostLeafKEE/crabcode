@@ -5,7 +5,6 @@ import pytest
 
 from test_computer_use import FakeBackend, FakeSocket, prepared_tool
 from crabcode_gateway.computer_use import ComputerUseBroker
-from crabcode_core.computer_use_observation import compact_ax_result
 
 
 class AxBackend(FakeBackend):
@@ -105,7 +104,8 @@ def test_gateway_negotiates_ax_and_preserves_preview_age_without_an_image():
     asyncio.run(scenario())
 
 
-def test_gateway_replays_the_full_compact_ax_preview_and_routes_it_to_the_completed_request():
+@pytest.mark.parametrize("delivery_policy", ["strict_background", "allow_foreground"])
+def test_gateway_keeps_monitor_frames_out_of_core_results_and_replays_them(delivery_policy):
     async def scenario():
         broker = ComputerUseBroker(timeout_seconds=1)
         socket = FakeSocket()
@@ -113,45 +113,68 @@ def test_gateway_replays_the_full_compact_ax_preview_and_routes_it_to_the_comple
         broker.register("h", socket, enabled=True, gui_available=True, capabilities=caps)
         async def complete(result):
             task = asyncio.create_task(broker.execute("h", session_id="s", agent_id="a",
-                action={"action":"observe", "window_id":"7"}, target_scope="app_window"))
+                action={"action":"observe", "window_id":"7"}, target_scope="app_window", delivery_policy=delivery_policy))
             await asyncio.sleep(0)
             request_id = socket.messages[-1]["request_id"]
             assert broker.resolve("h", request_id, result)
-            assert await task == result
+            assert await task == {key: value for key, value in result.items()
+                                  if key not in ("preview_screenshot", "preview_screenshot_error")}
             return request_id
 
         frame = {"data":"cG5n", "frame_id":"older"}
         await complete({"ok":True, "screenshot":frame})
-        result = {"ok":True, "observation_kind":"ax", "accessibility": {
+        monitor_frame = {"data":"cHJldmlldy1vbmx5", "frame_id":"monitor"}
+        result = {"ok":True, "preview_screenshot":monitor_frame, "observation_kind":"ax", "accessibility": {
             "snapshot_id":"s1", "truncated":True, "elements":[
                 {"element_id":"e1", "role":"AXWindow", "title":"Demo"},
                 {"element_id":"e2", "parent_id":"e1", "role":"AXStaticText", "value":"Content"},
             ]}}
-        request_id = await complete(result)
-        expected = compact_ax_result(result)["accessibility"]["tree"]
-        await broker.publish_ax_preview("h", socket, request_id)
-        assert socket.messages[-1] == {"type":"computer_use_ax_preview", "request_id":request_id,
-            "session_id":"s", "agent_id":"a", "ax_tree":expected, "ax_element_count":2, "ax_truncated":True}
+        await complete(result)
         retained = broker.restorable_previews("h")[0]
-        assert retained["ax_tree"] == expected and retained["frame"] == frame
-        assert "tree" not in result["accessibility"]  # Native result remains unchanged.
+        assert retained["frame"] == monitor_frame
+        assert retained["observation_kind"] == "ax"
+        assert retained["ax_element_count"] == 2
+        assert result["preview_screenshot"] == monitor_frame  # Native result remains unchanged.
         broker.unregister("h", socket)
         reconnected = FakeSocket()
         broker.register("h", reconnected, enabled=True, gui_available=True, capabilities=caps)
         assert broker.restorable_previews("h")[0] == retained
-        before = len(socket.messages)
-        await broker.publish_ax_preview("h", socket, request_id)
-        assert len(socket.messages) == before  # Never send through a replaced connection.
         socket = reconnected
+        # A failed optional preview keeps the prior image and its capture time.
+        await complete({"ok":True, "accessibility":result["accessibility"], "preview_screenshot_error":"No capture permission"})
+        assert broker.restorable_previews("h")[0]["frame"] == monitor_frame
+        assert broker.restorable_previews("h")[0]["frame_updated_at_ms"] == retained["frame_updated_at_ms"]
+        # An explicitly requested model screenshot still reaches Core normally.
         await complete({"ok":True, "screenshot":frame})
-        assert broker.restorable_previews("h")[0]["ax_tree"] is None
-        before = len(socket.messages)
-        await broker.publish_ax_preview("h", socket, request_id)
-        assert len(socket.messages) == before  # An old result cannot update the newer preview.
+        assert broker.restorable_previews("h")[0]["frame"] == frame
+        assert broker.restorable_previews("h")[0]["observation_kind"] == "screenshot"
     asyncio.run(scenario())
 
 
-def test_host_socket_delivers_formatted_ax_text_after_the_native_result():
+@pytest.mark.parametrize("with_model_screenshot", [False, True])
+def test_core_never_promotes_monitor_frames_to_model_images_or_history(with_model_screenshot):
+    class PreviewBackend(AxBackend):
+        async def execute(self, *args, **kwargs):
+            result = await super().execute(*args, **kwargs)
+            result["preview_screenshot"] = {"data": "cHJldmlldy1vbmx5", "media_type": "image/png"}
+            result["preview_screenshot_error"] = "monitor-only error"
+            if with_model_screenshot:
+                result["screenshot"] = {"data": "cG5n", "media_type": "image/png"}
+            return result
+
+    tool, context = tool_for_window(PreviewBackend())
+    result = asyncio.run(tool.call({"action": "observe", "window_id": "7"}, context))
+    assert not result.is_error
+    assert len(result.images) == int(with_model_screenshot)
+    assert all(image["data"] == "cG5n" for image in result.images)
+    for value in (result.result_for_model, json.dumps(result.data), result.result_for_display):
+        assert "preview_screenshot" not in value
+        assert "cHJldmlldy1vbmx5" not in value
+        assert "monitor-only error" not in value
+    assert json.loads(result.result_for_model)["accessibility"]["tree"]
+
+
+def test_host_socket_retains_preview_image_without_including_it_in_the_tool_result():
     from types import SimpleNamespace
     from fastapi import WebSocketDisconnect
     from crabcode_gateway.routes.computer_use import computer_use_socket
@@ -180,14 +203,15 @@ def test_host_socket_delivers_formatted_ax_text_after_the_native_result():
             pending = asyncio.create_task(broker.execute("h", session_id="s", agent_id=None,
                 action={"action":"observe", "window_id":"7"}))
             request = await asyncio.wait_for(outgoing.get(), 1)
-            await incoming.put({"type":"computer_use_result", "request_id":request["request_id"], "result":{
+            frame = {"data":"cHJldmlldy1vbmx5", "frame_id":"monitor"}
+            await incoming.put({"type":"computer_use_result", "request_id":request["request_id"], "preview_screenshot":frame, "result":{
                 "ok":True, "observation_kind":"ax", "accessibility":{
                     "snapshot_id":"s1", "elements":[{"element_id":"e1", "role":"AXWindow", "title":"Demo"}]}}})
-            preview = await asyncio.wait_for(outgoing.get(), 1)
-            assert preview["type"] == "computer_use_ax_preview"
-            assert preview["request_id"] == request["request_id"]
-            assert preview["ax_tree"] == 'e1 window "Demo"'
-            assert (await pending)["ok"]
+            result = await asyncio.wait_for(pending, 1)
+            assert result["ok"] and result["accessibility"]["snapshot_id"] == "s1"
+            assert "screenshot" not in result and "preview_screenshot" not in result
+            assert broker.restorable_previews("h")[0]["frame"] == frame
+            assert outgoing.empty()  # AX belongs in the tool card, not a monitor callback.
         finally:
             await incoming.put(None)
             await route

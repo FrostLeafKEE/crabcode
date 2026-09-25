@@ -638,6 +638,9 @@ export class ComputerUseChannel {
       this.scheduleRelease(previewKey, releaseDeadline);
     }
     if (!this.enabled) this.cancelAllReleases();
-    this.send({ type: "computer_use_result", request_id: requestId, result });
+    // Keep monitor pixels outside the tool result even with an older Gateway
+    // that does not yet know to remove transport-only fields.
+    const { preview_screenshot, preview_screenshot_error: _previewError, ...toolResult } = result;
+    this.send({ type: "computer_use_result", request_id: requestId, result: toolResult, preview_screenshot });
   }
 }

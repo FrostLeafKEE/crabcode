@@ -35,6 +35,7 @@ import {
 } from "./App";
 import type { GatewayApi } from "./gateway";
 import { favoriteEntries, resolveFavoriteEntries } from "./favorites";
+import { computerUseDisplayResult } from "./toolPresentation";
 import type { BackgroundTaskInfo, ChatItem, ConnectionPreset, GatewayViewState, ScheduleJobInfo, SessionInfo, SessionStatus, SessionViewState } from "./types";
 
 const documentCapabilities = {
@@ -398,6 +399,28 @@ s_\theta(x_t,y,t) \approx \nabla_{x_t}\log p_t(x_t\mid y)
     });
     act(() => root.unmount());
     container.remove();
+  });
+
+  it.each([false, true])("renders compact AX text in the ComputerUse card with optional screenshot (%s)", (withImage) => {
+    (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const tree = 'e1 window "Demo"\n\te2 text "<img src=x onerror=alert(1)>"';
+    const result = computerUseDisplayResult("ComputerUse", { summary: "Observed", accessibility: { tree } })!;
+    act(() => root.render(
+      <ChatItemView
+        item={{ id: "ax-tool", kind: "tool", title: "ComputerUse", collapsed: false, result,
+          input: { action: "observe", observation: "ax", window_id: "7" },
+          images: withImage ? [{ media_type: "image/png", data: "cG5n" }] : [] }}
+        now={0} showTurnDuration turnDurationFormat="hms"
+        onPermission={vi.fn()} onToggleChoice={vi.fn()} onSubmitChoice={vi.fn()} onPlan={vi.fn()}
+      />,
+    ));
+    expect(container.querySelector("pre.computer-use-tool-result")?.textContent).toContain(tree);
+    expect(container.querySelector("pre img")).toBeNull();
+    expect(container.querySelectorAll(".message-images img")).toHaveLength(withImage ? 1 : 0);
+    expect(container.querySelector('[aria-label="复制执行结果"]')).not.toBeNull();
+    act(() => root.unmount());
   });
 
   it("renders assistant image attachments", () => {

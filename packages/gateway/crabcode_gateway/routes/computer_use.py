@@ -78,10 +78,12 @@ async def computer_use_socket(websocket: WebSocket) -> None:
             elif kind == "computer_use_result":
                 request_id = str(message.get("request_id") or "")
                 result = message.get("result")
+                preview = message.get("preview_screenshot")
                 broker.resolve(
                     host_id,
                     request_id,
                     result if isinstance(result, dict) else {"ok": False, "error": "invalid host result"},
+                    preview_screenshot=preview if isinstance(preview, dict) else None,
                 )
             else:
                 await websocket.send_json({"type": "computer_use_error", "error": f"unknown message type: {kind}"})

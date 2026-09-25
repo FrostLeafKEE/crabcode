@@ -158,7 +158,10 @@ class ComputerUseBroker:
         host = self._hosts.get(host_id or "")
         return dict(host.capabilities) if host and host.enabled else {}
 
-    def resolve(self, host_id: str, request_id: str, result: dict[str, Any]) -> bool:
+    def resolve(
+        self, host_id: str, request_id: str, result: dict[str, Any],
+        *, preview_screenshot: dict[str, Any] | None = None,
+    ) -> bool:
         pending = self._pending.get(request_id)
         if pending is None or pending.host_id != host_id:
             return False
@@ -169,9 +172,11 @@ class ComputerUseBroker:
         result = dict(result)
         preview_frame = result.pop("preview_screenshot", None)
         result.pop("preview_screenshot_error", None)
-        frame = result.get("screenshot") or preview_frame
+        frame = result.get("screenshot") or preview_screenshot or preview_frame
         accessibility = result.get("accessibility")
         ax = accessibility if isinstance(accessibility, dict) else {}
+        elements = ax.get("elements")
+        element_count = ax.get("element_count", len(elements) if isinstance(elements, list) else 0)
         has_ax = isinstance(accessibility, dict)
         has_frame = bool(result.get("screenshot"))
         keep_observation = not has_ax and not has_frame
@@ -196,7 +201,7 @@ class ComputerUseBroker:
                 previous.get("observation_kind") if keep_observation else
                 "ax_and_screenshot" if has_ax and has_frame else "ax" if has_ax else "screenshot"
             ),
-            "ax_element_count": ax.get("element_count", len(ax.get("elements", []))) if has_ax else previous.get("ax_element_count") if keep_observation else None,
+            "ax_element_count": element_count if has_ax else previous.get("ax_element_count") if keep_observation else None,
             "cursor": result.get("cursor") or previous.get("cursor"),
             "updated_at_ms": self._now_ms(),
             "release_deadline_ms": previous.get("release_deadline_ms"),
@@ -329,7 +334,6 @@ class ComputerUseBroker:
                     previous = self._lease_previews.get(lease, {})
                     self._lease_previews[lease] = {
                         **previous,
-                        "request_id": request_id,
                         "session_id": session_id,
                         "agent_id": agent_id,
                         "mode": mode,

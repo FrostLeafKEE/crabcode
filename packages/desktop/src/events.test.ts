@@ -181,6 +181,28 @@ describe("Gateway event reducer", () => {
     });
   });
 
+  it.each([false, true])("shows the complete AX tree in live and restored tool cards (with screenshot: %s)", (withImage) => {
+    const tree = 'e1 window "Demo"\n\te2 text "<img src=x>"\n\te3 button (press) "Send"';
+    const result = JSON.stringify({ ok: true, summary: "Observed accessibility tree",
+      accessibility: { tree, element_count: 3, truncated: true, tree_format: "indexed_text_v1" } });
+    const images = withImage ? [{ media_type: "image/png", data: "cG5n" }] : [];
+    const started = applyGatewayEvent(state(), { type: "tool_use", tool_name: "ComputerUse", tool_use_id: "ax",
+      tool_input: { action: "observe", window_id: "7" } });
+    const live = applyGatewayEvent(started, { type: "tool_result", tool_use_id: "ax",
+      result, result_for_display: "Observed accessibility tree", images });
+    const restored = applyGatewayEvent(state(), { type: "session_history", messages: [
+      { role: "assistant", content: [{ type: "tool_use", name: "ComputerUse", id: "ax", input: { action: "observe", window_id: "7" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "ax", content: result },
+        ...images.map((image) => ({ type: "image", source: { type: "base64", ...image } }))] },
+    ] });
+    for (const item of [live.items[0], restored.items[0]]) {
+      expect(item.result).toContain("AX Tree · 紧凑文本树 · 3 个元素 · 内容已截断");
+      expect(item.result).toContain(tree);
+      expect(item.result).not.toContain("tree_format");
+      expect(item.images).toEqual(images);
+    }
+  });
+
   it("preserves captioned image batches in live results and restored history", () => {
     const images = [
       { media_type: "image/png", data: "YQ==", description: "修改前" },

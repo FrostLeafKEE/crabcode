@@ -236,7 +236,10 @@ fn macos_ax_tree_edits_by_reference_and_rejects_stale_and_cross_session_input() 
     eprintln!("ax_observation={observed}");
     assert_eq!(observed["ok"], true);
     assert!(observed.get("screenshot").is_none());
-    assert!(observed.get("preview_screenshot").is_some() || observed.get("preview_screenshot_error").is_some());
+    assert!(
+        observed.get("preview_screenshot").is_some()
+            || observed.get("preview_screenshot_error").is_some()
+    );
     let tree = &observed["accessibility"];
     let editor = tree["elements"]
         .as_array()

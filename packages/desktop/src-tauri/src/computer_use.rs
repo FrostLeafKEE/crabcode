@@ -3348,7 +3348,7 @@ fn execute_background(request: ExecuteRequest) -> Result<Value, String> {
     // The monitor keeps a visual preview even when the model observes AX only.
     // Capture under the same pinned target/lock without issuing another AX
     // observation, which would invalidate the element references just returned.
-    // Gateway consumes this transport-only frame before resolving the Core call.
+    // Desktop separates this transport-only frame from the Core tool result.
     if request.owner.is_some()
         && result.get("accessibility").is_some()
         && result.get("screenshot").is_none()

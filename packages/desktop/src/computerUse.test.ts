@@ -101,9 +101,11 @@ describe("ComputerUseChannel", () => {
     send("ax-with-preview", "ax");
     await vi.waitFor(() => expect((publish.mock.lastCall![0] as ComputerUseState).previews[0].frame).toEqual(monitorFrame));
     expect((publish.mock.lastCall![0] as ComputerUseState).previews[0]).toMatchObject({ observationKind: "ax", axElementCount: 1 });
-    // The broker receives a separate preview field; it is never promoted to a model screenshot.
-    expect(JSON.parse((sendSpy.mock.lastCall as unknown as [string])[0]).result).toMatchObject({ preview_screenshot: monitorFrame });
-    expect(JSON.parse((sendSpy.mock.lastCall as unknown as [string])[0]).result.screenshot).toBeUndefined();
+    // Even an older Gateway sees no monitor data in the forwarded tool result.
+    const sent = JSON.parse((sendSpy.mock.lastCall as unknown as [string])[0]);
+    expect(sent.preview_screenshot).toEqual(monitorFrame);
+    expect(sent.result.preview_screenshot).toBeUndefined();
+    expect(sent.result.screenshot).toBeUndefined();
     const monitorCapturedAt = (publish.mock.lastCall![0] as ComputerUseState).previews[0].frameUpdatedAt;
     send("ax-without-capture", "ax");
     await vi.waitFor(() => expect((publish.mock.lastCall![0] as ComputerUseState).previews[0].status).toBe("ready"));
