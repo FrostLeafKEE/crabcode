@@ -13,6 +13,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(GatewayProcesses::default())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             computer_use::computer_use_capabilities,
             computer_use::computer_use_execute,

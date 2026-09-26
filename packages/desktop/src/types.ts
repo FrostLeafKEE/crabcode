@@ -91,6 +91,8 @@ export interface DesktopSettings {
   font_smoothing: boolean;
   show_turn_duration: boolean;
   turn_duration_format: TurnDurationFormat;
+  session_notify_on_start: boolean;
+  session_notify_on_complete: boolean;
   composer_send_key: ComposerSendKey;
   approval_shortcuts: ApprovalShortcutPreferences;
   file_upload_mode: FileUploadMode;

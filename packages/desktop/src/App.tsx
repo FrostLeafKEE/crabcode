@@ -119,6 +119,7 @@ import {
 import { gatewayEnvironmentLog, gatewayLogAddress, updateGatewayStartup, type GatewayStartupState } from "./gatewayStartup";
 import { StatusBar } from "./StatusBar";
 import { setSessionTaskbarProgress } from "./taskbarProgress";
+import { diffSessionNotifications, showSessionNotification } from "./sessionNotifications";
 import { SettingsView, type SettingsSectionId } from "./SettingsView";
 import {
   activateProjectFileTab,
@@ -3070,6 +3071,24 @@ function App() {
   useEffect(() => () => {
     void setSessionTaskbarProgress(false);
   }, []);
+  const sessionNotifyBusyRef = useRef<Map<string, boolean> | null>(null);
+  useEffect(() => {
+    const current = new Map(Object.entries(sessions).map(([sessionId, session]) => [
+      sessionId,
+      { title: session.title, busy: session.busy },
+    ]));
+    const { next, intents } = diffSessionNotifications(sessionNotifyBusyRef.current, current);
+    sessionNotifyBusyRef.current = next;
+    const preferences = settingsRef.current;
+    if (!preferences) return;
+    for (const intent of intents) {
+      const enabled = intent.phase === "start"
+        ? preferences.session_notify_on_start
+        : preferences.session_notify_on_complete;
+      if (!enabled) continue;
+      void showSessionNotification(intent.phase, intent.title);
+    }
+  }, [sessions]);
 
   useEffect(() => {
     if (

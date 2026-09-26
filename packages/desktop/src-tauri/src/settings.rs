@@ -69,6 +69,8 @@ fn default_settings() -> Value {
         "font_smoothing": true,
         "show_turn_duration": true,
         "turn_duration_format": "hms",
+        "session_notify_on_start": true,
+        "session_notify_on_complete": true,
         "composer_send_key": "enter",
         "approval_shortcuts": {
             "enabled": true,
@@ -332,6 +334,13 @@ mod tests {
     #[test]
     fn project_file_tabs_default_to_five() {
         assert_eq!(default_settings()["project_files_max_tabs"], 5);
+    }
+
+    #[test]
+    fn session_notifications_default_to_on() {
+        let settings = default_settings();
+        assert_eq!(settings["session_notify_on_start"], true);
+        assert_eq!(settings["session_notify_on_complete"], true);
     }
 
     #[test]

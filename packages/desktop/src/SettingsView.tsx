@@ -32,6 +32,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ModelSettingsPanel } from "./ModelSettingsPanel";
 import { RuntimeSettingsPanel } from "./RuntimeSettingsPanel";
 import { composerModifierLabel } from "./ComposerEditor";
+import {
+  readNotificationPermission,
+  requestSessionNotificationPermission,
+  type NotificationPermissionState,
+} from "./sessionNotifications";
 import { ApprovalShortcutSettings } from "./ApprovalShortcutSettings";
 import { ThemeRegistry, resolveActiveTheme } from "./theme";
 import {
@@ -88,7 +93,7 @@ export const SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     id: "general",
     title: "常规",
     description: "运行环境、文件上传、文件查看与会话设置",
-    searchText: "常规 运行环境 Python 路径 自动检测 本地启动 CrabCode 套件 安装 Gateway Search Debugger Ripgrep rg 语义搜索 文本搜索 调试 浏览器模式 文件 上传 内容 路径 引用 查看 浏览 标签 标签页 最大标签数 最大数量 上限 会话 显示 处理用时 耗时 仅秒数 时分秒 发送快捷键 Enter 回车 Ctrl Cmd Command Option 权限快捷键 全局 审批 允许 始终允许 拒绝 Windows macOS F9 F10 F11",
+    searchText: "常规 运行环境 Python 路径 自动检测 本地启动 CrabCode 套件 安装 Gateway Search Debugger Ripgrep rg 语义搜索 文本搜索 调试 浏览器模式 文件 上传 内容 路径 引用 查看 浏览 标签 标签页 最大标签数 最大数量 上限 会话 显示 处理用时 耗时 仅秒数 时分秒 发送快捷键 Enter 回车 Ctrl Cmd Command Option 权限快捷键 全局 审批 允许 始终允许 拒绝 Windows macOS F9 F10 F11 系统通知 通知 执行时 执行完毕 开始执行 右下角 气泡 通知权限",
   },
   {
     id: "appearance",
@@ -316,6 +321,8 @@ export type AppearanceSettingsUpdate = Partial<Pick<DesktopSettings,
 export type ConversationSettingsUpdate = Partial<Pick<DesktopSettings,
   | "show_turn_duration"
   | "turn_duration_format"
+  | "session_notify_on_start"
+  | "session_notify_on_complete"
   | "composer_send_key"
   | "approval_shortcuts"
   | "file_upload_mode"
@@ -595,6 +602,7 @@ export function SettingsView({
   const [renamingThemeId, setRenamingThemeId] = useState<string | null>(null);
   const [themeNameDraft, setThemeNameDraft] = useState("");
   const [deletingThemeId, setDeletingThemeId] = useState<string | null>(null);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermissionState>("unknown");
   const customIconInputRef = useRef<HTMLInputElement>(null);
   const themeImportInputRef = useRef<HTMLInputElement>(null);
   const matchingSections = useMemo(() => filterSettingsSections(query), [query]);
@@ -608,6 +616,17 @@ export function SettingsView({
   useEffect(() => {
     setPythonPath(settings.python_path ?? "");
   }, [settings.python_path]);
+
+  useEffect(() => {
+    if (activeSection !== "general" || !isDesktopShell()) return;
+    let cancelled = false;
+    void readNotificationPermission().then((state) => {
+      if (!cancelled) setNotificationPermission(state);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSection]);
 
   useEffect(() => {
     if (settings.dock_icon !== "custom" || !isDesktopShell()) return;
@@ -1053,7 +1072,7 @@ export function SettingsView({
                 />
 
                 <div className="settings-section-heading general-spaced-heading">
-                  <div><h2>会话</h2><p>控制对话完成后的状态信息。</p></div>
+                  <div><h2>会话</h2><p>控制发送方式、处理用时和系统通知。</p></div>
                 </div>
                 <div className="settings-group general-options-group">
                   <div className="settings-row compact">
@@ -1109,6 +1128,73 @@ export function SettingsView({
                       ))}
                     </div>
                   </div>
+                  <div className="settings-row compact">
+                    <div className="settings-row-copy">
+                      <strong>执行时通知</strong>
+                      <span>会话开始执行时弹出系统通知。Windows 显示在屏幕右下角，macOS 显示为通知气泡；macOS 首次需要允许通知权限。</span>
+                    </div>
+                    <button
+                      className={`settings-switch ${settings.session_notify_on_start ? "on" : ""}`}
+                      type="button"
+                      role="switch"
+                      aria-checked={settings.session_notify_on_start}
+                      aria-label="执行时通知"
+                      onClick={() => {
+                        const enabled = !settings.session_notify_on_start;
+                        onConversationChange({ session_notify_on_start: enabled });
+                        if (enabled) {
+                          void requestSessionNotificationPermission().then((state) => {
+                            if (state !== "unknown") setNotificationPermission(state);
+                          });
+                        }
+                      }}
+                    ><span /></button>
+                  </div>
+                  <div className="settings-row compact">
+                    <div className="settings-row-copy">
+                      <strong>执行完毕通知</strong>
+                      <span>会话这一轮执行结束时弹出系统通知。</span>
+                    </div>
+                    <button
+                      className={`settings-switch ${settings.session_notify_on_complete ? "on" : ""}`}
+                      type="button"
+                      role="switch"
+                      aria-checked={settings.session_notify_on_complete}
+                      aria-label="执行完毕通知"
+                      onClick={() => {
+                        const enabled = !settings.session_notify_on_complete;
+                        onConversationChange({ session_notify_on_complete: enabled });
+                        if (enabled) {
+                          void requestSessionNotificationPermission().then((state) => {
+                            if (state !== "unknown") setNotificationPermission(state);
+                          });
+                        }
+                      }}
+                    ><span /></button>
+                  </div>
+                  {notificationPermission === "prompt" || notificationPermission === "denied" ? (
+                    <div className="settings-row compact">
+                      <div className="settings-row-copy">
+                        <strong>通知权限</strong>
+                        <span>
+                          {notificationPermission === "denied"
+                            ? "系统拒绝了通知。macOS 请到「系统设置 → 通知」中允许 Crab Desktop；Windows 请在系统通知设置中允许本应用。"
+                            : "尚未获得系统通知权限。macOS 会弹出授权框；若已经拒绝过，请到系统设置的通知中允许 Crab Desktop。"}
+                        </span>
+                      </div>
+                      <button
+                        className="settings-command"
+                        type="button"
+                        onClick={() => {
+                          void requestSessionNotificationPermission().then((state) => {
+                            if (state !== "unknown") setNotificationPermission(state);
+                          });
+                        }}
+                      >
+                        请求通知权限
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               </section>
             )}

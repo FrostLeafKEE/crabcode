@@ -71,6 +71,8 @@ describe("desktop settings migration", () => {
       font_smoothing: true,
       show_turn_duration: true,
       turn_duration_format: "hms",
+      session_notify_on_start: true,
+      session_notify_on_complete: true,
       composer_send_key: "enter",
       file_upload_mode: "content",
       file_upload_max_size_mb: 5,
@@ -173,6 +175,21 @@ describe("desktop settings migration", () => {
       project_id: "project-1",
       session_id: "session-1",
     }]);
+  });
+
+  it("defaults session notifications to on and keeps an explicit off switch", () => {
+    expect(normalizeSettings({ connections: [] } as unknown as DesktopSettings)).toMatchObject({
+      session_notify_on_start: true,
+      session_notify_on_complete: true,
+    });
+    expect(normalizeSettings({
+      connections: [],
+      session_notify_on_start: false,
+      session_notify_on_complete: false,
+    } as unknown as DesktopSettings)).toMatchObject({
+      session_notify_on_start: false,
+      session_notify_on_complete: false,
+    });
   });
 
   it("preserves a non-empty remembered model profile", () => {

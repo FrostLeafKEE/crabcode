@@ -75,6 +75,8 @@ const settings: DesktopSettings = {
   font_smoothing: true,
   show_turn_duration: true,
   turn_duration_format: "hms",
+  session_notify_on_start: true,
+  session_notify_on_complete: true,
   composer_send_key: "enter",
   approval_shortcuts: { enabled: true, approve: "Ctrl+Alt+Shift+F9", deny: "Ctrl+Alt+Shift+F10", always_allow: "Ctrl+Alt+Shift+F11" },
   file_upload_mode: "content",
@@ -121,6 +123,7 @@ describe("settings search", () => {
     expect(filterSettingsSections("字体平滑").map((section) => section.id)).toEqual(["appearance"]);
     expect(filterSettingsSections("对比度").map((section) => section.id)).toEqual(["appearance"]);
     expect(filterSettingsSections("处理用时").map((section) => section.id)).toEqual(["general"]);
+    expect(filterSettingsSections("系统通知").map((section) => section.id)).toEqual(["general"]);
     expect(filterSettingsSections("最大标签数").map((section) => section.id)).toEqual(["general"]);
     expect(filterSettingsSections("并行请求").map((section) => section.id)).toEqual(["document"]);
     expect(filterSettingsSections("显示原文").map((section) => section.id)).toEqual(["document"]);
@@ -306,6 +309,28 @@ describe("SettingsView", () => {
 
     expect(handlers.onConversationChange).toHaveBeenNthCalledWith(1, { turn_duration_format: "seconds" });
     expect(handlers.onConversationChange).toHaveBeenNthCalledWith(2, { show_turn_duration: false });
+  });
+
+  it("toggles session start and completion notifications", () => {
+    const handlers = callbacks();
+    act(() => root.render(
+      <SettingsView
+        {...handlers}
+        settings={settings}
+        gateways={{ local: onlineGateway }}
+        activeConnection={settings.connections[0]}
+        activeProject={settings.connections[0].projects[0]}
+        activeSection="general"
+        onSectionChange={vi.fn()}
+      />,
+    ));
+
+    expect(container.textContent).toContain("Windows 显示在屏幕右下角");
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="执行时通知"]')!.click());
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="执行完毕通知"]')!.click());
+
+    expect(handlers.onConversationChange).toHaveBeenNthCalledWith(1, { session_notify_on_start: false });
+    expect(handlers.onConversationChange).toHaveBeenNthCalledWith(2, { session_notify_on_complete: false });
   });
 
   it("changes the composer send shortcut", () => {
