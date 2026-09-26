@@ -17,9 +17,10 @@ import type { CrabCodeConnection, SessionLaunchOverrides } from "./connection";
 import { RuntimeControls } from "./runtimeControls";
 import {
   buildIdeContextPrompt,
-  displayIdeContextPrompt,
+  presentUserMessage,
   type IdeContextSnapshot,
   type IdePathReference,
+  type UserAttachmentChip,
 } from "./ideContext";
 import {
   buildChoiceResponseCommand,
@@ -235,6 +236,7 @@ export interface ChatMessage {
   text: string;
   timestamp: number;
   images?: ImageAttachment[];
+  attachments?: UserAttachmentChip[];
   parentId?: string | null;
   origin?: string | null;
   usage?: Record<string, unknown> | null;
@@ -500,7 +502,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
             msg.includeIdeContext === true ? this.ideContext : null,
             references,
           );
-          this.handleUserMessage(prompt, msg.images, displayIdeContextPrompt(prompt));
+          this.handleUserMessage(prompt, msg.images);
           break;
         }
         case "copyText":
@@ -3350,7 +3352,6 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   private async handleUserMessage(
     text: string,
     images?: ImageAttachment[],
-    displayText = text,
   ): Promise<void> {
     this.ensureSessionIfNeeded();
     const sessionId = this.displayedSessionId ?? this.connection.sessionId;
@@ -3358,10 +3359,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     const state = sessionId ? this.getSessionState(sessionId) : this.currentState;
     const updateWebview = sessionId === this.displayedSessionId;
     if (state.isBusy) {
-      this.queueSteeringMessageOnState(state, displayText, images);
+      this.queueSteeringMessageOnState(state, text, images);
       this.connection.steer(text, { sessionId: sessionId ?? undefined, images });
     } else {
-      this.addMessageOnState(state, "user", displayText, updateWebview, images);
+      this.addMessageOnState(state, "user", text, updateWebview, images);
       state.isBusy = true;
       if (updateWebview) this.postMessage({ type: "busyState", busy: true });
       const operationId = this.connection.send(text, { sessionId: sessionId ?? undefined, images });
@@ -3801,12 +3802,14 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
       const flushText = (): void => {
         if (!pendingText && pendingImages.length === 0) return;
+        const presented = role === "user" ? presentUserMessage(pendingText) : { text: pendingText, attachments: [] as UserAttachmentChip[] };
         const chatMsg: ChatMessage = {
           id: segment === 0 ? baseId : `${baseId}:part-${segment}`,
           role,
-          text: role === "user" ? displayIdeContextPrompt(pendingText) : pendingText,
+          text: presented.text,
           timestamp,
           images: pendingImages.length > 0 ? pendingImages : undefined,
+          ...(presented.attachments.length ? { attachments: presented.attachments } : {}),
           parentId,
           origin,
           usage,
@@ -4327,12 +4330,14 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     text: string,
     images?: ImageAttachment[],
   ): void {
+    const presented = presentUserMessage(text);
     state.pendingSteeringMessages.push({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: "user",
-      text,
+      text: presented.text,
       timestamp: Date.now(),
       images,
+      ...(presented.attachments.length ? { attachments: presented.attachments } : {}),
     });
     if (state === this.currentState) {
       this.postMessage({
@@ -4371,12 +4376,14 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     images?: ImageAttachment[],
     copyLabel?: string,
   ): void {
+    const presented = role === "user" ? presentUserMessage(text) : { text, attachments: [] as UserAttachmentChip[] };
     const msg: ChatMessage = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role,
-      text,
+      text: presented.text,
       timestamp: Date.now(),
       images,
+      ...(presented.attachments.length ? { attachments: presented.attachments } : {}),
       copyLabel: copyLabel ?? null,
     };
     state.messages.push(msg);
@@ -4581,11 +4588,78 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
     .msg.user {
       align-self: flex-end;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
       width: min(94%, 520px);
-      background: color-mix(in srgb, var(--accent) 10%, var(--surface-elevated));
-      border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
-      border-top-right-radius: 4px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
     }
+    .msg.user .user-bubble {
+      width: fit-content;
+      max-width: 100%;
+      padding: 8px 10px;
+      border-radius: var(--radius-lg);
+      border-top-right-radius: 4px;
+      border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+      background: color-mix(in srgb, var(--accent) 10%, var(--surface-elevated));
+      box-shadow: var(--shadow-sm);
+    }
+    .user-attachment-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      align-items: flex-end;
+      gap: 6px;
+      width: 100%;
+      margin-bottom: 6px;
+    }
+    .user-attachment-row img {
+      width: auto;
+      height: auto;
+      max-width: 112px;
+      max-height: 112px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      object-fit: contain;
+    }
+    .user-attachment-chip {
+      max-width: 220px;
+      min-height: 32px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface-elevated);
+      color: var(--text);
+    }
+    .user-attachment-chip svg {
+      width: 14px;
+      height: 14px;
+      flex: 0 0 auto;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .user-attachment-chip span {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .user-attachment-chip strong,
+    .user-attachment-chip small {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .user-attachment-chip strong { font-size: 12px; font-weight: 600; }
+    .user-attachment-chip small { color: var(--text-muted); font-size: 10.5px; }
     .msg.assistant {
       align-self: stretch;
       background: color-mix(in srgb, var(--surface) 80%, var(--vscode-editor-background));
@@ -7886,24 +7960,56 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       return parts.join('');
     }
 
+    function attachmentGlyph(kind) {
+      if (kind === 'folder') {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>';
+      }
+      if (kind === 'document') {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"></path><path d="M8 13h8M8 17h5"></path></svg>';
+      }
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"></path><path d="M14 3v5h5"></path></svg>';
+    }
+
+    function userAttachmentHtml(msg) {
+      const images = (msg.images || []).map(function(img) {
+        const src = 'data:' + escapeAttr(img.media_type) + ';base64,' + img.data;
+        return '<img data-image-preview src="' + src + '" alt="附件图片" loading="lazy" role="button" tabindex="0" aria-label="放大查看附件图片" />';
+      }).join('');
+      const chips = (msg.attachments || []).map(function(item) {
+        const detail = item.detail ? '<small>' + escapeHtml(item.detail) + '</small>' : '';
+        return '<div class="user-attachment-chip" data-kind="' + escapeAttr(item.kind || 'file') + '" title="' + escapeAttr(item.title || item.label || '') + '">' +
+          attachmentGlyph(item.kind) +
+          '<span><strong>' + escapeHtml(item.label || '附件') + '</strong>' + detail + '</span></div>';
+      }).join('');
+      if (!images && !chips) return '';
+      return '<div class="user-attachment-row" aria-label="附件">' + images + chips + '</div>';
+    }
+
     function addMessageEl(msg) {
       const shouldStick = captureScrollAnchor();
       const div = document.createElement('div');
       const copyable = msg.copyLabel || (msg.role === 'assistant' && msg.text);
       div.className = 'msg ' + msg.role + (copyable ? ' copyable-inline' : '');
       div.id = 'msg-' + msg.id;
-      const textHtml = msg.role === 'assistant'
-        ? '<div class="text assistant-markdown" data-raw-text="' + escapeAttr(msg.text || '') + '">' + renderAssistantMarkdown(msg.text || '') + '</div>'
-        : '<div class="text">' + escapeHtml(msg.text) + '</div>';
-      let html = '<div class="role">' + roleLabel(msg.role) + '</div>' + textHtml;
-      // Render images in user messages
-      if (msg.images && msg.images.length > 0) {
-        html += '<div class="msg-images">';
-        for (const img of msg.images) {
-          const src = 'data:' + escapeAttr(img.media_type) + ';base64,' + img.data;
-          html += '<img data-image-preview src="' + src + '" alt="附件图片" loading="lazy" role="button" tabindex="0" aria-label="放大查看附件图片" />';
+      let html;
+      if (msg.role === 'user') {
+        const bubble = msg.text
+          ? '<div class="user-bubble"><div class="role">' + roleLabel(msg.role) + '</div><div class="text">' + escapeHtml(msg.text) + '</div></div>'
+          : '';
+        html = userAttachmentHtml(msg) + bubble;
+      } else {
+        const textHtml = msg.role === 'assistant'
+          ? '<div class="text assistant-markdown" data-raw-text="' + escapeAttr(msg.text || '') + '">' + renderAssistantMarkdown(msg.text || '') + '</div>'
+          : '<div class="text">' + escapeHtml(msg.text) + '</div>';
+        html = '<div class="role">' + roleLabel(msg.role) + '</div>' + textHtml;
+        if (msg.images && msg.images.length > 0) {
+          html += '<div class="msg-images">';
+          for (const img of msg.images) {
+            const src = 'data:' + escapeAttr(img.media_type) + ';base64,' + img.data;
+            html += '<img data-image-preview src="' + src + '" alt="附件图片" loading="lazy" role="button" tabindex="0" aria-label="放大查看附件图片" />';
+          }
+          html += '</div>';
         }
-        html += '</div>';
       }
       if (copyable) {
         html += '<div class="message-actions">' + copyButtonHtml(msg.text || '', msg.copyLabel || '复制回复') + (msg.role === 'assistant' ? forkButtonHtml(msg.messageUuid) : '') + '</div>';

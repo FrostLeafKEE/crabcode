@@ -423,6 +423,53 @@ s_\theta(x_t,y,t) \approx \nabla_{x_t}\log p_t(x_t\mid y)
     act(() => root.unmount());
   });
 
+  it("renders user image attachments above the prompt", () => {
+    (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() => root.render(
+      <ChatItemView
+        item={{
+          id: "user-image",
+          kind: "user",
+          text: [
+            '<file path="/work/notes.md"></file>',
+            "<folder>\n/work/src\n</folder>",
+            "看看这张图",
+          ].join("\n\n"),
+          images: [
+            { media_type: "image/png", data: "YQ==" },
+            { media_type: "image/jpeg", data: "Yg==" },
+          ],
+        }}
+        now={0}
+        showTurnDuration
+        turnDurationFormat="hms"
+        onPermission={vi.fn()}
+        onToggleChoice={vi.fn()}
+        onSubmitChoice={vi.fn()}
+        onPlan={vi.fn()}
+      />,
+    ));
+    const shell = container.querySelector(".user-message-shell");
+    const images = shell?.querySelector(".message-images");
+    const bubble = shell?.querySelector(".user-message");
+    const chips = shell?.querySelectorAll(".user-attachment-chip");
+    expect(shell?.querySelectorAll(".message-images img")).toHaveLength(2);
+    expect(chips).toHaveLength(2);
+    expect(chips?.[0]?.textContent).toContain("notes.md");
+    expect(chips?.[1]?.textContent).toContain("src");
+    expect(bubble?.textContent).toContain("看看这张图");
+    expect(bubble?.textContent).not.toContain("<file");
+    expect(images).not.toBeNull();
+    expect(bubble).not.toBeNull();
+    expect(images?.compareDocumentPosition(chips![0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(chips?.[1]?.compareDocumentPosition(bubble!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(bubble?.compareDocumentPosition(shell?.querySelector(".message-actions")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    act(() => root.unmount());
+    container.remove();
+  });
+
   it("renders assistant image attachments", () => {
     (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     const container = document.createElement("div");

@@ -12,7 +12,7 @@ const source = buildSync({
 }).outputFiles[0].text;
 const moduleShim = { exports: {} };
 new Function('module', 'exports', 'require', source)(moduleShim, moduleShim.exports, require);
-const { buildIdeContextPrompt, displayIdeContextPrompt } = moduleShim.exports;
+const { buildIdeContextPrompt, presentUserMessage } = moduleShim.exports;
 const { loadPanel } = require('./helpers/chatPanelHarness.cjs');
 
 test('IDE context and path references are injected as structured per-message context', () => {
@@ -38,21 +38,25 @@ test('IDE context and path references are injected as structured per-message con
   assert.ok(prompt.endsWith('修复这个问题'));
 });
 
-test('chat display hides the transport envelope and keeps a concise reference summary', () => {
+test('chat display hides the transport envelope and keeps references as attachment chips', () => {
   const prompt = buildIdeContextPrompt(
     '检查引用',
     { active_file: '/workspace/src/app.ts', selected_text: 'private selection' },
     [{ kind: 'folder', path: '/workspace/src/components', name: 'components' }],
   );
-  const display = displayIdeContextPrompt(prompt);
-  assert.equal(display, '[IDE：app.ts] [文件夹：components]\n\n检查引用');
-  assert.ok(!display.includes('crabcode-ide-context'));
-  assert.ok(!display.includes('private selection'));
+  const display = presentUserMessage(prompt);
+  assert.equal(display.text, '检查引用');
+  assert.deepEqual(display.attachments, [
+    { kind: 'ide', label: 'app.ts', detail: '当前文件', title: '/workspace/src/app.ts' },
+    { kind: 'folder', label: 'components', title: '/workspace/src/components' },
+  ]);
+  assert.ok(!display.text.includes('crabcode-ide-context'));
+  assert.ok(!display.text.includes('private selection'));
 });
 
 test('plain messages remain byte-for-byte unchanged without selected context', () => {
   assert.equal(buildIdeContextPrompt('hello', null, []), 'hello');
-  assert.equal(displayIdeContextPrompt('hello'), 'hello');
+  assert.deepEqual(presentUserMessage('hello'), { text: 'hello', attachments: [] });
 });
 
 test('restored user history hides IDE transport details while preserving the reference summary', () => {
@@ -67,7 +71,11 @@ test('restored user history hides IDE transport details while preserving the ref
     messages: [{ uuid: 'user-1', role: 'user', content: [{ type: 'text', text: prompt }] }],
   });
   const message = h.panel.getSessionState('a').messages[0];
-  assert.equal(message.text, '[IDE：app.ts] [文件：README.md]\n\n继续检查');
+  assert.equal(message.text, '继续检查');
+  assert.deepEqual(message.attachments, [
+    { kind: 'ide', label: 'app.ts', detail: '当前文件', title: '/workspace/src/app.ts' },
+    { kind: 'file', label: 'README.md', detail: '仅路径', title: '/workspace/README.md' },
+  ]);
   assert.ok(!message.text.includes('secret selection'));
 });
 
@@ -109,8 +117,12 @@ test('webview sends the current IDE snapshot and only normalized workspace refer
   assert.ok(h.sent[0].text.includes(`"path": ${JSON.stringify(sourceFolder)}`));
   assert.ok(!h.sent[0].text.includes(JSON.stringify(outsideFile)));
   assert.equal((h.sent[0].text.match(/"kind": "folder"/g) || []).length, 1);
-  const shown = h.messages.filter(message => message.type === 'newMessage').at(-1).message.text;
-  assert.equal(shown, '[IDE：app.ts] [文件夹：src]\n\n检查这里');
+  const shown = h.messages.filter(message => message.type === 'newMessage').at(-1).message;
+  assert.equal(shown.text, '检查这里');
+  assert.deepEqual(shown.attachments, [
+    { kind: 'ide', label: 'app.ts', detail: '当前文件', title: currentFile },
+    { kind: 'folder', label: 'src', title: sourceFolder },
+  ]);
 });
 
 test('composer HTML exposes the removable context capsule and nested IDE context menu', () => {

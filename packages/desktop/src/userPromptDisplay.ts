@@ -1,67 +1,3 @@
-export interface IdeContextSnapshot {
-  active_file: string;
-  selected_text?: string | null;
-  cursor_line?: number | null;
-  cursor_column?: number | null;
-  open_files?: string[];
-  language_id?: string | null;
-}
-
-export interface IdePathReference {
-  kind: "file" | "folder";
-  path: string;
-  name?: string;
-}
-
-const START = "<crabcode-ide-context>";
-const END = "</crabcode-ide-context>";
-
-function safeJson(value: unknown): string {
-  return JSON.stringify(value, null, 2)
-    .replace(/</g, "\\u003c")
-    .replace(/>/g, "\\u003e")
-    .replace(/&/g, "\\u0026");
-}
-
-function referencePayload(
-  context: IdeContextSnapshot | null,
-  references: IdePathReference[],
-): Record<string, unknown> {
-  const payload: Record<string, unknown> = {};
-  if (context?.active_file) {
-    payload.current_file = {
-      path: context.active_file,
-      language_id: context.language_id ?? null,
-      cursor: context.cursor_line == null
-        ? null
-        : {
-            line: context.cursor_line + 1,
-            column: (context.cursor_column ?? 0) + 1,
-          },
-      selected_text: context.selected_text || null,
-      visible_files: Array.isArray(context.open_files) ? context.open_files : [],
-    };
-  }
-  if (references.length > 0) {
-    payload.references = references.map((reference) => ({
-      kind: reference.kind,
-      path: reference.path,
-    }));
-  }
-  return payload;
-}
-
-export function buildIdeContextPrompt(
-  userText: string,
-  context: IdeContextSnapshot | null,
-  references: IdePathReference[],
-): string {
-  const payload = referencePayload(context, references);
-  if (Object.keys(payload).length === 0) return userText;
-  const envelope = `${START}\n${safeJson(payload)}\n${END}`;
-  return userText.trim() ? `${envelope}\n\n${userText}` : envelope;
-}
-
 export interface UserAttachmentChip {
   kind: "file" | "folder" | "document" | "ide";
   label: string;
@@ -77,7 +13,7 @@ export interface PresentedUserMessage {
 const ATTACHMENT_BLOCK =
   /<file\b([^>]*)>[\s\S]*?<\/file>|<folder>([\s\S]*?)<\/folder>|<document-reference>\s*文档：([^\r\n]*)\r?\n位置：([^\r\n]*)[\s\S]*?<\/document-reference>|<crabcode-ide-context>([\s\S]*?)<\/crabcode-ide-context>/g;
 
-function attachmentName(value: string): string {
+export function attachmentName(value: string): string {
   const trimmed = value.trim().replace(/[\\/]+$/, "");
   return trimmed.split(/[\\/]/).pop() || value.trim() || value;
 }
@@ -93,7 +29,9 @@ function readAttr(source: string, name: string): string | undefined {
 
 function fileChip(attrs: string): UserAttachmentChip {
   const filePath = readAttr(attrs, "path");
-  if (filePath) return { kind: "file", label: attachmentName(filePath), detail: "仅路径", title: filePath };
+  if (filePath) {
+    return { kind: "file", label: attachmentName(filePath), detail: "仅路径", title: filePath };
+  }
   const name = readAttr(attrs, "name");
   return { kind: "file", label: name || "文件", title: name };
 }

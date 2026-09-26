@@ -596,6 +596,81 @@ svg {
   align-items: flex-end;
 }
 
+.user-message-shell>.user-attachment-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: flex-end;
+  gap: 8px;
+  width: min(100%, 680px);
+  margin-bottom: 8px;
+}
+
+.user-attachment-row>.message-images {
+  display: contents;
+}
+
+.user-message-shell .message-image {
+  width: auto;
+  max-width: 112px;
+}
+
+.user-message-shell .message-images img {
+  width: auto;
+  height: auto;
+  max-width: 112px;
+  max-height: 112px;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.user-message-shell .message-image figcaption {
+  display: none;
+}
+
+.user-attachment-chip {
+  max-width: 240px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.user-attachment-chip>svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+}
+
+.user-attachment-chip>span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.user-attachment-chip strong,
+.user-attachment-chip small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-attachment-chip strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.user-attachment-chip small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .user-message-shell .message-actions {
   margin-top: 4px;
 }

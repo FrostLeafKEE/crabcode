@@ -559,4 +559,24 @@ describe("Gateway event reducer", () => {
     ]);
     expect(current.items[2].durationMs).toBe(10_000);
   });
+
+  it("restores user file references as attachment chips above the prompt text", () => {
+    const current = applyGatewayEvent(state(), {
+      type: "session_history",
+      messages: [{
+        uuid: "user-files",
+        role: "user",
+        content: '<file name="notes.md">\nsecret body\n</file>\n\n<folder>\n/work/src\n</folder>\n\n继续看',
+      }],
+    });
+    expect(current.items[0]).toMatchObject({
+      kind: "user",
+      text: "继续看",
+      attachments: [
+        { kind: "file", label: "notes.md", title: "notes.md" },
+        { kind: "folder", label: "src", title: "/work/src" },
+      ],
+    });
+    expect(current.items[0].text).not.toContain("secret body");
+  });
 });

@@ -1,3 +1,4 @@
+import type { UserAttachmentChip } from "./userPromptDisplay";
 import type { LocalVmConfig } from "./virtualMachine";
 export interface ProjectPreset {
   id: string;
@@ -657,6 +658,7 @@ export interface ChatItem {
   kind: ChatItemKind;
   text?: string;
   images?: ImageAttachment[];
+  attachments?: UserAttachmentChip[];
   title?: string;
   command?: string;
   detail?: unknown;

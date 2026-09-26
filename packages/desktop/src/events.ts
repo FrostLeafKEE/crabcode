@@ -1,4 +1,5 @@
 import type { ChatItem, GatewayEvent, ImageAttachment, SessionViewState } from "./types";
+import { presentUserMessage } from "./userPromptDisplay";
 import { randomUuid } from "./uuid";
 import { computerUseDisplayResult } from "./toolPresentation";
 
@@ -26,6 +27,15 @@ function startsUserTurn(message: Record<string, unknown>): boolean {
     && typeof block === "object"
     && (block as Record<string, unknown>).type === "tool_result"
   ));
+}
+
+function displayedUserText(kind: ChatItem["kind"], source: string): Pick<ChatItem, "text" | "attachments"> {
+  if (kind !== "user") return { text: source };
+  const presented = presentUserMessage(source);
+  return {
+    text: presented.text,
+    ...(presented.attachments.length ? { attachments: presented.attachments } : {}),
+  };
 }
 
 function historyItems(messages: Array<Record<string, unknown>>): ChatItem[] {
@@ -81,7 +91,7 @@ function historyItems(messages: Array<Record<string, unknown>>): ChatItem[] {
       : { startedAt: messageTimestamp, completedAt: messageTimestamp, durationMs: 0 };
     const content = message.content;
     if (typeof content === "string") {
-      if (content) items.push({ id: baseId, kind, text: content, status: "complete", ...messageTiming });
+      if (content) items.push({ id: baseId, kind, status: "complete", ...messageTiming, ...displayedUserText(kind, content) });
       continue;
     }
     if (!Array.isArray(content)) continue;
@@ -93,11 +103,12 @@ function historyItems(messages: Array<Record<string, unknown>>): ChatItem[] {
     let images: ImageAttachment[] = [];
     let segment = 0;
     const flushText = () => {
-      if (!text && images.length === 0) return;
+      const displayed = displayedUserText(kind, text);
+      if (!displayed.text && images.length === 0 && !displayed.attachments?.length) return;
       items.push({
         id: segment === 0 ? baseId : `${baseId}:part-${segment}`,
         kind,
-        text,
+        ...displayed,
         images: images.length > 0 ? images : undefined,
         status: "complete",
         ...messageTiming,

@@ -195,6 +195,7 @@ import type {
   TurnDurationFormat,
   WorkspaceDirectoryListing,
 } from "./types";
+import { presentUserMessage, type UserAttachmentChip } from "./userPromptDisplay";
 
 type GatewayMap = Record<string, GatewayViewState>;
 type SessionMap = Record<string, SessionViewState>;
@@ -399,6 +400,47 @@ export function serializePendingFiles(files: PendingFile[]): string {
       ? `<file path="${escapeAttribute(file.path)}"></file>`
       : `<file name="${escapeAttribute(file.name)}">\n${file.text}\n</file>`
   )).join("\n\n");
+}
+
+function pendingUserMessage(
+  text: string,
+  images: PendingImage[],
+  files: PendingFile[],
+  folders: string[],
+  references: DocumentReference[],
+  now: number,
+): ChatItem {
+  const attachments: UserAttachmentChip[] = [
+    ...files.map((file) => ({
+      kind: "file" as const,
+      label: file.name,
+      ...(file.mode === "path" ? { detail: "仅路径" } : {}),
+      title: file.path ?? file.name,
+    })),
+    ...folders.map((folder) => ({
+      kind: "folder" as const,
+      label: basename(folder),
+      title: folder,
+    })),
+    ...references.map((reference) => ({
+      kind: "document" as const,
+      label: reference.document_name,
+      detail: formatDocumentReferenceLocation(reference),
+    })),
+  ];
+  return {
+    id: randomUuid(),
+    kind: "user",
+    text,
+    images: images.length
+      ? images.map(({ media_type, data }) => ({ media_type, data }))
+      : undefined,
+    ...(attachments.length ? { attachments } : {}),
+    status: "complete",
+    startedAt: now,
+    completedAt: now,
+    durationMs: 0,
+  };
 }
 
 function FileAttachment({ file, onRemove }: { file: PendingFile; onRemove: () => void }) {
@@ -2369,12 +2411,7 @@ function App() {
           activeSession.operationId,
           pendingImages.map(({ media_type, data }) => ({ media_type, data })),
         );
-        const attachmentLine = [
-          ...pendingImages.map((image) => `[图片：${image.name}]`),
-          ...pendingFiles.map((file) => `[文件：${file.name}]`),
-          ...pendingFolders.map((path) => `[文件夹：${path}]`),
-          ...pendingDocumentReferences.map((reference) => `[文档引用：${formatDocumentReferenceLocation(reference)}]`),
-        ].join(" ");
+        const userItem = pendingUserMessage(text, pendingImages, pendingFiles, pendingFolders, pendingDocumentReferences, now);
         setSessions((current) => ({
           ...current,
           [activeSessionKey]: {
@@ -2387,7 +2424,7 @@ function App() {
             },
             items: [
               ...current[activeSessionKey].items,
-              { id: randomUuid(), kind: "user", text: `${attachmentLine}${attachmentLine && text ? "\n\n" : ""}${text}`, status: "complete", startedAt: now, completedAt: now, durationMs: 0 },
+              userItem,
             ],
           },
         }));
@@ -2396,12 +2433,7 @@ function App() {
           messageText,
           pendingImages.map(({ media_type, data }) => ({ media_type, data })),
         );
-        const attachmentLine = [
-          ...pendingImages.map((image) => `[图片：${image.name}]`),
-          ...pendingFiles.map((file) => `[文件：${file.name}]`),
-          ...pendingFolders.map((path) => `[文件夹：${path}]`),
-          ...pendingDocumentReferences.map((reference) => `[文档引用：${formatDocumentReferenceLocation(reference)}]`),
-        ].join(" ");
+        const userItem = pendingUserMessage(text, pendingImages, pendingFiles, pendingFolders, pendingDocumentReferences, now);
         setSessions((current) => ({
           ...current,
           [activeSessionKey]: {
@@ -2416,7 +2448,7 @@ function App() {
             operationId,
             items: [
               ...current[activeSessionKey].items,
-              { id: randomUuid(), kind: "user", text: `${attachmentLine}${attachmentLine && text ? "\n\n" : ""}${text}`, status: "complete", startedAt: now, completedAt: now, durationMs: 0 },
+              userItem,
             ],
           },
         }));
@@ -6199,6 +6231,12 @@ function PreviewableImage({ src, alt, className, loading }: {
   );
 }
 
+function UserAttachmentIcon({ kind }: { kind: UserAttachmentChip["kind"] }) {
+  if (kind === "folder") return <Folder />;
+  if (kind === "document") return <Quote />;
+  return <FileText />;
+}
+
 function InlineImages({ images }: { images?: Array<{ media_type: string; data: string; description?: string }> }) {
   if (!images?.length) return null;
   return (
@@ -6294,12 +6332,32 @@ export function ChatItemView({ item, now, showTurnDuration, turnDurationFormat, 
     return <div className="turn-duration-divider" role="separator" aria-label={label}><span>{label}</span></div>;
   }
   if (item.kind === "user") {
+    const presented = presentUserMessage(item.text ?? "");
+    const attachments = [...(item.attachments ?? []), ...presented.attachments];
+    const text = presented.text;
     return (
       <article className="message user-message-shell">
-        <div className="user-message"><MessageMarkdown>{item.text ?? ""}</MessageMarkdown></div>
-        <InlineImages images={item.images} />
-        {item.text && <div className="message-actions">
-          <CopyButton text={item.text} label="复制输入" />
+        {(item.images?.length || attachments.length > 0) && (
+          <div className="user-attachment-row" aria-label="附件">
+            <InlineImages images={item.images} />
+            {attachments.map((attachment, index) => (
+              <div
+                className={`user-attachment-chip kind-${attachment.kind}`}
+                key={`${attachment.kind}-${attachment.label}-${index}`}
+                title={attachment.title || attachment.label}
+              >
+                <UserAttachmentIcon kind={attachment.kind} />
+                <span>
+                  <strong>{attachment.label}</strong>
+                  {attachment.detail && <small>{attachment.detail}</small>}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {text.trim() && <div className="user-message"><MessageMarkdown>{text}</MessageMarkdown></div>}
+        {text.trim() && <div className="message-actions">
+          <CopyButton text={text} label="复制输入" />
         </div>}
       </article>
     );
