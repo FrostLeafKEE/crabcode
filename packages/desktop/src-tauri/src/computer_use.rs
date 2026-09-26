@@ -10,7 +10,7 @@ use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use xcap::image::{imageops::FilterType, DynamicImage, ImageFormat, RgbaImage};
+use xcap::image::{imageops::FilterType, DynamicImage, ImageFormat, Rgba, RgbaImage};
 use xcap::{Monitor, Window};
 
 #[cfg(target_os = "windows")]
@@ -2280,6 +2280,31 @@ struct ScreenshotCapture {
     component_capture_errors: Vec<String>,
     window_components: Vec<Value>,
     excluded_windows: Vec<Value>,
+    displays: Vec<ScreenshotDisplay>,
+}
+
+// RGBA bytes of one combined desktop. Four 4K displays are about 128MB; the cap
+// rejects pathological virtual-screen sizes before that buffer is allocated.
+const MAX_DESKTOP_PIXELS: u64 = 40_000_000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ScreenshotDisplay {
+    id: String,
+    name: String,
+    primary: bool,
+    image_x: i32,
+    image_y: i32,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesktopSpace {
+    origin_x: i32,
+    origin_y: i32,
+    width: u32,
+    height: u32,
+    displays: Vec<ScreenshotDisplay>,
 }
 
 #[cfg(target_os = "macos")]
@@ -2509,11 +2534,322 @@ fn mac_capture_window_group_snapshot(
                 receipt
             })
             .collect(),
+        displays: Vec::new(),
     })
 }
 
+fn display_infos() -> Result<Vec<DisplayInfo>, String> {
+    Ok(monitors()?.into_iter().map(|(_, info)| info).collect())
+}
+
+fn desktop_space(displays: &[DisplayInfo]) -> Result<DesktopSpace, String> {
+    if displays.is_empty() {
+        return Err("No display is available".to_string());
+    }
+    if displays
+        .iter()
+        .any(|display| display.width == 0 || display.height == 0)
+    {
+        return Err("A display reported an empty size".to_string());
+    }
+    let origin_x = displays
+        .iter()
+        .map(|display| display.x)
+        .min()
+        .ok_or_else(|| "No display is available".to_string())?;
+    let origin_y = displays
+        .iter()
+        .map(|display| display.y)
+        .min()
+        .ok_or_else(|| "No display is available".to_string())?;
+    let right = displays
+        .iter()
+        .map(|display| i64::from(display.x) + i64::from(display.width))
+        .max()
+        .ok_or_else(|| "No display is available".to_string())?;
+    let bottom = displays
+        .iter()
+        .map(|display| i64::from(display.y) + i64::from(display.height))
+        .max()
+        .ok_or_else(|| "No display is available".to_string())?;
+    let width = right
+        .checked_sub(i64::from(origin_x))
+        .ok_or_else(|| "Desktop width overflowed".to_string())?;
+    let height = bottom
+        .checked_sub(i64::from(origin_y))
+        .ok_or_else(|| "Desktop height overflowed".to_string())?;
+    if width <= 0 || height <= 0 || width > i64::from(u32::MAX) || height > i64::from(u32::MAX) {
+        return Err("Combined desktop bounds are invalid".to_string());
+    }
+    let width =
+        u32::try_from(width).map_err(|_| "Combined desktop bounds are invalid".to_string())?;
+    let height =
+        u32::try_from(height).map_err(|_| "Combined desktop bounds are invalid".to_string())?;
+    let mut placed = displays
+        .iter()
+        .map(|display| {
+            let image_x = display
+                .x
+                .checked_sub(origin_x)
+                .ok_or_else(|| "Display X overflowed".to_string())?;
+            let image_y = display
+                .y
+                .checked_sub(origin_y)
+                .ok_or_else(|| "Display Y overflowed".to_string())?;
+            if image_x < 0
+                || image_y < 0
+                || i64::from(image_x) + i64::from(display.width) > i64::from(width)
+                || i64::from(image_y) + i64::from(display.height) > i64::from(height)
+            {
+                return Err("Display extends outside the combined desktop".to_string());
+            }
+            Ok(ScreenshotDisplay {
+                id: display.id.clone(),
+                name: display.name.clone(),
+                primary: display.primary,
+                image_x,
+                image_y,
+                width: display.width,
+                height: display.height,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    // Paint the primary last so it stays visible where displays overlap.
+    placed.sort_by(|left, right| {
+        (left.primary, left.image_y, left.image_x, left.id.as_str()).cmp(&(
+            right.primary,
+            right.image_y,
+            right.image_x,
+            right.id.as_str(),
+        ))
+    });
+    Ok(DesktopSpace {
+        origin_x,
+        origin_y,
+        width,
+        height,
+        displays: placed,
+    })
+}
+
+fn display_space(info: &DisplayInfo) -> DesktopSpace {
+    DesktopSpace {
+        origin_x: info.x,
+        origin_y: info.y,
+        width: info.width,
+        height: info.height,
+        displays: vec![ScreenshotDisplay {
+            id: info.id.clone(),
+            name: info.name.clone(),
+            primary: info.primary,
+            image_x: 0,
+            image_y: 0,
+            width: info.width,
+            height: info.height,
+        }],
+    }
+}
+
+fn resolve_desktop_space(action: &ComputerAction) -> Result<DesktopSpace, String> {
+    let displays = display_infos()?;
+    if let Some(display_id) = action.display_id.as_deref() {
+        let info = displays
+            .into_iter()
+            .find(|display| display.id == display_id)
+            .ok_or_else(|| format!("Display not found: {display_id}"))?;
+        if info.width == 0 || info.height == 0 {
+            return Err(format!("Display {} has an empty size", info.id));
+        }
+        return Ok(display_space(&info));
+    }
+    desktop_space(&displays)
+}
+
+fn map_screenshot_point(x: i32, y: i32, space: &DesktopSpace) -> Result<(i32, i32), String> {
+    if x < 0 || y < 0 || x as u32 >= space.width || y as u32 >= space.height {
+        return Err(format!(
+            "Point ({x}, {y}) is outside the screenshot 0,0 {}x{}. Coordinates are image pixels from the top-left; do not add origin_x/origin_y",
+            space.width, space.height
+        ));
+    }
+    Ok((
+        space
+            .origin_x
+            .checked_add(x)
+            .ok_or_else(|| "Desktop X coordinate overflowed".to_string())?,
+        space
+            .origin_y
+            .checked_add(y)
+            .ok_or_else(|| "Desktop Y coordinate overflowed".to_string())?,
+    ))
+}
+
+fn map_action_to_desktop(action: &mut ComputerAction, space: &DesktopSpace) -> Result<(), String> {
+    if let (Some(x), Some(y)) = (action.x, action.y) {
+        let (x, y) = map_screenshot_point(x, y, space)?;
+        action.x = Some(x);
+        action.y = Some(y);
+    }
+    if let (Some(x), Some(y)) = (action.to_x, action.to_y) {
+        let (x, y) = map_screenshot_point(x, y, space)?;
+        action.to_x = Some(x);
+        action.to_y = Some(y);
+    }
+    Ok(())
+}
+
+fn attach_desktop_metadata(result: &mut Value, space: &DesktopSpace) {
+    result["coordinate_space"] = json!("screenshot");
+    result["origin_x"] = json!(space.origin_x);
+    result["origin_y"] = json!(space.origin_y);
+    result["width"] = json!(space.width);
+    result["height"] = json!(space.height);
+    result["displays"] = serde_json::to_value(&space.displays).unwrap_or(Value::Null);
+}
+
+fn capture_monitor_image(monitor: &Monitor, info: &DisplayInfo) -> Result<RgbaImage, String> {
+    if info.width == 0 || info.height == 0 {
+        return Err(format!("Display {} has an empty size", info.id));
+    }
+    Ok(normalize_image(
+        monitor.capture_image().map_err(|error| error.to_string())?,
+        info.width,
+        info.height,
+    ))
+}
+
+fn layout_matches(info: &DisplayInfo, space: &DesktopSpace, placed: &ScreenshotDisplay) -> bool {
+    info.id == placed.id
+        && info.width == placed.width
+        && info.height == placed.height
+        && info.x.checked_sub(space.origin_x) == Some(placed.image_x)
+        && info.y.checked_sub(space.origin_y) == Some(placed.image_y)
+}
+
+fn desktop_capture_limit(space: &DesktopSpace) -> Result<(), String> {
+    if space.displays.len() <= 1
+        || u64::from(space.width) * u64::from(space.height) <= MAX_DESKTOP_PIXELS
+    {
+        return Ok(());
+    }
+    let ids = space
+        .displays
+        .iter()
+        .map(|display| display.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "Combined desktop is too large to capture; observe again with display_id set to one of: {ids}"
+    ))
+}
+
+fn compose_desktop(
+    space: &DesktopSpace,
+    images: &[(DisplayInfo, RgbaImage)],
+) -> Result<ScreenshotCapture, String> {
+    desktop_capture_limit(space)?;
+    if space.displays.len() == 1 {
+        let placed = &space.displays[0];
+        let image = images
+            .iter()
+            .find(|(info, _)| info.id == placed.id)
+            .map(|(_, image)| image)
+            .ok_or_else(|| format!("Missing capture for display {}", placed.id))?;
+        let image = if image.width() == placed.width && image.height() == placed.height {
+            image.clone()
+        } else {
+            normalize_image(image.clone(), placed.width, placed.height)
+        };
+        return Ok(desktop_capture(image, space, &single_display_target(space)));
+    }
+    let mut canvas = RgbaImage::from_pixel(space.width, space.height, Rgba([0, 0, 0, 255]));
+    for placed in &space.displays {
+        let source = images
+            .iter()
+            .find(|(info, _)| info.id == placed.id)
+            .map(|(_, image)| image)
+            .ok_or_else(|| format!("Missing capture for display {}", placed.id))?;
+        if source.width() == placed.width && source.height() == placed.height {
+            xcap::image::imageops::overlay(
+                &mut canvas,
+                source,
+                i64::from(placed.image_x),
+                i64::from(placed.image_y),
+            );
+        } else {
+            let resized = normalize_image(source.clone(), placed.width, placed.height);
+            xcap::image::imageops::overlay(
+                &mut canvas,
+                &resized,
+                i64::from(placed.image_x),
+                i64::from(placed.image_y),
+            );
+        }
+    }
+    Ok(desktop_capture(canvas, space, "desktop"))
+}
+
+fn single_display_target(space: &DesktopSpace) -> String {
+    match space.displays.as_slice() {
+        [display] => format!("display:{}", display.id),
+        _ => "desktop".to_string(),
+    }
+}
+
+fn desktop_capture(image: RgbaImage, space: &DesktopSpace, target: &str) -> ScreenshotCapture {
+    ScreenshotCapture {
+        image,
+        origin_x: space.origin_x,
+        origin_y: space.origin_y,
+        target: target.to_string(),
+        component_window_ids: Vec::new(),
+        hidden_component_window_ids: Vec::new(),
+        component_capture_errors: Vec::new(),
+        window_components: Vec::new(),
+        excluded_windows: Vec::new(),
+        displays: space.displays.clone(),
+    }
+}
+
+fn capture_desktop(
+    action: &ComputerAction,
+    space: &DesktopSpace,
+) -> Result<ScreenshotCapture, String> {
+    desktop_capture_limit(space)?;
+    let found = monitors()?;
+    let mut images = Vec::with_capacity(space.displays.len());
+    for placed in &space.displays {
+        let (monitor, info) = found
+            .iter()
+            .find(|(_, info)| info.id == placed.id)
+            .ok_or_else(|| format!("Display {} disappeared during capture", placed.id))?;
+        if !layout_matches(info, space, placed) {
+            return Err("Display layout changed during capture; observe again".to_string());
+        }
+        let image = capture_monitor_image(monitor, info)
+            .map_err(|error| format!("Unable to capture display {}: {error}", info.id))?;
+        images.push((info.clone(), image));
+    }
+    let target = if action.display_id.is_some() {
+        single_display_target(space)
+    } else {
+        "desktop".to_string()
+    };
+    if space.displays.len() == 1 {
+        let image = images
+            .into_iter()
+            .next()
+            .map(|(_, image)| image)
+            .ok_or_else(|| "No display is available".to_string())?;
+        return Ok(desktop_capture(image, space, &target));
+    }
+    let mut capture = compose_desktop(space, &images)?;
+    capture.target = target;
+    Ok(capture)
+}
+
 fn capture_screenshot(action: &ComputerAction) -> Result<ScreenshotCapture, String> {
-    let (image, x, y, target) = if let Some(window_id) = action.window_id.as_deref() {
+    if let Some(window_id) = action.window_id.as_deref() {
         #[cfg(target_os = "macos")]
         {
             return mac_capture_window_group(window_target(window_id)?);
@@ -2540,50 +2876,22 @@ fn capture_screenshot(action: &ComputerAction) -> Result<ScreenshotCapture, Stri
                 width,
                 height,
             );
-            (image, x, y, format!("window:{window_id}"))
+            return Ok(ScreenshotCapture {
+                image,
+                origin_x: x,
+                origin_y: y,
+                target: format!("window:{window_id}"),
+                component_window_ids: Vec::new(),
+                hidden_component_window_ids: Vec::new(),
+                component_capture_errors: Vec::new(),
+                window_components: Vec::new(),
+                excluded_windows: Vec::new(),
+                displays: Vec::new(),
+            });
         }
-    } else {
-        let found = monitors()?;
-        let (monitor, info) = if let Some(display_id) = action.display_id.as_deref() {
-            found
-                .iter()
-                .find(|(_, info)| info.id == display_id)
-                .cloned()
-                .ok_or_else(|| format!("Display not found: {display_id}"))?
-        } else if let Some((x, y)) = action
-            .to_x
-            .zip(action.to_y)
-            .or_else(|| action.x.zip(action.y))
-        {
-            let monitor = Monitor::from_point(x, y).map_err(|error| error.to_string())?;
-            let info = display_info(&monitor)?;
-            (monitor, info)
-        } else {
-            found
-                .iter()
-                .find(|(_, info)| info.primary)
-                .or_else(|| found.first())
-                .cloned()
-                .ok_or_else(|| "No display is available".to_string())?
-        };
-        let image = normalize_image(
-            monitor.capture_image().map_err(|error| error.to_string())?,
-            info.width,
-            info.height,
-        );
-        (image, info.x, info.y, format!("display:{}", info.id))
-    };
-    Ok(ScreenshotCapture {
-        image,
-        origin_x: x,
-        origin_y: y,
-        target,
-        component_window_ids: Vec::new(),
-        hidden_component_window_ids: Vec::new(),
-        component_capture_errors: Vec::new(),
-        window_components: Vec::new(),
-        excluded_windows: Vec::new(),
-    })
+    }
+    let space = resolve_desktop_space(action)?;
+    capture_desktop(action, &space)
 }
 
 fn screenshot(action: &ComputerAction) -> Result<Value, String> {
@@ -2648,6 +2956,11 @@ fn encode_screenshot_capture(capture: ScreenshotCapture) -> Result<Value, String
     }
     if !capture.hidden_component_window_ids.is_empty() {
         frame["hidden_component_window_ids"] = json!(capture.hidden_component_window_ids);
+    }
+    if !capture.displays.is_empty() {
+        frame["displays"] =
+            serde_json::to_value(&capture.displays).map_err(|error| error.to_string())?;
+        frame["coordinate_space"] = json!("screenshot");
     }
     if !capture.component_capture_errors.is_empty() {
         frame["component_capture_errors"] = json!(capture.component_capture_errors);
@@ -2832,7 +3145,17 @@ fn perform_action(action: &ComputerAction, enigo: &mut Enigo) -> Result<String, 
     }
 }
 
-fn execute_foreground(request: ExecuteRequest) -> Result<Value, String> {
+fn execute_foreground(mut request: ExecuteRequest) -> Result<Value, String> {
+    // Screenshot pixels stay stable for the whole desktop. Translate them before
+    // input, then capture that same rectangle instead of the monitor under the pointer.
+    let desktop = if request.action.window_id.is_none() {
+        Some(resolve_desktop_space(&request.action)?)
+    } else {
+        None
+    };
+    if let Some(space) = &desktop {
+        map_action_to_desktop(&mut request.action, space)?;
+    }
     let mut enigo = Enigo::new(&Settings::default()).map_err(|error| error.to_string())?;
     let summary = perform_action(&request.action, &mut enigo)?;
     let cursor = enigo
@@ -2848,13 +3171,7 @@ fn execute_foreground(request: ExecuteRequest) -> Result<Value, String> {
         "cursor": cursor,
     });
     add_scroll_receipt(&mut result, &request.action);
-    if request.action.action == "list_displays" {
-        let displays = monitors()?
-            .into_iter()
-            .map(|(_, info)| info)
-            .collect::<Vec<_>>();
-        result["displays"] = serde_json::to_value(displays).map_err(|error| error.to_string())?;
-    } else if request.action.action == "list_windows" {
+    if request.action.action == "list_windows" {
         result["windows"] = Value::Array(window_list()?);
     }
 
@@ -2867,11 +3184,19 @@ fn execute_foreground(request: ExecuteRequest) -> Result<Value, String> {
         if request.action.action == "scroll" {
             thread::sleep(Duration::from_millis(SCROLL_SETTLE_MS));
         }
-        match screenshot(&request.action) {
+        let frame = if let Some(space) = &desktop {
+            capture_desktop(&request.action, space).and_then(encode_screenshot_capture)
+        } else {
+            screenshot(&request.action)
+        };
+        match frame {
             Ok(frame) => result["screenshot"] = frame,
             Err(error) if request.action.action == "observe" => return Err(error),
             Err(error) => result["screenshot_error"] = Value::String(error),
         }
+    }
+    if let Some(space) = &desktop {
+        attach_desktop_metadata(&mut result, space);
     }
     Ok(result)
 }
@@ -4717,6 +5042,7 @@ mod tests {
             component_capture_errors: Vec::new(),
             window_components: Vec::new(),
             excluded_windows: Vec::new(),
+            displays: Vec::new(),
         };
         let before = capture(base.clone());
         let same = capture(base.clone());
@@ -5434,6 +5760,124 @@ mod tests {
         assert!(gui_available);
         assert!(!input_available);
         assert_eq!(reason.as_deref(), Some("accessibility permission denied"));
+    }
+
+    fn display(id: &str, x: i32, y: i32, width: u32, height: u32, primary: bool) -> DisplayInfo {
+        DisplayInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            x,
+            y,
+            width,
+            height,
+            primary,
+        }
+    }
+
+    #[test]
+    fn combined_desktop_places_every_screen_in_screenshot_space() {
+        let left = display("left", -1920, 0, 1920, 1080, false);
+        let primary = display("primary", 0, 0, 1920, 1080, true);
+        let space = desktop_space(&[left, primary]).unwrap();
+        assert_eq!(
+            (space.origin_x, space.origin_y, space.width, space.height),
+            (-1920, 0, 3840, 1080)
+        );
+        let left_placed = space
+            .displays
+            .iter()
+            .find(|item| item.id == "left")
+            .unwrap();
+        let primary_placed = space
+            .displays
+            .iter()
+            .find(|item| item.id == "primary")
+            .unwrap();
+        assert_eq!((left_placed.image_x, left_placed.image_y), (0, 0));
+        assert_eq!((primary_placed.image_x, primary_placed.image_y), (1920, 0));
+        assert_eq!(space.displays.last().unwrap().id, "primary");
+        assert_eq!(map_screenshot_point(10, 20, &space).unwrap(), (-1910, 20));
+        assert_eq!(map_screenshot_point(1920, 0, &space).unwrap(), (0, 0));
+        assert!(map_screenshot_point(-1, 0, &space).is_err());
+        assert!(map_screenshot_point(3840, 0, &space).is_err());
+    }
+
+    #[test]
+    fn combined_desktop_includes_a_display_above_the_primary() {
+        let above = display("above", 100, -500, 800, 500, false);
+        let primary = display("primary", 0, 0, 1000, 800, true);
+        let space = desktop_space(&[primary, above]).unwrap();
+        assert_eq!((space.origin_x, space.origin_y), (0, -500));
+        assert_eq!((space.width, space.height), (1000, 1300));
+        let above = space
+            .displays
+            .iter()
+            .find(|item| item.id == "above")
+            .unwrap();
+        assert_eq!((above.image_x, above.image_y), (100, 0));
+        assert_eq!(map_screenshot_point(100, 0, &space).unwrap(), (100, -500));
+    }
+
+    #[test]
+    fn selected_display_keeps_coordinates_local_to_that_screenshot() {
+        let secondary = display("side", 1920, -40, 800, 600, false);
+        let space = display_space(&secondary);
+        assert_eq!(space.displays[0].image_x, 0);
+        assert_eq!(map_screenshot_point(3, 4, &space).unwrap(), (1923, -36));
+    }
+
+    #[test]
+    fn combined_desktop_rejects_an_unreasonably_large_virtual_screen() {
+        let left = display("left", 0, 0, 10_000, 3_000, true);
+        let right = display("right", 10_000, 0, 10_000, 3_000, false);
+        let space = desktop_space(&[left, right]).unwrap();
+        let error = desktop_capture_limit(&space).unwrap_err();
+        assert!(error.contains("display_id"), "{error}");
+        assert!(error.contains("left") && error.contains("right"), "{error}");
+        let only = display_space(&display("only", 0, 0, 10_000, 3_000, true));
+        assert!(desktop_capture_limit(&only).is_ok());
+    }
+
+    #[test]
+    fn compose_desktop_copies_each_display_into_its_image_slot() {
+        use xcap::image::Rgba;
+
+        let left = display("left", -2, 1, 2, 2, false);
+        let primary = display("primary", 0, 0, 2, 2, true);
+        let space = desktop_space(&[left.clone(), primary.clone()]).unwrap();
+        let images = vec![
+            (left, RgbaImage::from_pixel(2, 2, Rgba([255, 0, 0, 255]))),
+            (primary, RgbaImage::from_pixel(2, 2, Rgba([0, 0, 255, 255]))),
+        ];
+        let capture = compose_desktop(&space, &images).unwrap();
+        assert_eq!(capture.image.dimensions(), (4, 3));
+        assert_eq!((capture.origin_x, capture.origin_y), (-2, 0));
+        assert_eq!(capture.target, "desktop");
+        let pixel = |x, y| capture.image.get_pixel(x, y).0;
+        assert_eq!(pixel(0, 0), [0, 0, 0, 255]);
+        assert_eq!(pixel(2, 0), [0, 0, 255, 255]);
+        assert_eq!(pixel(0, 1), [255, 0, 0, 255]);
+        assert_eq!(pixel(2, 1), [0, 0, 255, 255]);
+        assert_eq!(pixel(0, 2), [255, 0, 0, 255]);
+        assert_eq!(pixel(2, 2), [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn desktop_click_coordinates_are_translated_before_input() {
+        let left = display("left", -1920, 0, 100, 100, false);
+        let primary = display("primary", 0, 0, 100, 100, true);
+        let space = desktop_space(&[left, primary]).unwrap();
+        let mut action: ComputerAction = serde_json::from_value(json!({
+            "action": "drag",
+            "x": 5,
+            "y": 6,
+            "to_x": 100,
+            "to_y": 7,
+        }))
+        .unwrap();
+        map_action_to_desktop(&mut action, &space).unwrap();
+        assert_eq!((action.x, action.y), (Some(-1915), Some(6)));
+        assert_eq!((action.to_x, action.to_y), (Some(-1820), Some(7)));
     }
 
     #[test]

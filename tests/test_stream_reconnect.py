@@ -119,6 +119,42 @@ def test_incomplete_chunked_read_retries_after_partial_text():
     assert durable == ["recovered"]
 
 
+def _httpx2_remote_protocol_error(message: str):
+    """Build the exception chain the OpenAI SDK raises for an httpx2 disconnect."""
+
+    class TransportError(Exception):
+        pass
+
+    class RemoteProtocolError(TransportError):
+        pass
+
+    class APIConnectionError(Exception):
+        pass
+
+    RemoteProtocolError.__module__ = "httpx2"
+    APIConnectionError.__module__ = "openai"
+    error = APIConnectionError("Connection error.")
+    error.__cause__ = RemoteProtocolError(message)
+    return error
+
+
+def test_httpx2_disconnect_before_response_uses_stream_retry_budget():
+    adapter = ScriptedAdapter([
+        [_httpx2_remote_protocol_error("Server disconnected without sending a response.")],
+        [*completed_text("recovered"), StreamChunk(type="message_stop")],
+    ])
+
+    events, messages = run(adapter)
+
+    assert len(adapter.requests) == 2
+    retry = next(event for event in events if isinstance(event, StreamRetryEvent))
+    assert retry.message == "模型连接中断，正在重试 1/2"
+    assert retry.unbounded is False
+    assert "APIConnectionError" in retry.error
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+    assert messages[-1].text_content == "recovered"
+
+
 def test_remote_protocol_error_exhausts_exact_stream_retry_budget():
     adapter = ScriptedAdapter([
         [

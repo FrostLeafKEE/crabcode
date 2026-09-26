@@ -11,7 +11,10 @@ import pytest
 
 from crabcode_core.api.base import APIAdapter, StreamChunk
 from crabcode_core.api.network import http_options, network_error_message, request_timeout
-from crabcode_core.query.loop import _is_recoverable_api_exception
+from crabcode_core.query.loop import (
+    _is_connection_api_exception,
+    _is_recoverable_api_exception,
+)
 from crabcode_core.query.loop import QueryParams, query_loop
 from crabcode_core.types.config import ApiConfig
 from crabcode_core.types.event import ErrorEvent, StreamRetryEvent
@@ -86,6 +89,35 @@ def test_reset_replaces_and_closes_client_with_same_policy():
         assert old.with_options.call_args.kwargs["max_retries"] == 0
         await old.with_options.call_args.kwargs["http_client"].aclose()
     asyncio.run(check())
+
+
+def test_httpx2_transport_error_is_recoverable_but_unrelated_names_are_not():
+    class TransportError(Exception):
+        pass
+
+    class RemoteProtocolError(TransportError):
+        pass
+
+    class ConnectError(TransportError):
+        pass
+
+    RemoteProtocolError.__module__ = "httpx2"
+    ConnectError.__module__ = "httpx2"
+    wrapped = Exception("Connection error.")
+    wrapped.__cause__ = RemoteProtocolError("Server disconnected without sending a response.")
+    assert _is_recoverable_api_exception(wrapped)
+    assert not _is_connection_api_exception(wrapped)
+
+    connect = Exception("Connection error.")
+    connect.__cause__ = ConnectError("offline")
+    assert _is_connection_api_exception(connect)
+
+    class TransportError(Exception):
+        pass
+
+    unrelated = TransportError("nope")
+    unrelated.__class__.__module__ = "app.errors"
+    assert not _is_recoverable_api_exception(unrelated)
 
 
 def test_certificate_failure_is_terminal_and_diagnostics_hide_secrets():

@@ -1131,7 +1131,7 @@ export function SettingsView({
                   <div className="settings-row compact">
                     <div className="settings-row-copy">
                       <strong>执行时通知</strong>
-                      <span>会话开始执行时弹出系统通知。Windows 显示在屏幕右下角，macOS 显示为通知气泡；macOS 首次需要允许通知权限。</span>
+                      <span>会话开始执行时弹出系统通知。</span>
                     </div>
                     <button
                       className={`settings-switch ${settings.session_notify_on_start ? "on" : ""}`}

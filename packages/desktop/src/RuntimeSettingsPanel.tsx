@@ -281,7 +281,7 @@ export function RuntimeSettingsPanel({
               <div className="settings-row-copy">
                 <strong>操作目标</strong>
                 <span>
-                  指定窗口使用窗口内坐标；整个桌面会控制真实鼠标和键盘。
+                  指定窗口使用窗口内坐标。整个桌面会把所有显示器拼成一张图，点击以这张图的左上角为原点，并控制真实鼠标和键盘。
                 </span>
               </div>
               <div className="settings-segmented" aria-label="Computer Use 操作目标">

@@ -163,13 +163,17 @@ pub struct EnsureGatewayResult {
 fn bypass_gateway_proxy(base: &Url) -> bool {
     matches!(base.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
         || matches!(base.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback())
-        || base.host_str().is_some_and(|host| host.eq_ignore_ascii_case("localhost"))
+        || base
+            .host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case("localhost"))
 }
 
 fn client(base: &Url) -> Result<Client, String> {
     let mut builder = Client::builder();
     if bypass_gateway_proxy(base) {
-        builder = builder.no_proxy().redirect(reqwest::redirect::Policy::none());
+        builder = builder
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none());
     }
     builder
         .timeout(Duration::from_secs(3))
@@ -1946,10 +1950,18 @@ mod tests {
 
     #[test]
     fn proxy_bypass_is_limited_to_literal_loopback() {
-        for url in ["http://localhost:4096", "http://127.0.0.1:4096", "http://[::1]:4096"] {
+        for url in [
+            "http://localhost:4096",
+            "http://127.0.0.1:4096",
+            "http://[::1]:4096",
+        ] {
             assert!(bypass_gateway_proxy(&parse_base_url(url).unwrap()));
         }
-        for url in ["https://example.com", "http://192.168.1.2:4096", "http://localhost.example.com"] {
+        for url in [
+            "https://example.com",
+            "http://192.168.1.2:4096",
+            "http://localhost.example.com",
+        ] {
             assert!(!bypass_gateway_proxy(&parse_base_url(url).unwrap()));
         }
     }

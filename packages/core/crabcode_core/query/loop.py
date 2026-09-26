@@ -210,10 +210,8 @@ def _format_exception_message(exc: Exception) -> str:
     return f"{exception_name}: no additional details"
 
 
-def _is_recoverable_api_exception(exc: Exception) -> bool:
-    """Identify transport/server failures that are safe for the caller to retry."""
-    if certificate_failure(exc):
-        return False
+def _iter_exception_chain(exc: BaseException):
+    """Yield an exception and the causes/contexts it wraps."""
     pending: list[BaseException] = [exc]
     seen: set[int] = set()
     while pending:
@@ -221,15 +219,44 @@ def _is_recoverable_api_exception(exc: Exception) -> bool:
         if id(current) in seen:
             continue
         seen.add(id(current))
+        yield current
+        for nested in (current.__cause__, current.__context__):
+            if nested is not None:
+                pending.append(nested)
 
-        if isinstance(
+
+def _is_http_transport_error(exc: BaseException) -> bool:
+    """Match httpx transport failures, including the parallel httpx2 client.
+
+    The OpenAI SDK raises ``APIConnectionError`` from ``httpx2.RemoteProtocolError``.
+    That class mirrors ``httpx.TransportError`` but is not a subclass of it.
+    """
+    if isinstance(exc, httpx.TransportError):
+        return True
+    module = type(exc).__module__.split(".", 1)[0]
+    if module not in {"httpx", "httpx2"}:
+        return False
+    return any(base.__name__ == "TransportError" for base in type(exc).__mro__)
+
+
+def _is_http_connection_error(exc: BaseException) -> bool:
+    """Match connect failures from httpx and httpx2."""
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+        return True
+    module = type(exc).__module__.split(".", 1)[0]
+    if module not in {"httpx", "httpx2"}:
+        return False
+    return type(exc).__name__ in {"ConnectError", "ConnectTimeout"}
+
+
+def _is_recoverable_api_exception(exc: Exception) -> bool:
+    """Identify transport/server failures that are safe for the caller to retry."""
+    if certificate_failure(exc):
+        return False
+    for current in _iter_exception_chain(exc):
+        if _is_http_transport_error(current) or isinstance(
             current,
-            (
-                httpx.TransportError,
-                asyncio.TimeoutError,
-                json.JSONDecodeError,
-                OSError,
-            ),
+            (asyncio.TimeoutError, json.JSONDecodeError, OSError),
         ):
             return True
 
@@ -239,28 +266,12 @@ def _is_recoverable_api_exception(exc: Exception) -> bool:
         ):
             return True
 
-        for nested in (current.__cause__, current.__context__):
-            if nested is not None:
-                pending.append(nested)
-
     return False
 
 
 def _is_connection_api_exception(exc: Exception) -> bool:
     """Return whether the unbounded connection retry path applies."""
-    pending: list[BaseException] = [exc]
-    seen: set[int] = set()
-    while pending:
-        current = pending.pop()
-        if id(current) in seen:
-            continue
-        seen.add(id(current))
-        if isinstance(current, (httpx.ConnectError, httpx.ConnectTimeout)):
-            return True
-        for nested in (current.__cause__, current.__context__):
-            if nested is not None:
-                pending.append(nested)
-    return False
+    return any(_is_http_connection_error(current) for current in _iter_exception_chain(exc))
 
 
 def _retry_after_seconds_from_message(message: str) -> float | None:
@@ -1834,7 +1845,11 @@ async def query_loop(
         except Exception as e:
             response_outcome = "exception"
             error_str = _format_exception_message(e)
-            if _is_connection_api_exception(e) or certificate_failure(e) or isinstance(e, httpx.TransportError):
+            if (
+                _is_connection_api_exception(e)
+                or certificate_failure(e)
+                or any(_is_http_transport_error(item) for item in _iter_exception_chain(e))
+            ):
                 error_str = network_error_message(e, adapter_config)
             if _is_request_size_error(e):
                 yield _request_size_error_event(error_str)

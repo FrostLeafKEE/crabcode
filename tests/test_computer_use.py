@@ -125,11 +125,49 @@ def test_available_host_exposes_schema_and_returns_screenshot_attachment():
     assert result.images == [{
         "media_type": "image/png",
         "data": base64.b64encode(b"png-data").decode(),
-        "description": "Computer Use desktop observation",
+        "description": "Computer Use desktop · screenshot coordinates, top-left is (0, 0)",
     }]
     assert base64.b64encode(b"png-data").decode() not in result.result_for_model
     assert backend.calls[0][0] == "desktop-test"
     assert backend.calls[0][1]["mode"] == "foreground_desktop"
+
+
+def test_foreground_desktop_prompt_uses_one_screenshot_for_every_display():
+    tool, context = prepared_tool(FakeBackend(available=True))
+    context.session.computer_use_mode = "foreground_desktop"
+    prompt = asyncio.run(tool.get_prompt())
+    assert "one screenshot of every connected display" in prompt
+    assert "top-left is (0, 0)" in prompt
+    assert "Do not add origin_x/origin_y" in prompt
+    assert "image_x, image_y" in prompt
+    assert "absolute desktop" not in prompt
+
+
+def test_foreground_cursor_is_reported_in_screenshot_space():
+    class DesktopBackend(FakeBackend):
+        async def execute(self, host_id, **kwargs):
+            self.calls.append((host_id, kwargs))
+            return {
+                "ok": True,
+                "summary": "Clicked",
+                "cursor": {"x": -1910, "y": 20},
+                "origin_x": 0,
+                "origin_y": 0,
+                "screenshot": {
+                    "data": base64.b64encode(b"png-data").decode(),
+                    "media_type": "image/png",
+                    "width": 3840,
+                    "height": 1080,
+                    "origin_x": -1920,
+                    "origin_y": 0,
+                },
+            }
+
+    tool, context = prepared_tool(DesktopBackend())
+    result = asyncio.run(tool.call({"action": "click", "x": 10, "y": 20}, context))
+    payload = json.loads(result.result_for_model)
+    assert payload["cursor"] == {"x": 10, "y": 20}
+    assert payload["screenshot"]["origin_x"] == -1920
 
 
 def test_background_mode_allows_focus_changes_but_keeps_window_coordinates():

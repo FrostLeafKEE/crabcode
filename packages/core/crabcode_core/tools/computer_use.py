@@ -45,6 +45,30 @@ _MAX_SCROLL_DELTA = 10_000
 _MAX_WINDOW_OBSERVATIONS = 3
 
 
+def _plain_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _project_desktop_cursor(result: dict[str, Any]) -> None:
+    """Report the pointer in the same pixel space the model uses for clicks.
+
+    The host cursor remains a desktop coordinate for the desktop preview.
+    This projection changes only the model copy.
+    """
+    cursor = result.get("cursor")
+    if not isinstance(cursor, dict):
+        return
+    frame = result.get("screenshot")
+    source = frame if isinstance(frame, dict) and "origin_x" in frame else result
+    origin_x = source.get("origin_x")
+    origin_y = source.get("origin_y")
+    x = cursor.get("x")
+    y = cursor.get("y")
+    if not all(_plain_int(value) for value in (origin_x, origin_y, x, y)):
+        return
+    result["cursor"] = {"x": x - origin_x, "y": y - origin_y}
+
+
 class ComputerUseTool(Tool):
     """Bridge agent desktop actions to a GUI host connected to the Gateway."""
 
@@ -66,11 +90,11 @@ class ComputerUseTool(Tool):
             },
             "x": {
                 "type": "integer",
-                "description": "X coordinate: window-local screenshot coordinate in background_app; absolute desktop coordinate in foreground_desktop.",
+                "description": "X pixel in the current screenshot. The top-left is 0. Window mode is that window; desktop mode is the combined desktop image, or one display when display_id is set.",
             },
             "y": {
                 "type": "integer",
-                "description": "Y coordinate: window-local screenshot coordinate in background_app; absolute desktop coordinate in foreground_desktop.",
+                "description": "Y pixel in the current screenshot. The top-left is 0. Window mode is that window; desktop mode is the combined desktop image, or one display when display_id is set.",
             },
             "to_x": {
                 "type": "integer",
@@ -102,7 +126,10 @@ class ComputerUseTool(Tool):
                 "items": {"type": "string"},
                 "description": "Keys to press together, for example ['CTRL', 'L'].",
             },
-            "display_id": {"type": "string", "description": "Display to observe."},
+            "display_id": {
+                "type": "string",
+                "description": "Capture and address one display. Omit it to capture every display as one image. Repeat it on later actions when the screenshot was a single display.",
+            },
             "window_id": {
                 "type": "string",
                 "description": "Target window. Required for observation and input in background_app mode.",
@@ -218,7 +245,8 @@ class ComputerUseTool(Tool):
                 "Use normal full-desktop input and freely focus applications inside the guest. "
                 "There is no strict-background requirement inside the VM. Host desktop input is never a fallback. "
                 "Start each task with observe and a screenshot before sending input. "
-                "Coordinates are guest desktop coordinates from the returned screenshot. "
+                "Coordinates are pixels in that screenshot; the top-left is (0, 0). "
+                "The guest maps them onto its desktop, including additional displays. Do not add origin_x/origin_y. "
                 "Bash, Read and Edit still run on the Gateway machine, not inside the VM. "
                 f"Configured host shared directory: {environment.get('shared_directory') or 'none'}; "
                 f"read-only: {environment.get('shared_read_only', True)}. "
@@ -321,8 +349,15 @@ class ComputerUseTool(Tool):
             )
         else:
             guidance += (
-                "Coordinates are absolute desktop coordinates, possibly across multiple displays. "
-                "Start with observe or list_displays and use the image dimensions and origin. "
+                "observe returns one screenshot of every connected display. "
+                "Coordinates are pixels in that screenshot: the top-left is (0, 0) and the bottom-right is (width - 1, height - 1). "
+                "Do not add origin_x/origin_y or send a display's desktop position as a click coordinate. "
+                "The host maps screenshot pixels onto the desktop, including screens left of or above the primary. "
+                "displays lists each screen as image_x, image_y, width and height inside the screenshot. "
+                "Pass display_id only to capture one screen; coordinates are then local to that image, and later actions must repeat the same display_id. "
+                "Omit display_id to see and address the whole desktop. "
+                "If the combined capture is too large, observe with a display_id from displays. "
+                "cursor uses the same screenshot coordinates as clicks. "
                 "Desktop control moves the visible pointer and keyboard and may interrupt the user. "
             )
         return guidance + (
@@ -490,6 +525,8 @@ class ComputerUseTool(Tool):
         # including when a backend bypasses the Gateway broker.
         model_result.pop("preview_screenshot", None)
         model_result.pop("preview_screenshot_error", None)
+        if mode != "background_app":
+            _project_desktop_cursor(model_result)
         screenshot = model_result.pop("screenshot", None)
         observations = model_result.pop("window_observations", None)
         images: list[dict[str, str]] = []
@@ -523,7 +560,7 @@ class ComputerUseTool(Tool):
                 }
 
         root_description = (f"Computer Use window {tool_input.get('window_id')} · window-local coordinates"
-                            if mode == "background_app" else "Computer Use desktop observation")
+                            if mode == "background_app" else "Computer Use desktop · screenshot coordinates, top-left is (0, 0)")
         attach_frame(model_result, screenshot, root_description)
         if isinstance(observations, list):
             projected = []
