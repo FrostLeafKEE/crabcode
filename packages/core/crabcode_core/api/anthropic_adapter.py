@@ -326,7 +326,8 @@ class AnthropicAdapter(APIAdapter):
                                 include_input=True,
                                 include_output=True,
                             )
-                        yield StreamChunk(type="message_start", usage=usage)
+                        yield StreamChunk(type="message_start", usage=usage,
+                                          model_id=str(message.get("model") or ""))
 
                     elif event_type == "message_stop":
                         yield StreamChunk(type="message_stop")
@@ -581,7 +582,8 @@ class AnthropicAdapter(APIAdapter):
                             include_input=True,
                             include_output=True,
                         )
-                    yield StreamChunk(type="message_start", usage=usage)
+                    yield StreamChunk(type="message_start", usage=usage,
+                                      model_id=str(getattr(event.message, "model", "") or ""))
 
                 elif event_type == "message_stop":
                     yield StreamChunk(type="message_stop")

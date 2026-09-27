@@ -137,6 +137,9 @@ describe("settings search", () => {
 });
 
 describe("SettingsView", () => {
+  it("includes the usage page in settings search", () => {
+    expect(filterSettingsSections("Token").some((section) => section.id === "usage")).toBe(true);
+  });
   let container: HTMLDivElement;
   let root: Root;
 

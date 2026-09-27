@@ -47,6 +47,9 @@ def normalize_openai_usage(raw: Any) -> dict[str, int]:
         usage["total_input_tokens"] = input_tokens
     if has_output:
         usage["output_tokens"] = output_tokens
+    total_tokens, has_total = usage_int_field(raw, "total_tokens")
+    if has_total:
+        usage["total_tokens"] = total_tokens
 
     details, has_details = _raw_usage_field(
         raw,
@@ -57,6 +60,13 @@ def normalize_openai_usage(raw: Any) -> dict[str, int]:
         cached_tokens, has_cached = usage_int_field(details, "cached_tokens")
         if has_cached:
             usage["cache_read_tokens"] = cached_tokens
+    output_details, has_output_details = _raw_usage_field(
+        raw, "output_tokens_details", "completion_tokens_details",
+    )
+    if has_output_details:
+        reasoning_tokens, has_reasoning = usage_int_field(output_details, "reasoning_tokens")
+        if has_reasoning:
+            usage["reasoning_tokens"] = reasoning_tokens
     return usage
 
 
@@ -97,6 +107,7 @@ class StreamChunk:
     retryable: bool | None = None
     connection_failed: bool = False
     retry_after: float | None = None
+    model_id: str = ""  # provider-returned model identity, when available
 
 
 class APIAdapter(ABC):

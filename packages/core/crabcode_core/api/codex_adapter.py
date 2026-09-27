@@ -1236,6 +1236,7 @@ class CodexAdapter(APIAdapter):
                         type="message_stop",
                         stop_reason="end_turn",
                         usage=usage,
+                        model_id=str(getattr(response, "model", "") or ""),
                     )
 
                 # Response failed or incomplete

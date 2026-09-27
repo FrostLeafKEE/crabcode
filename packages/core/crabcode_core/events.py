@@ -3574,6 +3574,8 @@ class CoreSession:
             api_adapter=self._api_adapter,
             custom_instructions=custom_instructions,
             context_window=context_window,
+            cwd=self.cwd,
+            session_id=self.session_id,
         )
         if not result:
             return False

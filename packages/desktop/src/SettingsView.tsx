@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowRightLeft,
   Bot,
+  ChartNoAxesCombined,
   Check,
   Copy,
   Download,
@@ -30,6 +31,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ModelSettingsPanel } from "./ModelSettingsPanel";
+import { UsageSettingsPanel } from "./UsageSettingsPanel";
 import { RuntimeSettingsPanel } from "./RuntimeSettingsPanel";
 import { composerModifierLabel } from "./ComposerEditor";
 import {
@@ -79,7 +81,7 @@ import type {
 } from "./types";
 import desktopPackage from "../package.json";
 
-export type SettingsSectionId = "general" | "appearance" | "document" | "runtime" | "connections" | "models" | "projects" | "about";
+export type SettingsSectionId = "general" | "appearance" | "document" | "runtime" | "connections" | "models" | "usage" | "projects" | "about";
 
 interface SettingsSectionDefinition {
   id: SettingsSectionId;
@@ -126,6 +128,12 @@ export const SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     searchText: "模型 Models Group 配置组 Provider Base URL 推理 Thinking Token 上下文 继承 默认模型 查看 编辑 新增 删除 查询 刷新",
   },
   {
+    id: "usage",
+    title: "使用情况",
+    description: "按日期查看 Token 总量和各模型趋势",
+    searchText: "使用情况 Token 用量 热力图 折线图 模型 日期 统计",
+  },
+  {
     id: "projects",
     title: "项目",
     description: "工作目录与项目管理",
@@ -156,6 +164,7 @@ const SECTION_ICONS = {
   runtime: Wrench,
   connections: Server,
   models: Bot,
+  usage: ChartNoAxesCombined,
   projects: FolderCog,
   about: Info,
 } satisfies Record<SettingsSectionId, typeof Settings>;
@@ -1760,6 +1769,14 @@ export function SettingsView({
                 onRefresh={onRefreshModelSettings}
                 onMutate={onMutateModelSettings}
                 onTest={onTestModel}
+              />
+            )}
+
+            {activeSection === "usage" && (
+              <UsageSettingsPanel
+                connection={activeConnection}
+                project={activeProject}
+                online={activeGateway?.status === "online"}
               />
             )}
 

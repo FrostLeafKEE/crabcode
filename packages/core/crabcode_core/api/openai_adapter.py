@@ -237,6 +237,7 @@ class OpenAIAdapter(APIAdapter):
                     yield StreamChunk(
                         type="message_delta",
                         usage=normalize_openai_usage(chunk.usage),
+                        model_id=str(getattr(chunk, "model", "") or ""),
                     )
                 continue
 
@@ -303,6 +304,7 @@ class OpenAIAdapter(APIAdapter):
                         finish_reason, finish_reason,
                     ),
                     usage=usage,
+                    model_id=str(getattr(chunk, "model", "") or ""),
                 )
 
     async def count_tokens(

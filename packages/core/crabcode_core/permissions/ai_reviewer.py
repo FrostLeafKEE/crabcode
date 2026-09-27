@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from crabcode_core.api.base import APIAdapter, ModelConfig
+from crabcode_core.usage import tracked_stream_message
 from crabcode_core.api.registry import create_adapter
 from crabcode_core.types.config import ApiConfig, CrabCodeSettings, PermissionsSettings
 from crabcode_core.types.message import create_user_message
@@ -50,7 +51,9 @@ class AiPermissionReviewer:
             model = api_config.model or self.default_api_config.model or "claude-sonnet-4-20250514"
             prompt = self._build_prompt(request, allowed_decisions, fallback)
             text = await asyncio.wait_for(
-                self._complete_json(adapter, api_config, model, prompt),
+                self._complete_json(adapter, api_config, model, prompt,
+                                    cwd=request.context.cwd,
+                                    session_id=request.context.session_id),
                 timeout=max(1, cfg.timeout),
             )
             payload = self._parse_json(text)
@@ -78,6 +81,7 @@ class AiPermissionReviewer:
         api_config: ApiConfig,
         model: str,
         prompt: str,
+        *, cwd: str | None = None, session_id: str | None = None,
     ) -> str:
         config = ModelConfig(
             model=model,
@@ -88,7 +92,8 @@ class AiPermissionReviewer:
             reasoning_effort="low" if api_config.reasoning_effort is not None else None,
         )
         chunks: list[str] = []
-        async for chunk in adapter.stream_message(
+        async for chunk in tracked_stream_message(
+            adapter,
             messages=[create_user_message(prompt)],
             system=[
                 "You are a security-focused permission reviewer for an AI coding agent. "
@@ -98,6 +103,9 @@ class AiPermissionReviewer:
             ],
             tools=[],
             config=config,
+            cwd=cwd,
+            session_id=session_id,
+            purpose="ai_review",
         ):
             if chunk.type == "text":
                 chunks.append(chunk.text)
