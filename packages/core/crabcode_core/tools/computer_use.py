@@ -359,6 +359,11 @@ class ComputerUseTool(Tool):
                 "If the combined capture is too large, observe with a display_id from displays. "
                 "cursor uses the same screenshot coordinates as clicks. "
                 "Desktop control moves the visible pointer and keyboard and may interrupt the user. "
+                "On Windows, type inserts text with one clipboard paste and then restores the previous text clipboard; "
+                "a single line ending in a newline is pasted and then Enter is pressed. "
+                "keypress sends virtual-key chords, so Ctrl+V works in address bars and rename fields. "
+                "foreground_window.title is the active window after the action; read it before typing when several documents look alike. "
+                "The screenshot is taken after the UI has had a moment to paint. "
             )
         return guidance + (
             "On macOS TextEdit, use CMD+S to save a new document; CMD+SHIFT+S creates a duplicate "

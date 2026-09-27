@@ -694,6 +694,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tempfile",
  "url",
+ "windows 0.61.3",
  "xcap",
 ]
 

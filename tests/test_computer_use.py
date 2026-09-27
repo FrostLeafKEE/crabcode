@@ -140,6 +140,7 @@ def test_foreground_desktop_prompt_uses_one_screenshot_for_every_display():
     assert "top-left is (0, 0)" in prompt
     assert "Do not add origin_x/origin_y" in prompt
     assert "image_x, image_y" in prompt
+    assert "foreground_window.title" in prompt
     assert "absolute desktop" not in prompt
 
 

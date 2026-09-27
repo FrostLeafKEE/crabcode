@@ -1,7 +1,11 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 #[cfg(not(target_os = "macos"))]
 use enigo::Axis;
-use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
+#[cfg(any(test, not(target_os = "windows")))]
+use enigo::Key;
+use enigo::{Button, Direction, Enigo, Mouse, Settings};
+#[cfg(not(target_os = "windows"))]
+use enigo::{Coordinate, Keyboard};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::Cursor;
@@ -15,6 +19,8 @@ use xcap::{Monitor, Window};
 
 #[cfg(target_os = "windows")]
 mod windows_focus;
+#[cfg(target_os = "windows")]
+mod windows_input;
 
 #[cfg(target_os = "macos")]
 use core_foundation::array::{CFArray, CFArrayRef};
@@ -81,6 +87,7 @@ const MAX_SCROLL_DELTA: i32 = 10_000;
 #[cfg(target_os = "macos")]
 const SCROLL_STEP_PIXELS: i32 = 50;
 const SCROLL_SETTLE_MS: u64 = 180;
+const INPUT_PAINT_SETTLE_MS: u64 = 80;
 #[cfg(target_os = "macos")]
 const CLICK_SETTLE_MS: u64 = 250;
 
@@ -351,6 +358,7 @@ fn mouse_button(name: Option<&str>) -> Result<Button, String> {
     }
 }
 
+#[cfg(any(test, not(target_os = "windows")))]
 fn key_from_name(name: &str) -> Result<Key, String> {
     let upper = name.trim().to_ascii_uppercase();
     Ok(match upper.as_str() {
@@ -398,6 +406,7 @@ fn key_from_name(name: &str) -> Result<Key, String> {
     })
 }
 
+#[cfg(not(target_os = "windows"))]
 fn press_keys(enigo: &mut Enigo, names: &[String]) -> Result<(), String> {
     if names.is_empty() {
         return Err("keys cannot be empty".to_string());
@@ -2977,24 +2986,41 @@ fn encode_screenshot_capture(capture: ScreenshotCapture) -> Result<Value, String
     Ok(frame)
 }
 
+fn move_pointer(enigo: &mut Enigo, x: i32, y: i32) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = enigo;
+        windows_input::move_cursor(x, y)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        enigo
+            .move_mouse(x, y, Coordinate::Abs)
+            .map_err(|error| error.to_string())
+    }
+}
+
+fn settle_before_screenshot(action: &str) {
+    let delay = match action {
+        "scroll" => SCROLL_SETTLE_MS,
+        "click" | "double_click" | "drag" | "type" | "keypress" | "move" => INPUT_PAINT_SETTLE_MS,
+        _ => 0,
+    };
+    if delay > 0 {
+        thread::sleep(Duration::from_millis(delay));
+    }
+}
+
 fn perform_action(action: &ComputerAction, enigo: &mut Enigo) -> Result<String, String> {
     match action.action.as_str() {
         "observe" | "list_displays" | "list_windows" => Ok(action.action.clone()),
         "move" => {
-            enigo
-                .move_mouse(
-                    required(action.x, "x")?,
-                    required(action.y, "y")?,
-                    Coordinate::Abs,
-                )
-                .map_err(|error| error.to_string())?;
+            move_pointer(enigo, required(action.x, "x")?, required(action.y, "y")?)?;
             Ok("Moved pointer".to_string())
         }
         "click" | "double_click" => {
             if let (Some(x), Some(y)) = (action.x, action.y) {
-                enigo
-                    .move_mouse(x, y, Coordinate::Abs)
-                    .map_err(|error| error.to_string())?;
+                move_pointer(enigo, x, y)?;
             }
             let button = mouse_button(action.button.as_deref())?;
             enigo
@@ -3019,9 +3045,7 @@ fn perform_action(action: &ComputerAction, enigo: &mut Enigo) -> Result<String, 
             let end_x = required(action.to_x, "to_x")?;
             let end_y = required(action.to_y, "to_y")?;
             let button = mouse_button(action.button.as_deref())?;
-            enigo
-                .move_mouse(start_x, start_y, Coordinate::Abs)
-                .map_err(|error| error.to_string())?;
+            move_pointer(enigo, start_x, start_y)?;
             enigo
                 .button(button, Direction::Press)
                 .map_err(|error| error.to_string())?;
@@ -3031,9 +3055,7 @@ fn perform_action(action: &ComputerAction, enigo: &mut Enigo) -> Result<String, 
                 for step in 1..=steps {
                     let x = start_x + (end_x - start_x) * step / steps;
                     let y = start_y + (end_y - start_y) * step / steps;
-                    enigo
-                        .move_mouse(x, y, Coordinate::Abs)
-                        .map_err(|error| error.to_string())?;
+                    move_pointer(enigo, x, y)?;
                     thread::sleep(Duration::from_millis(duration / steps as u64));
                 }
                 Ok::<(), String>(())
@@ -3048,9 +3070,7 @@ fn perform_action(action: &ComputerAction, enigo: &mut Enigo) -> Result<String, 
         "scroll" => {
             let (delta_x, delta_y) = scroll_delta(action)?;
             if let (Some(x), Some(y)) = (action.x, action.y) {
-                enigo
-                    .move_mouse(x, y, Coordinate::Abs)
-                    .map_err(|error| error.to_string())?;
+                move_pointer(enigo, x, y)?;
             }
             #[cfg(target_os = "macos")]
             {
@@ -3078,18 +3098,30 @@ fn perform_action(action: &ComputerAction, enigo: &mut Enigo) -> Result<String, 
             Ok("Scroll input sent; movement unverified".to_string())
         }
         "type" => {
-            enigo
-                .text(
-                    action
-                        .text
-                        .as_deref()
-                        .ok_or_else(|| "text is required".to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
+            let text = action
+                .text
+                .as_deref()
+                .ok_or_else(|| "text is required".to_string())?;
+            #[cfg(target_os = "windows")]
+            {
+                windows_input::type_text(text)?;
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                enigo.text(text).map_err(|error| error.to_string())?;
+            }
             Ok("Typed text".to_string())
         }
         "keypress" => {
-            press_keys(enigo, action.keys.as_deref().unwrap_or_default())?;
+            let keys = action.keys.as_deref().unwrap_or_default();
+            #[cfg(target_os = "windows")]
+            {
+                windows_input::press_keys(keys)?;
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                press_keys(enigo, keys)?;
+            }
             Ok("Pressed keys".to_string())
         }
         "open_app" => {
@@ -3181,9 +3213,7 @@ fn execute_foreground(mut request: ExecuteRequest) -> Result<Value, String> {
             "list_displays" | "list_windows" | "wait"
         ));
     if capture {
-        if request.action.action == "scroll" {
-            thread::sleep(Duration::from_millis(SCROLL_SETTLE_MS));
-        }
+        settle_before_screenshot(&request.action.action);
         let frame = if let Some(space) = &desktop {
             capture_desktop(&request.action, space).and_then(encode_screenshot_capture)
         } else {
@@ -3197,6 +3227,20 @@ fn execute_foreground(mut request: ExecuteRequest) -> Result<Value, String> {
     }
     if let Some(space) = &desktop {
         attach_desktop_metadata(&mut result, space);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(method) = match request.action.action.as_str() {
+            "type" => Some("clipboard_paste"),
+            "keypress" => Some("virtual_key"),
+            "move" | "click" | "double_click" | "drag" => Some("set_cursor_pos"),
+            _ => None,
+        } {
+            result["input_method"] = json!(method);
+        }
+        if let Some(window) = windows_input::foreground_window() {
+            result["foreground_window"] = window;
+        }
     }
     Ok(result)
 }
