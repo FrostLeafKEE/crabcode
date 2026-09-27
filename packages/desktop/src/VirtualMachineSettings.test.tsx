@@ -55,7 +55,7 @@ describe("local VM settings", () => {
     act(() => root.render(<VirtualMachineSettings settings={host} onChange={onChange} />));
     expect(button("本机").disabled).toBe(false);
     expect(button("本地虚拟机").disabled).toBe(true);
-    expect(container.textContent).toContain("本地虚拟机仅支持 Apple Silicon Mac");
+    expect(container.textContent).toContain("本地虚拟机目前不支持Windows平台");
     act(() => button("本地虚拟机").click());
     expect(onChange).not.toHaveBeenCalled();
   });

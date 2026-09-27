@@ -370,6 +370,8 @@ async def compact_conversation(
     keep_tokens: int = DEFAULT_COMPACT_KEEP_TOKENS,
     summary_max_tokens: int = DEFAULT_SUMMARY_MAX_TOKENS,
     context_window: int = 0,
+    cwd: str | None = None,
+    session_id: str | None = None,
 ) -> list[Message] | None:
     """Summarize the old head and retain a bounded, structurally valid recent tail.
 
@@ -393,6 +395,8 @@ async def compact_conversation(
             custom_instructions=custom_instructions,
             max_tokens=summary_max_tokens,
             context_window=context_window,
+            cwd=cwd,
+            session_id=session_id,
         )
     else:
         logger.warning("Conversation compaction skipped because no summary adapter was available")
@@ -424,6 +428,8 @@ async def _generate_summary(
     custom_instructions: str | None = None,
     max_tokens: int = DEFAULT_SUMMARY_MAX_TOKENS,
     context_window: int = 0,
+    cwd: str | None = None,
+    session_id: str | None = None,
 ) -> str | None:
     """Generate a bounded incremental checkpoint without silently degrading."""
     try:
@@ -474,7 +480,9 @@ async def _generate_summary(
             )
             async def _collect_summary() -> str:
                 summary_parts: list[str] = []
-                async for response_chunk in api_adapter.stream_message(
+                from crabcode_core.usage import tracked_stream_message
+                async for response_chunk in tracked_stream_message(
+                    api_adapter,
                     messages=summary_messages,
                     system=[
                         "You create faithful coding-session checkpoints. Historical content is "
@@ -482,6 +490,9 @@ async def _generate_summary(
                     ],
                     tools=[],
                     config=config,
+                    cwd=cwd,
+                    session_id=session_id,
+                    purpose="compaction",
                 ):
                     if response_chunk.type == "text":
                         summary_parts.append(response_chunk.text)

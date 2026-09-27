@@ -455,17 +455,23 @@ s_\theta(x_t,y,t) \approx \nabla_{x_t}\log p_t(x_t\mid y)
     const images = shell?.querySelector(".message-images");
     const bubble = shell?.querySelector(".user-message");
     const chips = shell?.querySelectorAll(".user-attachment-chip");
+    const firstChip = chips?.item(0);
+    const secondChip = chips?.item(1);
+    const actions = shell?.querySelector(".message-actions");
     expect(shell?.querySelectorAll(".message-images img")).toHaveLength(2);
     expect(chips).toHaveLength(2);
-    expect(chips?.[0]?.textContent).toContain("notes.md");
-    expect(chips?.[1]?.textContent).toContain("src");
+    expect(firstChip?.textContent).toContain("notes.md");
+    expect(secondChip?.textContent).toContain("src");
     expect(bubble?.textContent).toContain("看看这张图");
     expect(bubble?.textContent).not.toContain("<file");
     expect(images).not.toBeNull();
     expect(bubble).not.toBeNull();
-    expect(images?.compareDocumentPosition(chips![0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(chips?.[1]?.compareDocumentPosition(bubble!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(bubble?.compareDocumentPosition(shell?.querySelector(".message-actions")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    if (!images || !firstChip || !secondChip || !bubble || !actions) {
+      throw new Error("Expected user message layout elements");
+    }
+    expect(images.compareDocumentPosition(firstChip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(secondChip.compareDocumentPosition(bubble) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(bubble.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     act(() => root.unmount());
     container.remove();
   });

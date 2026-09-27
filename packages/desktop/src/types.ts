@@ -1,5 +1,35 @@
 import type { UserAttachmentChip } from "./userPromptDisplay";
 import type { LocalVmConfig } from "./virtualMachine";
+
+export interface UsageDay {
+  date: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number | null;
+  request_count: number;
+  unknown_requests: number;
+  missing_requests: number;
+  partial_requests: number;
+  coverage: "complete" | "partial" | "unavailable";
+}
+
+export interface UsageDailyResponse {
+  start: string;
+  end: string;
+  timezone: string;
+  scope: "global" | "project";
+  generated_at: string;
+  tracking_started_at: string | null;
+  first_recorded_at: string | null;
+  last_recorded_at: string | null;
+  days: UsageDay[];
+  models: { key: string; provider: string; model_id: string; model: string;
+            total_tokens: number; recorded_request_count?: number;
+            points: { date: string; total_tokens: number | null }[] }[];
+  summary: { input_tokens: number; output_tokens: number; total_tokens: number;
+             request_count: number; unknown_requests: number;
+             missing_requests: number; partial_requests: number };
+}
 export interface ProjectPreset {
   id: string;
   kind: "project" | "document";

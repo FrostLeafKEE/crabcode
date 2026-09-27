@@ -21,6 +21,57 @@ from crabcode_gateway.protocol import (
 from crabcode_core.types.config import ReasoningEffort
 
 
+class UsageDayResponse(BaseModel):
+    date: str
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int | None
+    request_count: int
+    unknown_requests: int
+    missing_requests: int
+    partial_requests: int
+    coverage: Literal["complete", "partial", "unavailable"]
+
+
+class UsagePointResponse(BaseModel):
+    date: str
+    total_tokens: int | None
+
+
+class UsageModelResponse(BaseModel):
+    key: str
+    provider: str
+    model_id: str
+    model: str
+    total_tokens: int
+    recorded_request_count: int
+    points: list[UsagePointResponse]
+
+
+class UsageSummaryResponse(BaseModel):
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    request_count: int
+    unknown_requests: int
+    missing_requests: int
+    partial_requests: int
+
+
+class UsageDailyResponse(BaseModel):
+    start: str
+    end: str
+    timezone: str
+    scope: Literal["global", "project"]
+    generated_at: str
+    tracking_started_at: str | None
+    first_recorded_at: str | None
+    last_recorded_at: str | None
+    days: list[UsageDayResponse]
+    models: list[UsageModelResponse]
+    summary: UsageSummaryResponse
+
+
 # ── Request schemas ──────────────────────────────────────────────
 
 

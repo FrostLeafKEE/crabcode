@@ -43,6 +43,7 @@ from crabcode_gateway.routes import (
     snapshot,
     tasks,
     team,
+    usage,
     workspace,
 )
 from crabcode_gateway.session_registry import get_session_lock
@@ -191,6 +192,7 @@ class GatewayServer:
         # Routes
         app.include_router(health.router)
         app.include_router(session.router)
+        app.include_router(usage.router)
         app.include_router(agent.router)
         app.include_router(permission.router)
         app.include_router(schedule.router)

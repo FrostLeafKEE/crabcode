@@ -15,6 +15,7 @@ from typing import Any, AsyncGenerator, Callable, Coroutine
 import httpx
 
 from crabcode_core.api.base import APIAdapter, ModelConfig, usage_int_field
+from crabcode_core.usage import tracked_stream_message
 from crabcode_core.api.network import certificate_failure, network_error_message
 from crabcode_core.compact.compact import (
     DEFAULT_COMPACT_BUFFER_TOKENS,
@@ -1204,6 +1205,8 @@ async def query_loop(
             messages,
             api_adapter=params.api_adapter,
             context_window=context_window,
+            cwd=params.tool_context.cwd,
+            session_id=params.tool_context.session_id,
         )
         if not result:
             return None
@@ -1607,11 +1610,14 @@ async def query_loop(
         try:
             # Wrap stream with timeout to avoid hanging indefinitely
             async def _stream_with_timeout():
-                source = params.api_adapter.stream_message(
+                source = tracked_stream_message(
+                    params.api_adapter,
                     messages=messages_for_api,
                     system=full_system,
                     tools=tool_schemas,
                     config=model_config,
+                    cwd=params.tool_context.cwd,
+                    session_id=params.tool_context.session_id,
                 )
                 try:
                     async for chunk in source:

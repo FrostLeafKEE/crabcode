@@ -72,7 +72,7 @@ test('restored user history hides IDE transport details while preserving the ref
   });
   const message = h.panel.getSessionState('a').messages[0];
   assert.equal(message.text, '继续检查');
-  assert.deepEqual(message.attachments, [
+  assert.deepEqual(Array.from(message.attachments, attachment => ({ ...attachment })), [
     { kind: 'ide', label: 'app.ts', detail: '当前文件', title: '/workspace/src/app.ts' },
     { kind: 'file', label: 'README.md', detail: '仅路径', title: '/workspace/README.md' },
   ]);
@@ -119,7 +119,7 @@ test('webview sends the current IDE snapshot and only normalized workspace refer
   assert.equal((h.sent[0].text.match(/"kind": "folder"/g) || []).length, 1);
   const shown = h.messages.filter(message => message.type === 'newMessage').at(-1).message;
   assert.equal(shown.text, '检查这里');
-  assert.deepEqual(shown.attachments, [
+  assert.deepEqual(Array.from(shown.attachments, attachment => ({ ...attachment })), [
     { kind: 'ide', label: 'app.ts', detail: '当前文件', title: currentFile },
     { kind: 'folder', label: 'src', title: sourceFolder },
   ]);

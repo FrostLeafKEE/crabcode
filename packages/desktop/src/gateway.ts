@@ -23,6 +23,7 @@ import type {
   SessionStatus,
   SkillInfo,
   ToolInfo,
+  UsageDailyResponse,
   WorkspaceDirectoryEntry,
   WorkspaceDirectoryListing,
   WorkspaceInfo,
@@ -348,6 +349,13 @@ export class GatewayApi {
 
   sessionStats(): Promise<Record<string, unknown>> {
     return this.request("/session/stats");
+  }
+
+  usageDaily(start: string, end: string, timezone: string,
+             scope: "global" | "project", cwd?: string, signal?: AbortSignal): Promise<UsageDailyResponse> {
+    const params = new URLSearchParams({ start_date: start, end_date: end, timezone });
+    if (scope === "project" && cwd) params.set("cwd", cwd);
+    return this.request(`/usage/daily?${params}`, { signal });
   }
 
   models(sessionId?: string, cwd?: string): Promise<GatewayModel[]> {

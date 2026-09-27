@@ -82,8 +82,9 @@ def _model_test_error(exc: Exception) -> str:
     return f"模型初始化或响应失败（{name}），请检查 Provider、API 格式和模型配置"
 
 
-async def _probe_model(config: Any) -> None:
+async def _probe_model(config: Any, cwd: str | None = None) -> None:
     from crabcode_core.api import ModelConfig, create_adapter
+    from crabcode_core.usage import tracked_stream_message
     from crabcode_core.types.message import create_user_message
 
     adapter = None
@@ -97,11 +98,13 @@ async def _probe_model(config: Any) -> None:
         client = getattr(adapter, "client", None)
         if callable(getattr(client, "with_options", None)):
             adapter.client = client.with_options(max_retries=0, timeout=30)
-        stream = adapter.stream_message(
+        stream = tracked_stream_message(
+            adapter,
             messages=[create_user_message("Reply with OK.")],
             system=[], tools=[],
             config=ModelConfig(model=config.model, max_tokens=256,
                                thinking_enabled=False, thinking_budget=0, timeout=30),
+            cwd=cwd, purpose="model_test",
         )
         async for chunk in stream:
             if chunk.type == "error":
@@ -132,7 +135,7 @@ async def test_model(req: ModelTestRequest, request: Request) -> dict[str, Any]:
         return {"ok": False, "message": "未配置模型 ID"}
     started = time.monotonic()
     try:
-        await asyncio.wait_for(_probe_model(config), timeout=30)
+        await asyncio.wait_for(_probe_model(config, cwd), timeout=30)
     except Exception as exc:
         return {"ok": False, "message": _model_test_error(exc)}
     return {"ok": True, "message": "连接成功，已收到模型回复",

@@ -137,6 +137,9 @@ describe("settings search", () => {
 });
 
 describe("SettingsView", () => {
+  it("includes the usage page in settings search", () => {
+    expect(filterSettingsSections("Token").some((section) => section.id === "usage")).toBe(true);
+  });
   let container: HTMLDivElement;
   let root: Root;
 
@@ -325,7 +328,8 @@ describe("SettingsView", () => {
       />,
     ));
 
-    expect(container.textContent).toContain("Windows 显示在屏幕右下角");
+    expect(container.textContent).toContain("会话开始执行时弹出系统通知。");
+    expect(container.textContent).toContain("会话这一轮执行结束时弹出系统通知。");
     act(() => container.querySelector<HTMLButtonElement>('[aria-label="执行时通知"]')!.click());
     act(() => container.querySelector<HTMLButtonElement>('[aria-label="执行完毕通知"]')!.click());
 
