@@ -433,6 +433,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires an interactive Windows desktop with a foreground window"]
     fn foreground_window_reports_an_id_and_title() {
         let window = foreground_window().expect("a window is in the foreground");
         assert!(!window["id"].as_str().unwrap_or("").is_empty());
