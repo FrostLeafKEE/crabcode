@@ -715,6 +715,7 @@ class SessionStorage:
         model: str = "",
         provider: str = "",
         first_user_message: str = "",
+        model_profile: str | None = None,
     ) -> None:
         """Write the session_meta line to the JSONL file and upsert into SQLite.
 
@@ -746,6 +747,7 @@ class SessionStorage:
                         first_user_message=first_user_message,
                         git_info=git_info,
                         now=now,
+                        model_profile=model_profile,
                     )
                 )
                 self._append_transcript_line_locked({"type": "session_meta", **self._meta})
@@ -759,10 +761,11 @@ class SessionStorage:
         first_user_message: str = "",
         git_info: dict[str, str | None] | None = None,
         now: datetime | None = None,
+        model_profile: str | None = None,
     ) -> dict[str, Any]:
         now = now or datetime.now(timezone.utc)
         git_info = git_info or _get_git_info(self.cwd)
-        return {
+        meta = {
             "id": self.session_id,
             "title": first_user_message[:200] if first_user_message else "",
             "cwd": self.cwd,
@@ -777,6 +780,11 @@ class SessionStorage:
             "message_count": 0,
             "is_archived": False,
         }
+        # Absent means an older transcript.  An empty string means the session
+        # was using the unnamed base API rather than a named profile.
+        if model_profile is not None:
+            meta["model_profile"] = model_profile
+        return meta
 
     def _read_latest_meta_locked(self) -> dict[str, Any]:
         """Read merged metadata while the lifecycle lock prevents concurrent writes.
@@ -1485,7 +1493,7 @@ class SessionStorage:
                 "message_count": len(cloned_messages),
             }
         )
-        for key in ("summary", "goal", "git_branch", "git_sha", "loaded_tools"):
+        for key in ("summary", "goal", "git_branch", "git_sha", "loaded_tools", "model_profile"):
             if source_meta.get(key) is not None:
                 metadata[key] = source_meta[key]
         lines = [_dump_jsonl_line({"type": "session_meta", **metadata})]
@@ -1517,21 +1525,33 @@ class SessionStorage:
         except OSError:
             logger.warning("Failed to persist tool discovery state for %s", self.session_id, exc_info=True)
 
-    def update_model(self, *, model: str = "", provider: str = "") -> None:
+    def update_model(
+        self,
+        *,
+        model: str = "",
+        provider: str = "",
+        model_profile: str | None = None,
+    ) -> None:
         """Persist the active model/provider for an existing session.
 
         Model selection can change after the first turn. The update is merged
         with the latest on-disk metadata so another storage instance cannot
         overwrite counters or titles with a stale in-memory snapshot.
+        ``model_profile`` is the named configuration resume should restore.
+        Omit it to leave an older record unchanged.
         """
+        def _fields(_meta: dict[str, Any]) -> dict[str, Any]:
+            fields: dict[str, Any] = {
+                "model": model,
+                "provider": provider,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if model_profile is not None:
+                fields["model_profile"] = model_profile
+            return fields
+
         try:
-            self._commit_metadata_update(
-                lambda _meta: {
-                    "model": model,
-                    "provider": provider,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }
-            )
+            self._commit_metadata_update(_fields)
         except Exception:
             logger.warning(
                 "Failed to persist model metadata: %s",

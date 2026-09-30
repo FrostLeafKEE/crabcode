@@ -2008,6 +2008,26 @@ async def _run_plan_executor_with_runtime_events(
         _flush_agent_stream_line(active_stream_agent)
 
 
+def _print_active_model(
+    settings: CrabCodeSettings,
+    model_name: str | None,
+    *,
+    indent: str = "  ",
+) -> None:
+    """Print the model that subsequent requests will actually call."""
+    active = settings.get_api_config(model_name)
+    provider = active.provider or "[yellow]not set[/]"
+    model = active.model or "[yellow]not set[/]"
+    label = f"[bold cyan]{model_name}[/] → " if model_name else ""
+    console.print(f"{indent}provider: {provider}  model: {label}{model}", style="dim")
+    if not active.model:
+        console.print(
+            f"{indent}[bold yellow]Warning:[/] no model configured. "
+            "Set [bold]api.model[/] or [bold]models[/] in ~/.crabcode/settings.json or use [bold]-m[/] flag.",
+            style="dim",
+        )
+
+
 async def run_repl(
     settings: CrabCodeSettings | None = None,
     cwd: str = ".",
@@ -2027,18 +2047,12 @@ async def run_repl(
 
     print_banner(console)
     console.print(f"  cwd: {cwd}", style="dim")
-    if settings:
-        active_cfg = settings.get_api_config()
-        provider = active_cfg.provider
-        model = active_cfg.model
-        model_label = f"[bold cyan]{settings.default_model}[/] → " if settings.default_model else ""
-    else:
-        provider = model = None
-        model_label = ""
-    provider_str = provider or "[yellow]not set[/]"
-    model_str = model or "[yellow]not set[/]"
-    console.print(f"  provider: {provider_str}  model: {model_label}{model_str}", style="dim")
-    if not model:
+    # A resumed session may have switched away from the project default.
+    # Print the model only after resume has installed that configuration.
+    if settings and not resume_session_id:
+        _print_active_model(settings, settings.default_model)
+    elif not resume_session_id:
+        console.print("  provider: [yellow]not set[/]  model: [yellow]not set[/]", style="dim")
         console.print(
             "  [bold yellow]Warning:[/] no model configured. "
             "Set [bold]api.model[/] or [bold]models[/] in ~/.crabcode/settings.json or use [bold]-m[/] flag.",
@@ -2112,6 +2126,10 @@ async def run_repl(
                     f"  [dim]Resumed session [bold]{resume_session_id[:8]}…[/bold] "
                     f"({len(session.messages)} messages)[/]"
                 )
+                _print_active_model(
+                    session.settings,
+                    getattr(session, "_current_model_name", None),
+                )
                 console.print()
                 _render_session_history(session.messages)
             else:
@@ -2119,6 +2137,8 @@ async def run_repl(
                     f"  [bold yellow]Warning:[/] session {resume_session_id[:8]}… not found, starting fresh.",
                     style="dim",
                 )
+                if settings:
+                    _print_active_model(settings, settings.default_model)
                 console.print()
         else:
             pass
@@ -4570,6 +4590,11 @@ async def _handle_command(
             console.print(
                 f"[dim]Resumed session [bold]{match[:8]}…[/bold] "
                 f"({len(session.messages)} messages)[/]"
+            )
+            _print_active_model(
+                session.settings,
+                getattr(session, "_current_model_name", None),
+                indent="",
             )
             console.print()
             _render_session_history(session.messages)

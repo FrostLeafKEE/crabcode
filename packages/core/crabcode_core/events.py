@@ -44,6 +44,11 @@ from crabcode_core.tools.loading import ToolLoadingState
 
 logger = get_logger(__name__)
 
+# Resume metadata can describe a model we should keep, or it can have nothing
+# to say.  ``None`` is a real choice (the unnamed base API), so it cannot also
+# mean "leave the current selection alone".
+_KEEP_CURRENT_MODEL = object()
+
 # Teardown hooks may spawn child tasks that call back into their owning
 # session.  Those children inherit this context and can recognize that the
 # close is already in progress, avoiding a lock cycle while the parent waits
@@ -156,6 +161,10 @@ class CoreSession:
         self._close_lock = asyncio.Lock()
         self._close_task: asyncio.Task[None] | None = None
         self._current_model_name: str | None = None
+        # Set only while resume() is applying the stored model.  initialize()
+        # and cross-project rebind consult it before falling back to the
+        # project default.
+        self._pending_resume_model: dict[str, Any] | None = None
         # Slash/API runtime overrides are session-scoped.  Keep them separate
         # from project configuration so lazy initialization, model switches,
         # and cross-project resume cannot silently discard a user's choice.
@@ -283,7 +292,14 @@ class CoreSession:
         implicit ``default_model`` must not redirect the request to an
         unrelated named profile.  An explicit ``--model-profile`` still wins,
         as does a valid profile selected at runtime with ``/model``.
+        A model last used inside a resumed session wins over the project
+        default, but not over an explicit caller flag.
         """
+        if self._pending_resume_model is not None and not self._caller_pinned_model():
+            chosen = self._choose_resumed_model(settings, self._pending_resume_model)
+            if chosen is None or isinstance(chosen, str):
+                return chosen
+
         current = self._current_model_name
         if current is not None and current in settings.models:
             return current
@@ -302,6 +318,194 @@ class CoreSession:
             return None
         default = settings.default_model
         return default if default in settings.models else None
+
+    def _caller_pinned_model(self) -> bool:
+        """Return whether this process explicitly selected the model to run."""
+        explicit_fields = set(getattr(self._initial_settings, "model_fields_set", set()))
+        if "default_model" in explicit_fields:
+            return True
+        api = getattr(self._initial_settings, "api", None)
+        explicit_api_fields = set(getattr(api, "model_fields_set", set()))
+        return bool(explicit_api_fields & {"model", "provider", "base_url", "format"})
+
+    @staticmethod
+    def _resume_model_request_from_meta(meta: dict[str, Any]) -> dict[str, Any] | None:
+        """Describe the model a stored session should come back to.
+
+        ``model_profile`` is the named configuration.  Older transcripts only
+        recorded the resolved model id and provider.
+        """
+        if not meta:
+            return None
+        model = str(meta.get("model") or "")
+        provider = str(meta.get("provider") or "")
+        if "model_profile" in meta:
+            raw = meta.get("model_profile")
+            profile = raw.strip() if isinstance(raw, str) else ""
+            if profile:
+                return {
+                    "kind": "profile",
+                    "profile": profile,
+                    "model": model,
+                    "provider": provider,
+                }
+            return {"kind": "unnamed", "profile": "", "model": model, "provider": provider}
+        if not model and not provider:
+            return None
+        return {"kind": "legacy", "profile": "", "model": model, "provider": provider}
+
+    @staticmethod
+    def _matching_model_profiles(
+        settings: CrabCodeSettings,
+        model: str,
+        provider: str,
+    ) -> list[str]:
+        if not model and not provider:
+            return []
+        exact = [
+            name
+            for name, cfg in settings.models.items()
+            if (cfg.model or "") == model and (cfg.provider or "") == provider
+        ]
+        if exact or provider or not model:
+            return exact
+        return [
+            name
+            for name, cfg in settings.models.items()
+            if (cfg.model or "") == model
+        ]
+
+    @staticmethod
+    def _overlay_resumed_base_api(settings: CrabCodeSettings, request: dict[str, Any]) -> None:
+        """Point the unnamed API at the model id stored for this session."""
+        if request["model"]:
+            settings.api.model = request["model"]
+        if request["provider"]:
+            settings.api.provider = request["provider"]
+        settings.default_model = None
+
+    def _choose_resumed_model(
+        self,
+        settings: CrabCodeSettings,
+        request: dict[str, Any],
+    ) -> str | None | object:
+        """Pick the profile resume should activate.
+
+        ``None`` means the unnamed base API.  ``_KEEP_CURRENT_MODEL`` means
+        the stored record does not identify a different configuration.
+        """
+        if request["kind"] == "profile" and request["profile"] in settings.models:
+            return request["profile"]
+        if request["kind"] == "profile":
+            logger.warning(
+                "Resumed model profile %s is no longer configured",
+                request["profile"],
+            )
+        if request["kind"] == "unnamed":
+            self._overlay_resumed_base_api(settings, request)
+            return None
+
+        matches = self._matching_model_profiles(
+            settings,
+            request["model"],
+            request["provider"],
+        )
+        if len(matches) == 1:
+            return matches[0]
+        if self._current_model_name in matches:
+            return self._current_model_name
+        if settings.default_model in matches:
+            return settings.default_model
+        if matches:
+            return sorted(matches)[0]
+        current = settings.get_api_config(self._current_model_name)
+        if (
+            (current.model or "") == request["model"]
+            and (current.provider or "") == request["provider"]
+        ):
+            return _KEEP_CURRENT_MODEL
+        if request["model"] or request["provider"]:
+            self._overlay_resumed_base_api(settings, request)
+            return None
+        return _KEEP_CURRENT_MODEL
+
+    def _apply_resumed_model_to_live_session(self) -> None:
+        """Install the stored model when resume does not rebuild the adapter."""
+        request = self._pending_resume_model
+        if request is None or not self._initialized or self._caller_pinned_model():
+            return
+        chosen = self._choose_resumed_model(self.settings, request)
+        if chosen is _KEEP_CURRENT_MODEL:
+            return
+        if chosen and chosen == self._current_model_name:
+            return
+        if chosen:
+            self.switch_model(str(chosen), reset_context=False)
+            return
+        self._install_base_api_adapter()
+
+    def _install_base_api_adapter(self) -> None:
+        """Use ``settings.api`` as the live model without a named profile."""
+        from crabcode_core.api import create_adapter
+
+        api_config = self.settings.api
+        if self._reasoning_effort_override is not None:
+            api_config.reasoning_effort = self._reasoning_effort_override
+        try:
+            adapter = create_adapter(api_config)
+        except Exception:
+            logger.warning("Failed to restore the session's base API configuration", exc_info=True)
+            return
+        self._api_adapter = adapter
+        self._current_model_name = None
+        if self._agent_manager:
+            self._agent_manager.set_current_model(None)
+        self._refresh_ai_reviewer(api_config)
+        self._persist_model_metadata(reset_context=False)
+
+    def _refresh_ai_reviewer(self, api_config: Any) -> None:
+        reviewer = self._ai_reviewer
+        if reviewer is None:
+            return
+        try:
+            if hasattr(reviewer, "settings"):
+                reviewer.settings = self.settings
+            if hasattr(reviewer, "default_api_config"):
+                reviewer.default_api_config = api_config
+        except Exception:
+            logger.warning("Failed to refresh AI reviewer after model switch", exc_info=True)
+
+    def _active_model_meta(self) -> dict[str, str]:
+        active = self.settings.get_api_config(self._current_model_name)
+        return {
+            "model": active.model or "",
+            "provider": active.provider or "",
+            "model_profile": self._current_model_name or "",
+        }
+
+    def _persist_model_metadata(self, *, reset_context: bool) -> None:
+        storage = self._session_storage
+        if storage is None:
+            return
+        if reset_context:
+            record_context = getattr(storage, "record_context_usage", None)
+            if callable(record_context):
+                record_context(0, 0)
+        fields = self._active_model_meta()
+        meta = getattr(storage, "meta", {}) or {}
+        if (
+            meta.get("model") == fields["model"]
+            and meta.get("provider") == fields["provider"]
+            and meta.get("model_profile") == fields["model_profile"]
+        ):
+            return
+        update_model = getattr(storage, "update_model", None)
+        if callable(update_model):
+            update_model(
+                model=fields["model"],
+                provider=fields["provider"],
+                model_profile=fields["model_profile"],
+            )
 
     @staticmethod
     async def _gather_cancel_on_error(*awaitables: Awaitable[Any]) -> list[Any]:
@@ -489,9 +693,11 @@ class CoreSession:
 
         configure_logging(self.cwd, merged.logging)
 
-        # Keep a /model switch that ran before the first initialize() (late init).
+        # Keep a /model switch that ran before the first initialize() (late init),
+        # or a model preference recorded by resume() before initialization.
         chosen = self._select_model_profile(merged)
         self._current_model_name = chosen
+        self._pending_resume_model = None
         active_api_config = merged.get_api_config(self._current_model_name)
         if self._reasoning_effort_override is not None:
             active_api_config.reasoning_effort = self._reasoning_effort_override
@@ -1918,11 +2124,7 @@ class CoreSession:
                 settings=self.settings.schedule,
             )
         self._refresh_tool_context_bindings()
-        active_cfg = self.settings.get_api_config(self._current_model_name)
-        self._session_storage.write_meta(
-            model=active_cfg.model or "",
-            provider=active_cfg.provider or "",
-        )
+        self._session_storage.write_meta(**self._active_model_meta())
 
     def _refresh_tool_context_bindings(self) -> None:
         """Refresh mutable setup contexts after a session/runtime switch.
@@ -2308,6 +2510,7 @@ class CoreSession:
             self._agent_manager._hook_manager = self._hook_manager
             self._agent_manager._lsp_manager = self._lsp_manager
             self._agent_manager._schedule_manager = self._schedule_manager
+            self._agent_manager.set_current_model(self._current_model_name)
 
             # AgentTool caches execution and display limits on the tool
             # instance. Refresh those values when the resumed project uses a
@@ -2986,10 +3189,8 @@ class CoreSession:
             self._session_storage.append_message(user_msg)
             # Update first_user_message in meta on the first real user message
             if not synthetic and not self._session_storage.meta.get("first_user_message"):
-                active_api_cfg = self.settings.get_api_config(self._current_model_name)
                 self._session_storage.write_meta(
-                    model=active_api_cfg.model or "",
-                    provider=active_api_cfg.provider or "",
+                    **self._active_model_meta(),
                     first_user_message=text,
                 )
 
@@ -3482,11 +3683,7 @@ class CoreSession:
         self._session_storage = SessionStorage(self.cwd, self.session_id)
         # Write meta for the new session
         if self._initialized:
-            active_api_cfg = self.settings.get_api_config(self._current_model_name)
-            self._session_storage.write_meta(
-                model=active_api_cfg.model or "",
-                provider=active_api_cfg.provider or "",
-            )
+            self._session_storage.write_meta(**self._active_model_meta())
         if self._agent_manager:
             self._agent_manager.update_session(
                 env=self.settings.env,
@@ -3843,11 +4040,13 @@ class CoreSession:
         self.settings.models = merged.models
         self.settings.default_model = merged.default_model
 
-    def switch_model(self, name: str) -> bool:
+    def switch_model(self, name: str, *, reset_context: bool = True) -> bool:
         """Switch to a named model defined in settings.models.
 
         Returns True on success, False if the name is not found.
-        Must be called after initialize().
+        Must be called after initialize().  Resume passes ``reset_context``
+        false so restoring the stored profile does not wipe the context
+        counters that resume is about to reload.
         """
         from crabcode_core.api import create_adapter
         from crabcode_core.config.manager import ConfigManager
@@ -3871,10 +4070,11 @@ class CoreSession:
         self.settings.default_model = catalog.default_model
         self._api_adapter = adapter
         self._current_model_name = name
-        self._context_token_tracker.reset()
-        self.last_context_used_tokens = 0
-        self.last_context_window_tokens = 0
-        self.last_context_token_source = "estimated"
+        if reset_context:
+            self._context_token_tracker.reset()
+            self.last_context_used_tokens = 0
+            self.last_context_window_tokens = 0
+            self.last_context_token_source = "estimated"
         if self._agent_manager:
             self._agent_manager.set_current_model(name)
 
@@ -3882,31 +4082,14 @@ class CoreSession:
         # ``default_api_config``.  Keep that reference current while retaining
         # an explicitly configured reviewer profile (``permissions.ai_review``
         # still takes precedence inside AiPermissionReviewer._api_config()).
-        reviewer = self._ai_reviewer
-        if reviewer is not None:
-            try:
-                if hasattr(reviewer, "settings"):
-                    reviewer.settings = self.settings
-                if hasattr(reviewer, "default_api_config"):
-                    reviewer.default_api_config = api_config
-            except Exception:
-                logger.warning("Failed to refresh AI reviewer after model switch", exc_info=True)
+        self._refresh_ai_reviewer(api_config)
 
         # Sessions may be switched after their first message has created
         # storage.  Persist the latest model/provider in both transcript and
         # SQLite so cross-process resume and session listings agree with the
         # active runtime.  A pre-initialization switch is persisted when lazy
         # storage is created using the current model above.
-        if self._session_storage is not None:
-            record_context = getattr(self._session_storage, "record_context_usage", None)
-            if callable(record_context):
-                record_context(0, 0)
-            update_model = getattr(self._session_storage, "update_model", None)
-            if callable(update_model):
-                update_model(
-                    model=api_config.model or "",
-                    provider=api_config.provider or "",
-                )
+        self._persist_model_metadata(reset_context=reset_context)
 
         return True
 
@@ -4334,6 +4517,14 @@ class CoreSession:
         if not raw_messages and not storage.meta and not agent_snapshots:
             return False
 
+        # Capture the stored model before project rebind.  An explicit
+        # --model / --model-profile flag still wins; otherwise the session's
+        # last configuration replaces the project default.
+        self._pending_resume_model = (
+            None
+            if self._caller_pinned_model()
+            else self._resume_model_request_from_meta(storage.meta)
+        )
         target_cwd = storage.cwd
         cwd_changed = os.path.normcase(os.path.abspath(target_cwd)) != os.path.normcase(
             os.path.abspath(original_cwd)
@@ -4351,6 +4542,7 @@ class CoreSession:
                     target_cwd,
                     exc_info=True,
                 )
+                self._pending_resume_model = None
                 return False
         self._advance_lifecycle_generation()
         lifecycle_generation = self._lifecycle_generation
@@ -4404,6 +4596,7 @@ class CoreSession:
             await self._cancel_title_generation()
             _assert_resume_active()
         except BaseException:
+            self._pending_resume_model = None
             if prepared_project is not None:
                 await self._discard_prepared_project_resources(prepared_project)
             raise
@@ -4424,6 +4617,12 @@ class CoreSession:
         self._tool_loading_state = ToolLoadingState.restore(storage.meta.get("loaded_tools"))
         self.last_prompt_budget = {}
         self._context_token_tracker.restore(storage.last_context_token_baseline)
+        # Same-project resume keeps the adapter built at initialize().  Install
+        # the stored profile after context counters are copied so the switch
+        # does not discard them.  Cross-project rebind already applied the
+        # pending choice while preparing the target project.
+        if self._initialized and not cwd_changed:
+            self._apply_resumed_model_to_live_session()
         self._persisted_compact_summaries.clear()
         self._partial_committed_prefixes.clear()
         self._current_plan = None
@@ -4551,4 +4750,6 @@ class CoreSession:
         if pending_completions:
             self._ensure_agent_completion_dispatcher()
 
+        if self._initialized:
+            self._pending_resume_model = None
         return True
