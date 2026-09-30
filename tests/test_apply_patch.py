@@ -318,6 +318,49 @@ class ApplyPatchToolTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(escaped.behavior, PermissionBehavior.DENY)
 
+    async def test_absolute_path_inside_workspace_is_applied_as_relative(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "pkg" / "meta_db.py"
+            target.parent.mkdir()
+            target.write_text("old\n", encoding="utf-8")
+            patch_text = f"""*** Begin Patch
+*** Update File: {target}
+@@
+-old
++new
+*** End Patch"""
+            tool = ApplyPatchTool()
+            permission = await tool.check_permissions(
+                {"patch": patch_text},
+                ToolContext(cwd=directory),
+            )
+            assert permission.updated_input is not None
+            self.assertEqual(permission.updated_input["affected_paths"], ["pkg/meta_db.py"])
+
+            result = await tool.call(
+                {"patch": patch_text},
+                ToolContext(cwd=directory, filesystem_timeout=None),
+            )
+            self.assertFalse(result.is_error, result.result_for_model)
+            self.assertEqual(target.read_text(encoding="utf-8"), "new\n")
+            self.assertEqual(result.data["affected_paths"], ["pkg/meta_db.py"])
+
+    async def test_absolute_path_outside_workspace_is_denied(self) -> None:
+        with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as other:
+            outside = Path(other) / "escaped.txt"
+            permission = await ApplyPatchTool().check_permissions(
+                {
+                    "patch": f"""*** Begin Patch
+*** Add File: {outside}
++nope
+*** End Patch"""
+                },
+                ToolContext(cwd=workspace),
+            )
+            self.assertEqual(permission.behavior, PermissionBehavior.DENY)
+            self.assertIn("path escapes the workspace", permission.reason or "")
+
     def test_default_registry_contains_apply_patch(self) -> None:
         self.assertIn("apply_patch", [tool.name for tool in get_default_tools()])
 

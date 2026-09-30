@@ -192,8 +192,9 @@ def _resolve_path(root: Path, raw_path: str) -> Path:
         raise PatchError("file paths must not contain NUL bytes")
     candidate = Path(raw_path)
     if candidate.is_absolute():
-        raise PatchError(f"absolute paths are not allowed: {raw_path}")
-    resolved = (root / candidate).resolve(strict=False)
+        resolved = candidate.resolve(strict=False)
+    else:
+        resolved = (root / candidate).resolve(strict=False)
     try:
         resolved.relative_to(root)
     except ValueError as exc:
@@ -408,8 +409,9 @@ class ApplyPatchTool(Tool):
             "*** End Patch\n\n"
             "Supported actions are Add File, Update File, Delete File, and an optional "
             "*** Move to: new/path immediately after Update File. Every added-file line "
-            "must start with '+'. Hunk lines must start with a space, '+' or '-'. Use "
-            "workspace-relative paths only. The entire patch is validated before any file "
+            "must start with '+'. Hunk lines must start with a space, '+' or '-'. Paths "
+            "may be workspace-relative or absolute, and must stay inside the workspace. "
+            "The entire patch is validated before any file "
             "is changed, and a failed hunk applies no changes."
         )
 
