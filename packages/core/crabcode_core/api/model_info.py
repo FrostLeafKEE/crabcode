@@ -32,6 +32,7 @@ KNOWN_CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-daybreak-blue-latest": 1_050_000,
     "gpt-daybreak-red-latest": 400_000,
     "gpt-6-astra": 1_050_000,
+    "gpt-6.1-sol": 1_050_000,
     "gpt-6-sol": 1_050_000,
     "gpt-6-luna": 1_050_000,
     "gpt-5.6-cyber": 400_000,
