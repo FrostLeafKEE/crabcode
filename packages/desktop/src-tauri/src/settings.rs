@@ -15,6 +15,47 @@ fn settings_path() -> Result<PathBuf, String> {
     Ok(home.join(".crabcode").join("settings_desktop.json"))
 }
 
+fn custom_theme_presets_path() -> Result<PathBuf, String> {
+    let home =
+        dirs::home_dir().ok_or_else(|| "Unable to locate the user home directory".to_string())?;
+    Ok(home.join(".crabcode").join("custom_theme_presets.json"))
+}
+
+fn merge_theme_presets_from_sidecar(mut settings: Value) -> Value {
+    let Ok(path) = custom_theme_presets_path() else {
+        return settings;
+    };
+    let Ok(raw) = fs::read_to_string(path) else {
+        return settings;
+    };
+    let Ok(presets) = serde_json::from_str::<Value>(&raw) else {
+        return settings;
+    };
+    if let Some(object) = settings.as_object_mut() {
+        if presets.is_array() {
+            object.insert("custom_theme_presets".to_string(), presets);
+        }
+    }
+    settings
+}
+
+fn save_theme_presets_sidecar(parent: &Path, presets: &Value) -> Result<(), String> {
+    let path = custom_theme_presets_path()?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("Unable to create theme preset file: {error}"))?;
+    let content = serde_json::to_vec_pretty(presets)
+        .map_err(|error| format!("Unable to serialize theme presets: {error}"))?;
+    temporary
+        .write_all(&content)
+        .and_then(|_| temporary.write_all(b"\n"))
+        .and_then(|_| temporary.as_file_mut().sync_all())
+        .map_err(|error| format!("Unable to write theme presets: {error}"))?;
+    temporary
+        .persist(path)
+        .map_err(|error| format!("Unable to replace theme presets: {}", error.error))?;
+    Ok(())
+}
+
 fn custom_dock_icon_path() -> Result<PathBuf, String> {
     let home =
         dirs::home_dir().ok_or_else(|| "Unable to locate the user home directory".to_string())?;
@@ -100,12 +141,12 @@ fn contains_secret(value: &Value) -> bool {
 pub fn load_desktop_settings() -> Result<Value, String> {
     let path = settings_path()?;
     if !path.exists() {
-        return Ok(default_settings());
+        return Ok(merge_theme_presets_from_sidecar(default_settings()));
     }
     let raw = fs::read_to_string(&path)
         .map_err(|error| format!("Unable to read desktop settings: {error}"))?;
     match serde_json::from_str::<Value>(&raw) {
-        Ok(value) if value.is_object() => Ok(value),
+        Ok(value) if value.is_object() => Ok(merge_theme_presets_from_sidecar(value)),
         _ => {
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -134,6 +175,24 @@ pub fn save_desktop_settings(settings: Value) -> Result<(), String> {
         .ok_or_else(|| "Invalid desktop settings path".to_string())?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("Unable to create settings directory: {error}"))?;
+    let mut settings = settings;
+    let presets = settings
+        .as_object_mut()
+        .and_then(|object| object.remove("custom_theme_presets"));
+    if let Some(presets) = presets {
+        save_theme_presets_sidecar(parent, &presets)?;
+    } else if !custom_theme_presets_path()?.exists() && path.exists() {
+        // One-time migration for an old all-in-one settings file.  The desktop
+        // deliberately omits unchanged themes from ordinary saves, so rescue
+        // the embedded array before replacing that legacy file.
+        if let Ok(raw) = fs::read_to_string(&path) {
+            if let Ok(previous) = serde_json::from_str::<Value>(&raw) {
+                if let Some(presets) = previous.get("custom_theme_presets") {
+                    save_theme_presets_sidecar(parent, presets)?;
+                }
+            }
+        }
+    }
     let mut temporary = tempfile::NamedTempFile::new_in(parent)
         .map_err(|error| format!("Unable to create temporary settings file: {error}"))?;
     let content = serde_json::to_vec_pretty(&settings)

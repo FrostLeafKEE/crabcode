@@ -268,8 +268,14 @@ export function isDesktopShell(): boolean {
   return "__TAURI_INTERNALS__" in window;
 }
 
+let persistedDesktopThemePresets: DesktopSettings["custom_theme_presets"] | null = null;
+
 export async function loadSettings(): Promise<DesktopSettings> {
-  if (isDesktopShell()) return normalizeSettings(await invoke<DesktopSettings>("load_desktop_settings"));
+  if (isDesktopShell()) {
+    const settings = normalizeSettings(await invoke<DesktopSettings>("load_desktop_settings"));
+    persistedDesktopThemePresets = settings.custom_theme_presets;
+    return settings;
+  }
   const raw = localStorage.getItem("crabcode.desktop.settings");
   if (!raw) return structuredClone(DEFAULT_SETTINGS);
   try {
@@ -423,7 +429,14 @@ export async function loadCustomDockIcon(): Promise<Uint8Array | null> {
 
 export async function saveSettings(settings: DesktopSettings): Promise<void> {
   if (isDesktopShell()) {
-    await invoke("save_desktop_settings", { settings });
+    const themesChanged = settings.custom_theme_presets !== persistedDesktopThemePresets;
+    const payload = themesChanged
+      ? settings
+      : Object.fromEntries(
+          Object.entries(settings).filter(([key]) => key !== "custom_theme_presets"),
+        );
+    await invoke("save_desktop_settings", { settings: payload });
+    if (themesChanged) persistedDesktopThemePresets = settings.custom_theme_presets;
     return;
   }
   localStorage.setItem("crabcode.desktop.settings", JSON.stringify(settings));

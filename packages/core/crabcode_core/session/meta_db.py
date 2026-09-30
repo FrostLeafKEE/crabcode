@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import atexit
+import os
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from crabcode_core.logging_utils import get_logger
 from crabcode_core.session.storage import get_config_home
+
+logger = get_logger(__name__)
 
 
 def _db_path() -> Path:
@@ -97,10 +103,102 @@ CREATE TABLE IF NOT EXISTS checkpoints (
 ]
 
 
+# One connection per thread and database file, reused by every
+# ``SessionMetaStore`` created on that thread.  Keeping threads separate avoids
+# interleaving the execute/commit pairs of multi-statement operations while
+# still removing repeated connection and schema-convergence work.
+_SHARED_GUARD = threading.Lock()
+_ConnectionKey = tuple[int, Path]
+_SHARED_CONNECTIONS: dict[_ConnectionKey, sqlite3.Connection] = {}
+_SHARED_IDENTITIES: dict[_ConnectionKey, tuple[int, int] | None] = {}
+
+
 def _get_conn(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA journal_mode=WAL")
+    """Return this thread's cached connection for *db_path*.
+
+    Session metadata is read through many short-lived ``SessionMetaStore``
+    instances, each of which used to open (and close) a private connection.
+    A fresh SQLite connection to an existing WAL database costs ~335 us: the
+    ``connect`` itself, the WAL pragma, the schema script, the migration probe
+    (whose failed ``ALTER TABLE`` still takes a write lock), the full
+    ``typeof()`` scan and the tombstone sync.  Reusing one handle per thread
+    and database drops a warm query to ~2 us and runs that convergence once per
+    worker instead of once per store object.
+
+    The connection is validated against the file's (device, inode) so a
+    database replaced underneath us — an explicit purge, or a test that
+    recreated the config home — is reopened instead of silently reading the
+    unlinked old file.
+    """
+    path = Path(db_path)
+    key = (threading.get_ident(), path)
+    with _SHARED_GUARD:
+        cached = _SHARED_CONNECTIONS.get(key)
+        if cached is not None:
+            if _file_identity(path) == _SHARED_IDENTITIES.get(key):
+                return cached
+            _SHARED_CONNECTIONS.pop(key, None)
+            _SHARED_IDENTITIES.pop(key, None)
+            _silent_close(cached)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # The connection is queried only by this thread, but shutdown closes
+        # every cached handle centrally from the main thread.
+        conn = sqlite3.connect(str(path), check_same_thread=False)
+        try:
+            _initialize_conn(conn)
+        except BaseException:
+            _silent_close(conn)
+            raise
+        _SHARED_CONNECTIONS[key] = conn
+        _SHARED_IDENTITIES[key] = _file_identity(path)
+        return conn
+
+
+def _file_identity(path: Path) -> tuple[int, int] | None:
+    """Return a cheap (device, inode) fingerprint, or None when unavailable."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return (stat.st_dev, stat.st_ino)
+
+
+def _silent_close(conn: sqlite3.Connection) -> None:
+    try:
+        conn.close()
+    except sqlite3.Error:
+        logger.debug("Failed to close session metadata connection", exc_info=True)
+
+
+def reset_shared_connections() -> None:
+    """Close every cached connection and drop the cache.
+
+    Callers that need the database file to be releasable immediately (tests
+    using a temporary config home, and shutdown paths that remove it) can call
+    this instead of waiting for process exit.
+    """
+    with _SHARED_GUARD:
+        connections = list(_SHARED_CONNECTIONS.values())
+        _SHARED_CONNECTIONS.clear()
+        _SHARED_IDENTITIES.clear()
+    for conn in connections:
+        _silent_close(conn)
+
+
+atexit.register(reset_shared_connections)
+
+
+def _initialize_conn(conn: sqlite3.Connection) -> None:
+    """Apply connection pragmas plus schema and migration convergence."""
+    # ``journal_mode=WAL`` persists in the database header, so switching it on
+    # is a one-time cost per database rather than a per-connection one.  The
+    # mode is not read back first: that read costs a file lock of its own.
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.DatabaseError:
+        # A malformed or read-only database still deserves a usable
+        # connection; the offending statement surfaces on the caller's query.
+        pass
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA)
     for stmt in _MIGRATIONS:
@@ -125,7 +223,6 @@ def _get_conn(db_path: Path) -> sqlite3.Connection:
         "SELECT id, cwd, updated_at FROM session_meta WHERE is_archived = 1"
     )
     conn.commit()
-    return conn
 
 
 class SessionMetaStore:
@@ -141,9 +238,13 @@ class SessionMetaStore:
         return self._conn
 
     def close(self) -> None:
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        """Release this store's reference to the shared connection.
+
+        The underlying per-thread connection stays open so later stores skip
+        the connect and schema-convergence cost.  ``close()`` keeps its contract
+        of leaving the store reusable: the next access re-resolves that handle.
+        """
+        self._conn = None
 
     def upsert(self, meta: dict[str, Any]) -> None:
         """Insert or update a session metadata row."""

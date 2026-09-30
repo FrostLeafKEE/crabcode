@@ -108,6 +108,21 @@ def _dump_jsonl_line(obj: Any) -> str:
     return json.dumps(safe_utf8_json_tree(obj), ensure_ascii=False) + "\n"
 
 
+def _decode_transcript(raw: bytes) -> str:
+    """Decode transcript bytes, tolerating undecodable data in edited files."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning("Transcript contains invalid UTF-8; undecodable bytes replaced")
+        return raw.decode("utf-8", errors="replace")
+
+
+def _complete_prefix_length(raw: bytes) -> int:
+    """Return the byte length of *raw* up to and including its last newline."""
+    end = raw.rfind(b"\n")
+    return end + 1 if end >= 0 else 0
+
+
 def _message_to_entry(message: Message) -> dict[str, Any]:
     """Serialize all message state needed to reconstruct active context."""
     entry: dict[str, Any] = {
@@ -252,6 +267,14 @@ def get_agent_meta_path(cwd: str, session_id: str) -> Path:
     return _session_project_dir(cwd, validated_id) / f"{validated_id}.agents.json"
 
 
+def get_callback_deliveries_path(cwd: str, session_id: str) -> Path:
+    """Return the small append-only receipt file for agent callbacks."""
+    validated_id = _validate_component(session_id, "session id")
+    return _session_project_dir(cwd, validated_id) / (
+        f"{validated_id}.callbacks.jsonl"
+    )
+
+
 def get_agent_transcript_dir(cwd: str, session_id: str) -> Path:
     """Get the directory for managed-agent transcripts for a session."""
     validated_id = _validate_component(session_id, "session id")
@@ -327,6 +350,13 @@ class SessionStorage:
         self.last_context_window_tokens: int = 0
         self.compact_count: int = 0
         self._archive_state_checked = False
+        # Incremental transcript cursor: byte offset and inode of the prefix
+        # already reflected in ``_meta_index``/``_written_uuids``.
+        self._scan_offset = 0
+        self._scan_inode: int | None = None
+        self._scan_cursor_valid = False
+        self._meta_index: dict[str, Any] = {}
+        self._lifecycle_entry_types: set[str] = set()
 
     def _ensure_dir(self) -> None:
         if not self._initialized:
@@ -390,10 +420,13 @@ class SessionStorage:
         self._ensure_dir()
         line = _dump_jsonl_line(entry)
         with _transcript_file_lock(self._transcript_path, exclusive=True):
+            self._apply_index_entries(self._scan_new_entries_locked())
             with open(self._transcript_path, "a", encoding="utf-8") as f:
                 f.write(line)
                 f.flush()
                 os.fsync(f.fileno())
+                self._apply_index_entries([entry])
+                self._mark_scan_eof_locked(f)
 
     def _append_transcript_line(self, entry: Any) -> None:
         """Append one durable JSONL record under the cross-process locks."""
@@ -410,22 +443,20 @@ class SessionStorage:
         self._ensure_dir()
         line = _dump_jsonl_line(entry)
         with _transcript_file_lock(self._transcript_path, exclusive=True):
-            try:
-                with open(self._transcript_path, encoding="utf-8") as transcript:
-                    for raw_line in transcript:
-                        try:
-                            existing = json.loads(raw_line)
-                        except json.JSONDecodeError:
-                            continue
-                        if isinstance(existing, dict) and matcher(existing):
-                            return False
-            except FileNotFoundError:
-                pass
+            # The cursor is already at EOF after a normal load.  If another
+            # storage instance appended meanwhile, scan only that new tail.
+            entries = self._scan_new_entries_locked()
+            self._apply_index_entries(entries)
+            for existing in entries:
+                if matcher(existing):
+                    return False
 
             with open(self._transcript_path, "a", encoding="utf-8") as transcript:
                 transcript.write(line)
                 transcript.flush()
                 os.fsync(transcript.fileno())
+                self._apply_index_entries([entry])
+                self._mark_scan_eof_locked(transcript)
         return True
 
     def _append_transcript_line_if_absent(
@@ -446,19 +477,139 @@ class SessionStorage:
 
     def _read_transcript_text(self) -> str:
         """Read the transcript without racing an append or marker write."""
+        raw, _inode = self._read_transcript_bytes()
+        return _decode_transcript(raw)
+
+    def _read_transcript_bytes(self) -> tuple[bytes, int | None]:
+        """Read the whole transcript plus its inode under the shared locks."""
         try:
             with _session_lifecycle_lock(self.cwd, self.session_id, exclusive=False):
                 if not self._transcript_path.exists():
-                    return ""
+                    return b"", None
                 with _transcript_file_lock(self._transcript_path, exclusive=False):
-                    return self._transcript_path.read_text(encoding="utf-8")
+                    with open(self._transcript_path, "rb") as transcript:
+                        raw = transcript.read()
+                        inode = os.fstat(transcript.fileno()).st_ino
+                    return raw, inode
         except FileNotFoundError:
             # A concurrent archive can remove the file between the existence
             # check and lock acquisition.
-            return ""
+            return b"", None
         except OSError:
             logger.warning("Failed to read transcript: %s", self._transcript_path, exc_info=True)
-            return ""
+            return b"", None
+
+    # --- Incremental transcript scanning ---
+    #
+    # The transcript is append-only, so a record written by another process or
+    # ``SessionStorage`` instance after our last scan is necessarily located at
+    # or beyond ``_scan_offset``.  Re-reading only that tail is enough to
+    # observe it, which turns the per-call cost of metadata merges and
+    # duplicate-UUID checks from O(file size) into O(bytes appended since the
+    # last look).  The cursor is validated against the file's inode and size so
+    # an atomic rewrite (fork) or truncation falls back to a full reparse.
+
+    def _reset_scan_state(self) -> None:
+        self._scan_offset = 0
+        self._scan_inode: int | None = None
+        self._scan_cursor_valid = False
+        self._meta_index = {}
+        self._written_uuids = set()
+        self._lifecycle_entry_types = set()
+
+    @staticmethod
+    def _parse_transcript_lines(text: str) -> list[dict[str, Any]]:
+        """Parse newline-delimited JSON, skipping blank and malformed lines."""
+        entries: list[dict[str, Any]] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(entry, dict):
+                entries.append(entry)
+        return entries
+
+    def _mark_scan_eof_locked(self, transcript: Any) -> None:
+        """Advance the incremental cursor after a durable append."""
+        try:
+            stat = os.fstat(transcript.fileno())
+            self._scan_inode = stat.st_ino
+            self._scan_offset = stat.st_size
+            self._scan_cursor_valid = True
+        except (OSError, AttributeError):
+            # A later operation can safely rebuild the index from byte zero.
+            self._reset_scan_state()
+
+    def _scan_new_entries_locked(self) -> list[dict[str, Any]]:
+        """Return transcript entries recorded since the last scan.
+
+        The caller must already hold the transcript file lock so that the tail
+        read cannot race the append it is validating.
+        """
+        try:
+            stat = os.stat(self._transcript_path)
+        except OSError:
+            self._reset_scan_state()
+            return []
+        if (
+            not self._scan_cursor_valid
+            or self._scan_inode != stat.st_ino
+            or stat.st_size < self._scan_offset
+        ):
+            # No trusted prefix, a replaced file (atomic rewrite changes the
+            # inode), or a truncated one: whatever was cached describes a file
+            # that is no longer on disk.
+            self._reset_scan_state()
+            self._scan_inode = stat.st_ino
+            self._scan_cursor_valid = True
+        if stat.st_size == self._scan_offset:
+            return []
+        with open(self._transcript_path, "rb") as transcript:
+            transcript.seek(self._scan_offset)
+            raw = transcript.read()
+        consumed = _complete_prefix_length(raw)
+        if consumed == 0:
+            # Only a partial trailing line is present; leave it for the writer
+            # to finish so we never parse a torn record.
+            return []
+        self._scan_offset += consumed
+        return self._parse_transcript_lines(_decode_transcript(raw[:consumed]))
+
+    def _apply_index_entries(self, entries: list[dict[str, Any]]) -> None:
+        """Merge new records into the metadata and UUID indexes."""
+        for entry in entries:
+            kind = entry.get("type")
+            if kind == "session_meta":
+                self._meta_index.update(
+                    {key: value for key, value in entry.items() if key != "type"}
+                )
+            elif kind == "session_archive":
+                self._meta_index["is_archived"] = True
+            elif kind == "session_restore":
+                self._meta_index["is_archived"] = False
+            if kind in {"session_archive", "session_restore"}:
+                self._lifecycle_entry_types.add(str(kind))
+            uuid_value = entry.get("uuid")
+            if isinstance(uuid_value, str) and uuid_value:
+                self._written_uuids.add(uuid_value)
+            if kind in {"compact_boundary", "projection_boundary"}:
+                snapshot = entry.get("messages")
+                if isinstance(snapshot, list):
+                    self._written_uuids.update(
+                        str(item["uuid"])
+                        for item in snapshot
+                        if isinstance(item, dict) and item.get("uuid")
+                    )
+
+    def _set_meta(self, meta: dict[str, Any]) -> None:
+        """Keep the in-memory metadata and the scan cache in step."""
+        self._meta = meta
+        self._meta_index = dict(meta)
+        self._meta_written = True
 
     @staticmethod
     def _atomic_write_text(path: Path, content: str) -> None:
@@ -576,8 +727,7 @@ class SessionStorage:
             self._assert_writable_locked()
             current = self._read_latest_meta_locked()
             if current:
-                self._meta = current
-                self._meta_written = True
+                self._set_meta(current)
                 if not first_user_message:
                     return
                 fields = {
@@ -586,17 +736,19 @@ class SessionStorage:
                     "updated_at": now.isoformat(),
                 }
                 self._meta.update(fields)
+                self._meta_index.update(fields)
                 self._append_transcript_line_locked({"type": "session_meta", **fields})
             else:
-                self._meta = self._new_meta(
-                    model=model,
-                    provider=provider,
-                    first_user_message=first_user_message,
-                    git_info=git_info,
-                    now=now,
+                self._set_meta(
+                    self._new_meta(
+                        model=model,
+                        provider=provider,
+                        first_user_message=first_user_message,
+                        git_info=git_info,
+                        now=now,
+                    )
                 )
                 self._append_transcript_line_locked({"type": "session_meta", **self._meta})
-                self._meta_written = True
             self._upsert_meta_locked()
 
     def _new_meta(
@@ -627,29 +779,24 @@ class SessionStorage:
         }
 
     def _read_latest_meta_locked(self) -> dict[str, Any]:
-        """Read merged metadata while the lifecycle lock prevents concurrent writes."""
+        """Read merged metadata while the lifecycle lock prevents concurrent writes.
+
+        Only bytes appended since the previous scan are parsed; the result is
+        the same merge over every ``session_meta`` record that a full read
+        produced, including records written by another process or before this
+        instance existed (which ``load_messages`` folds into the index).
+        """
         if not self._transcript_path.exists():
+            self._reset_scan_state()
             return {}
-        meta: dict[str, Any] = {}
         with _transcript_file_lock(self._transcript_path, exclusive=False):
             try:
-                with open(self._transcript_path, encoding="utf-8") as transcript:
-                    for raw_line in transcript:
-                        try:
-                            entry = json.loads(raw_line)
-                        except json.JSONDecodeError:
-                            continue
-                        if not isinstance(entry, dict):
-                            continue
-                        if entry.get("type") == "session_meta":
-                            meta.update({key: value for key, value in entry.items() if key != "type"})
-                        elif entry.get("type") == "session_archive":
-                            meta["is_archived"] = True
-                        elif entry.get("type") == "session_restore":
-                            meta["is_archived"] = False
+                entries = self._scan_new_entries_locked()
             except FileNotFoundError:
+                self._reset_scan_state()
                 return {}
-        return meta
+        self._apply_index_entries(entries)
+        return dict(self._meta_index)
 
     def _upsert_meta_locked(self) -> None:
         """Mirror the current JSONL metadata into SQLite before releasing the lock."""
@@ -681,15 +828,15 @@ class SessionStorage:
                 current = self._new_meta()
             fields = update(current)
             current.update(fields)
-            self._meta = current
-            self._meta_written = True
+            self._set_meta(current)
+            self._meta_index.update(fields)
             entry = self._meta if initialized else fields
             self._append_transcript_line_locked({"type": "session_meta", **entry})
             self._upsert_meta_locked()
 
     def append_message(self, message: Message) -> None:
         """Append a message to the session transcript (skips duplicates by uuid)."""
-        if not self._written_uuids and self._transcript_path.exists():
+        if not self._scan_cursor_valid and self._transcript_path.exists():
             self.load_messages(full_history=True)
         if message.uuid in self._written_uuids:
             return
@@ -697,24 +844,24 @@ class SessionStorage:
         entry = _message_to_entry(message)
         message_uuid = message.uuid
 
-        def matches(existing: dict[str, Any]) -> bool:
-            if existing.get("uuid") == message_uuid:
-                return True
-            # A projection boundary embeds its active messages and can be the
-            # only durable occurrence of a UUID in a newly-created storage
-            # instance.
-            if existing.get("type") not in {"compact_boundary", "projection_boundary"}:
-                return False
-            snapshot = existing.get("messages")
-            return isinstance(snapshot, list) and any(
-                isinstance(item, dict) and item.get("uuid") == message_uuid
-                for item in snapshot
-            )
-
-        if not self._append_transcript_line_if_absent(entry, matches):
-            self._written_uuids.add(message_uuid)
-            return
-        self._written_uuids.add(message.uuid)
+        # Keep the duplicate check under the same lifecycle and transcript
+        # locks as the append.  The incremental tail scan handles a writer in
+        # another storage instance without rescanning the historical prefix.
+        with _session_lifecycle_lock(self.cwd, self.session_id):
+            self._assert_writable_locked()
+            with _transcript_file_lock(self._transcript_path, exclusive=True):
+                entries = self._scan_new_entries_locked()
+                self._apply_index_entries(entries)
+                if message_uuid in self._written_uuids:
+                    return
+                self._ensure_dir()
+                with open(self._transcript_path, "a", encoding="utf-8") as transcript:
+                    transcript.write(_dump_jsonl_line(entry))
+                    transcript.flush()
+                    os.fsync(transcript.fileno())
+                    self._apply_index_entries([entry])
+                    self._mark_scan_eof_locked(transcript)
+        self._written_uuids.add(message_uuid)
 
     def record_callback_delivery(
         self,
@@ -741,15 +888,25 @@ class SessionStorage:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            self._append_transcript_line_if_absent(
-                entry,
-                lambda existing: (
-                    existing.get("type") == "callback_delivery"
-                    and existing.get("agent_id") == agent_id
-                    and existing.get("callback_epoch") == callback_epoch
-                    and existing.get("callback_message_id") == callback_message_id
-                ),
-            )
+            path = get_callback_deliveries_path(self.cwd, self.session_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with _session_lifecycle_lock(self.cwd, self.session_id):
+                with _transcript_file_lock(path, exclusive=True):
+                    if path.exists():
+                        for existing in self._parse_transcript_lines(
+                            _decode_transcript(path.read_bytes())
+                        ):
+                            if (
+                                existing.get("agent_id") == agent_id
+                                and existing.get("callback_epoch") == callback_epoch
+                                and existing.get("callback_message_id") == callback_message_id
+                            ):
+                                self._callback_deliveries[key] = existing
+                                return True
+                    with open(path, "a", encoding="utf-8") as transcript:
+                        transcript.write(_dump_jsonl_line(entry))
+                        transcript.flush()
+                        os.fsync(transcript.fileno())
         except Exception:
             logger.warning(
                 "Failed to record callback delivery for agent %s epoch %d",
@@ -779,15 +936,28 @@ class SessionStorage:
     def load_callback_deliveries(self) -> list[dict[str, Any]]:
         """Load durable callback receipts without affecting active message projection."""
         deliveries: dict[tuple[str, int, str], dict[str, Any]] = {}
-        transcript = self._read_transcript_text()
-        if transcript:
+        path = get_callback_deliveries_path(self.cwd, self.session_id)
+        raw = b""
+        sidecar_exists = False
+        legacy_source = False
+        try:
+            with _transcript_file_lock(path, exclusive=False):
+                sidecar_exists = path.exists()
+                if sidecar_exists:
+                    raw = path.read_bytes()
+        except OSError:
+            logger.warning("Failed to read callback deliveries: %s", path, exc_info=True)
+        # Callback receipts were historically mixed into the main transcript.
+        # Read that legacy location only when the sidecar does not exist; new
+        # sessions never pay the cost of scanning their (potentially huge)
+        # conversation file.
+        if not raw and not sidecar_exists and self._transcript_path.exists():
+            raw = self._read_transcript_text().encode("utf-8")
+            legacy_source = True
+        if raw:
             try:
-                for line in transcript.splitlines():
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(entry, dict) or entry.get("type") != "callback_delivery":
+                for entry in self._parse_transcript_lines(_decode_transcript(raw)):
+                    if entry.get("type") != "callback_delivery":
                         continue
                     agent_id = str(entry.get("agent_id") or "")
                     message_id = str(entry.get("callback_message_id") or "")
@@ -803,6 +973,19 @@ class SessionStorage:
                     self._transcript_path,
                     exc_info=True,
                 )
+        if legacy_source and deliveries:
+            # Migrate once so future resumes never need to re-read the large
+            # conversation transcript.  Preserve only callback records in the
+            # sidecar; the historical originals remain available for audit.
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with _transcript_file_lock(path, exclusive=True):
+                    self._atomic_write_text(
+                        path,
+                        "".join(_dump_jsonl_line(entry) for entry in deliveries.values()),
+                    )
+            except OSError:
+                logger.warning("Failed to migrate callback deliveries: %s", path, exc_info=True)
         self._callback_deliveries = deliveries
         self._callback_deliveries_loaded = True
         return list(deliveries.values())
@@ -899,10 +1082,11 @@ class SessionStorage:
         with _session_lifecycle_lock(self.cwd, self.session_id):
             self._write_tombstone_locked()
             if self._transcript_path.exists():
-                self._append_transcript_line_if_absent_locked(
-                    entry,
-                    lambda existing: existing.get("type") == "session_archive",
-                )
+                if "session_archive" not in self._lifecycle_entry_types:
+                    self._append_transcript_line_if_absent_locked(
+                        entry,
+                        lambda existing: existing.get("type") == "session_archive",
+                    )
             self._archive_state_checked = True
             self._meta["is_archived"] = True
 
@@ -914,14 +1098,15 @@ class SessionStorage:
             if self._transcript_path.exists():
                 # Keep the audit record, but make the durable session active
                 # again for a user-requested recovery.
-                self._append_transcript_line_if_absent_locked(
-                    {
-                        "type": "session_restore",
-                        "session_id": self.session_id,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    },
-                    lambda existing: existing.get("type") == "session_restore",
-                )
+                if "session_restore" not in self._lifecycle_entry_types:
+                    self._append_transcript_line_if_absent_locked(
+                        {
+                            "type": "session_restore",
+                            "session_id": self.session_id,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                        lambda existing: existing.get("type") == "session_restore",
+                    )
             try:
                 from crabcode_core.session.meta_db import SessionMetaStore
                 store = SessionMetaStore()
@@ -955,21 +1140,24 @@ class SessionStorage:
         self.last_context_window_tokens = 0
         self.compact_count = 0
         self._written_uuids = set()
+        self._reset_scan_state()
         self._meta = {}
         self._meta_written = False
-        transcript = (
-            self._read_transcript_text()
-            if _transcript_text is None
-            else _transcript_text
-        )
+        transcript_bytes: bytes | None = None
+        transcript_inode: int | None = None
+        if _transcript_text is None:
+            transcript_bytes, transcript_inode = self._read_transcript_bytes()
+            transcript = _decode_transcript(transcript_bytes)
+        else:
+            transcript = _transcript_text
         if not transcript:
+            self._reset_scan_state()
             if get_session_tombstone_path(self.cwd, self.session_id).exists():
-                self._meta = {
+                self._set_meta({
                     "id": self.session_id,
                     "cwd": self.cwd,
                     "is_archived": True,
-                }
-                self._meta_written = True
+                })
             return []
 
         all_messages: list[dict[str, Any]] = []
@@ -997,9 +1185,11 @@ class SessionStorage:
 
                 if entry.get("type") == "session_archive":
                     archived = True
+                    self._lifecycle_entry_types.add("session_archive")
                     continue
                 if entry.get("type") == "session_restore":
                     archived = False
+                    self._lifecycle_entry_types.add("session_restore")
                     continue
 
                 # Capture the session_meta line but don't add it as a message.
@@ -1203,8 +1393,17 @@ class SessionStorage:
         if archived or get_session_tombstone_path(self.cwd, self.session_id).exists():
             meta["is_archived"] = True
         if meta:
-            self._meta = meta
-            self._meta_written = True
+            self._set_meta(meta)
+        # ``_transcript_text`` is used by fork/import callers and does not
+        # necessarily represent this storage object's on-disk file.  Only mark
+        # the cursor complete when the bytes came from the actual transcript.
+        if _transcript_text is None:
+            if transcript_inode is not None and transcript_bytes is not None:
+                self._scan_inode = transcript_inode
+                self._scan_offset = _complete_prefix_length(transcript_bytes)
+                self._scan_cursor_valid = True
+            else:
+                self._reset_scan_state()
         if full_history:
             return all_messages
         return active_messages if boundary_seen or rollback_seen else all_messages
@@ -1788,6 +1987,7 @@ def purge_session_artifacts(cwd: str, session_id: str) -> None:
             artifacts = (
                 (project_dir / f"{validated_id}.jsonl", False),
                 (project_dir / f"{validated_id}.agents.json", False),
+                (project_dir / f"{validated_id}.callbacks.jsonl", False),
                 (project_dir / f"{validated_id}.agents", True),
                 (project_dir / f"{validated_id}.tasks", True),
             )
