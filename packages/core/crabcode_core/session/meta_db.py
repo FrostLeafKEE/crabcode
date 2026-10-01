@@ -251,7 +251,10 @@ class SessionMetaStore:
         conn = self._conn_or_create()
         now = int(datetime.now(timezone.utc).timestamp())
         meta["created_at"] = _coerce_epoch(meta.get("created_at"), now)
-        meta["updated_at"] = now
+        # Activity time belongs to the record being saved. Conversation writes
+        # pass a new timestamp; model restores and index backfills keep the
+        # existing one. Only a missing value means "now".
+        meta["updated_at"] = _coerce_epoch(meta.get("updated_at"), now)
 
         # ``summary`` was added after the original upsert statement.  Keep an
         # explicit flag so the conflict update can preserve an existing value
@@ -330,16 +333,15 @@ class SessionMetaStore:
         conn.commit()
 
     def update_model(self, session_id: str, model: str, provider: str) -> bool:
-        """Update only model fields, preserving accumulated session stats."""
+        """Update only model fields, preserving accumulated session stats.
+
+        The active model is runtime state. Saving it does not refresh the
+        activity time that orders the session list.
+        """
         conn = self._conn_or_create()
         cur = conn.execute(
-            "UPDATE session_meta SET model = ?, provider = ?, updated_at = ? WHERE id = ?",
-            (
-                model,
-                provider,
-                int(datetime.now(timezone.utc).timestamp()),
-                session_id,
-            ),
+            "UPDATE session_meta SET model = ?, provider = ? WHERE id = ?",
+            (model, provider, session_id),
         )
         conn.commit()
         return cur.rowcount > 0

@@ -1539,12 +1539,14 @@ class SessionStorage:
         overwrite counters or titles with a stale in-memory snapshot.
         ``model_profile`` is the named configuration resume should restore.
         Omit it to leave an older record unchanged.
+
+        This records runtime state, not conversation activity, so the
+        session's activity time and list position stay unchanged.
         """
         def _fields(_meta: dict[str, Any]) -> dict[str, Any]:
             fields: dict[str, Any] = {
                 "model": model,
                 "provider": provider,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             if model_profile is not None:
                 fields["model_profile"] = model_profile

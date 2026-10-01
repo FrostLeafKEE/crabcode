@@ -2,10 +2,12 @@
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from crabcode_core.config.manager import ConfigManager
 from crabcode_core.events import CoreSession
+from crabcode_core.session.meta_db import SessionMetaStore
 from crabcode_core.session.storage import SessionStorage
 from crabcode_core.types.config import CrabCodeSettings
 
@@ -195,6 +197,63 @@ def test_resume_unnamed_api_does_not_jump_to_default_profile(tmp_path, monkeypat
     assert resumed._api_adapter.config.model == "gpt-base-used"
     assert resumed._api_adapter.config.base_url is None
     assert resumed.settings.get_api_config(None).model == "gpt-base-used"
+
+
+def _backdate_activity(storage: SessionStorage, epoch: int) -> None:
+    """Pin one session's activity time in both the transcript and the index."""
+    stamp = datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+    path = storage._transcript_path
+    lines = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        entry = json.loads(line)
+        if entry.get("type") == "session_meta" and "updated_at" in entry:
+            entry["updated_at"] = stamp
+        lines.append(json.dumps(entry, ensure_ascii=False))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    store = SessionMetaStore()
+    try:
+        row = store.get(storage.session_id)
+        assert row is not None
+        row["updated_at"] = epoch
+        store.upsert(row)
+    finally:
+        store.close()
+
+
+def test_resume_restores_model_without_raising_the_session(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    _isolate(monkeypatch, tmp_path)
+    _write_settings(project)
+    settings_path = project / ".crabcode" / "settings.json"
+    raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    raw["models"].pop("smart-backup")
+    settings_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    older = SessionStorage(str(project), "older-session")
+    older.write_meta(model="gpt-smart", provider="openai")
+    _backdate_activity(older, 1_700_000_000)
+    newer = SessionStorage(str(project), "newer-session")
+    newer.write_meta(model="gpt-fast", provider="openai", model_profile="fast")
+
+    resumed = _session(project)
+    assert _resume(resumed, older.session_id)
+    assert resumed._session_storage.meta["model_profile"] == "smart"
+    assert resumed._current_model_name == "smart"
+
+    listed = [item["session_id"] for item in SessionStorage.list_sessions(str(project))]
+    assert listed[:2] == ["newer-session", "older-session"]
+    store = SessionMetaStore()
+    try:
+        assert store.get(older.session_id)["updated_at"] == 1_700_000_000
+        older.update_title("renamed conversation")
+        assert store.get(older.session_id)["updated_at"] > 1_700_000_000
+    finally:
+        store.close()
+    listed = [item["session_id"] for item in SessionStorage.list_sessions(str(project))]
+    assert listed[0] == "older-session"
 
 
 def test_prepare_selection_prefers_stored_profile_over_current(tmp_path, monkeypatch):
