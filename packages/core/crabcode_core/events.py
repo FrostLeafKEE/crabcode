@@ -889,11 +889,10 @@ class CoreSession:
             except Exception:
                 logger.exception("Failed to load extra tool: %s", tool_path)
 
-        from crabcode_core.prompts.profile import PromptProfile
+        from crabcode_core.prompts.library import resolve_prompt_profile
         from crabcode_core.tools.agent import AgentTool
 
-        if self.settings.prompt_profile:
-            self._prompt_profile = PromptProfile(**self.settings.prompt_profile)
+        self._prompt_profile = resolve_prompt_profile(self.settings)
 
         def _persist_agents(snapshots: list[dict[str, Any]]) -> None:
             if self._session_storage:
@@ -2313,10 +2312,9 @@ class CoreSession:
                 prompt_profile=None,
                 hooks={key: list(value) for key, value in merged.hooks.items()},
             )
-            if merged.prompt_profile:
-                from crabcode_core.prompts.profile import PromptProfile
+            from crabcode_core.prompts.library import resolve_prompt_profile
 
-                prepared["prompt_profile"] = PromptProfile(**merged.prompt_profile)
+            prepared["prompt_profile"] = resolve_prompt_profile(merged)
 
             extra_tools: list[Tool] = []
             for tool_path in merged.extra_tools:
@@ -3079,7 +3077,7 @@ class CoreSession:
         self._partial_committed_prefixes = []
 
         from crabcode_core.prompts.context import get_system_context, get_user_context
-        from crabcode_core.prompts.profile import PromptProfile
+        from crabcode_core.prompts.library import enabled_user_append_texts, resolve_prompt_profile
         from crabcode_core.prompts.system import get_system_prompt
         from crabcode_core.query.loop import QueryParams, query_loop
         from crabcode_core.types.event import CompactEvent, ErrorEvent, TurnCompleteEvent
@@ -3211,9 +3209,11 @@ class CoreSession:
         tool_names = [t.name for t in self.tools if t.is_enabled]
         model = active_api_cfg.model or "claude-sonnet-4-20250514"
 
-        profile: PromptProfile | None = None
-        if self.settings.prompt_profile:
-            profile = PromptProfile(**self.settings.prompt_profile)
+        try:
+            self.reload_prompt_settings()
+        except Exception:
+            logger.warning("Failed to reload prompt settings", exc_info=True)
+        profile = resolve_prompt_profile(self.settings)
 
         system_context = get_system_context(self.cwd)
         system_prompt = get_system_prompt(
@@ -3293,6 +3293,7 @@ class CoreSession:
             auto_compact_enabled=self.settings.auto_compact_enabled,
             compact_threshold=self.settings.max_context_length,
             reply_to_uuid=message_uuid if synthetic else None,
+            user_append_prompts=enabled_user_append_texts(self.settings),
             drain_peer_messages=self._drain_peer_messages_for_query,
             drain_steering_messages=self._drain_steering_messages_for_query,
         )
@@ -4226,6 +4227,21 @@ class CoreSession:
     def effective_computer_use_delivery_policy(self) -> str:
         """Return the Computer Use policy independently of tool approval mode."""
         return self.computer_use_delivery_policy
+
+    def reload_prompt_settings(self) -> None:
+        """Apply prompt template and user-append edits without rebuilding the session."""
+        from crabcode_core.config.manager import ConfigManager
+        from crabcode_core.prompts.library import resolve_prompt_profile
+
+        merged = self._merge_project_settings(ConfigManager(cwd=self.cwd).load())
+        self.settings.prompt_templates = list(merged.prompt_templates)
+        self.settings.active_prompt_template = merged.active_prompt_template
+        self.settings.user_append_prompts = list(merged.user_append_prompts)
+        self.settings.prompt_profile = merged.prompt_profile
+        self._prompt_profile = resolve_prompt_profile(self.settings)
+        agent_manager = self._agent_manager
+        if agent_manager is not None:
+            agent_manager._prompt_profile = self._prompt_profile
 
     def reload_computer_use_settings(self) -> None:
         """Apply file changes to a live session without replacing its other resources."""

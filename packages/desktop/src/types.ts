@@ -588,6 +588,55 @@ export interface RuntimeSettingsMutation {
   tool_path?: string;
 }
 
+export interface PromptSectionInfo {
+  key: string;
+  label: string;
+}
+
+export interface PromptTemplateView {
+  id: string;
+  name: string;
+  sections: Record<string, string>;
+  source: string;
+}
+
+export interface UserAppendPromptView {
+  id: string;
+  text: string;
+  enabled: boolean;
+  source: string;
+}
+
+export interface PromptSettingsResponse {
+  cwd: string;
+  active_template_id: string | null;
+  templates: PromptTemplateView[];
+  user_prompts: UserAppendPromptView[];
+  sections: PromptSectionInfo[];
+  warnings: string[];
+  editable_sources?: ModelSettingsSource[];
+}
+
+export type PromptSettingsMutationAction =
+  | "save_template"
+  | "delete_template"
+  | "set_active_template"
+  | "add_user_prompt"
+  | "set_user_prompt_enabled"
+  | "delete_user_prompt";
+
+export interface PromptSettingsMutation {
+  action: PromptSettingsMutationAction;
+  source: ModelSettingsSource["id"];
+  cwd?: string;
+  template_id?: string | null;
+  template_name?: string;
+  sections?: Record<string, string>;
+  prompt_id?: string;
+  prompt_text?: string;
+  enabled?: boolean;
+}
+
 export interface GoalInfo {
   objective: string;
   status: "active" | "paused" | "complete" | "blocked";

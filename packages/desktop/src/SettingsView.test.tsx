@@ -129,6 +129,7 @@ describe("settings search", () => {
     expect(filterSettingsSections("显示原文").map((section) => section.id)).toEqual(["document"]);
     expect(filterSettingsSections("快照").map((section) => section.id)).toEqual(["runtime"]);
     expect(filterSettingsSections("额外工具").map((section) => section.id)).toEqual(["runtime"]);
+    expect(filterSettingsSections("提示词模版").map((section) => section.id)).toEqual(["prompts"]);
     expect(filterSettingsSections("Provider").map((section) => section.id)).toEqual(["models"]);
     expect(filterSettingsSections("配置组").map((section) => section.id)).toEqual(["models"]);
     expect(filterSettingsSections("Yuri Head").map((section) => section.id)).toEqual(["about"]);

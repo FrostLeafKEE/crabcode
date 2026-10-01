@@ -18,6 +18,7 @@ import {
   Paintbrush,
   Plus,
   RotateCcw,
+  ScrollText,
   Search,
   Server,
   Settings,
@@ -31,6 +32,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ModelSettingsPanel } from "./ModelSettingsPanel";
+import { PromptSettingsPanel } from "./PromptSettingsPanel";
 import { UsageSettingsPanel } from "./UsageSettingsPanel";
 import { RuntimeSettingsPanel } from "./RuntimeSettingsPanel";
 import { composerModifierLabel } from "./ComposerEditor";
@@ -70,6 +72,8 @@ import type {
   GatewayViewState,
   ModelSettingsMutation,
   ModelSettingsResponse,
+  PromptSettingsMutation,
+  PromptSettingsResponse,
   RuntimeSettingsMutation,
   RuntimeSettingsResponse,
   ProjectPreset,
@@ -81,7 +85,7 @@ import type {
 } from "./types";
 import desktopPackage from "../package.json";
 
-export type SettingsSectionId = "general" | "appearance" | "document" | "runtime" | "connections" | "models" | "usage" | "projects" | "about";
+export type SettingsSectionId = "general" | "appearance" | "document" | "runtime" | "prompts" | "connections" | "models" | "usage" | "projects" | "about";
 
 interface SettingsSectionDefinition {
   id: SettingsSectionId;
@@ -114,6 +118,12 @@ export const SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     title: "运行与工具",
     description: "Computer Use、文件快照与额外工具配置",
     searchText: "运行 Computer Use 虚拟机 Lume VM 共享目录 电脑 后台应用 前台桌面 background foreground 快照 文件快照 checkpoint 检查点 snapshot 最大大小 启用 额外工具 extra tools import path 工具",
+  },
+  {
+    id: "prompts",
+    title: "提示词",
+    description: "自定义提示词模版，以及追加到用户输入的提示",
+    searchText: "提示词 模版 模板 prompt 自定义 默认 系统提示词 用户输入 追加 用户提示 规则 留空",
   },
   {
     id: "connections",
@@ -162,6 +172,7 @@ const SECTION_ICONS = {
   appearance: Paintbrush,
   document: FileText,
   runtime: Wrench,
+  prompts: ScrollText,
   connections: Server,
   models: Bot,
   usage: ChartNoAxesCombined,
@@ -307,6 +318,11 @@ interface SettingsViewProps {
   runtimeSettingsError?: string | null;
   onRefreshRuntimeSettings?: () => void;
   onMutateRuntimeSettings?: (mutation: RuntimeSettingsMutation) => Promise<void>;
+  promptSettings?: PromptSettingsResponse | null;
+  promptSettingsLoading?: boolean;
+  promptSettingsError?: string | null;
+  onRefreshPromptSettings?: () => void;
+  onMutatePromptSettings?: (mutation: PromptSettingsMutation) => Promise<void>;
   onNewProject: () => void;
   onEditProject: (project: ProjectPreset) => void;
   onDocumentWorkspaceRoot?: (connectionId: string, path: string | null) => void;
@@ -590,6 +606,11 @@ export function SettingsView({
   runtimeSettingsError = null,
   onRefreshRuntimeSettings = () => {},
   onMutateRuntimeSettings,
+  promptSettings = null,
+  promptSettingsLoading = false,
+  promptSettingsError = null,
+  onRefreshPromptSettings = () => {},
+  onMutatePromptSettings,
   onNewProject,
   onEditProject,
   onDocumentWorkspaceRoot,
@@ -1685,6 +1706,19 @@ export function SettingsView({
                 error={runtimeSettingsError}
                 onRefresh={onRefreshRuntimeSettings}
                 onMutate={onMutateRuntimeSettings}
+              />
+            )}
+
+            {activeSection === "prompts" && (
+              <PromptSettingsPanel
+                activeConnection={activeConnection}
+                activeProject={activeProject}
+                gateway={activeGateway}
+                data={promptSettings}
+                loading={promptSettingsLoading}
+                error={promptSettingsError}
+                onRefresh={onRefreshPromptSettings}
+                onMutate={onMutatePromptSettings}
               />
             )}
 

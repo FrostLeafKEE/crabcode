@@ -8,6 +8,7 @@ import * as vscode from "vscode";
 
 import { CrabCodeConnection } from "./connection";
 import { ChatPanelProvider } from "./chatPanel";
+import { PromptSettingsPanel } from "./promptSettingsPanel";
 import { chooseAndInstallGatewaySuite, ensureGateway, GatewayProcess } from "./gatewayManager";
 import { PendingEditManager } from "./pendingEdits";
 import type { IdeContextSnapshot } from "./ideContext";
@@ -471,6 +472,12 @@ function registerCommands(
         "workbench.action.openSettings",
         "crabcode",
       );
+    }),
+  );
+
+  push(
+    vscode.commands.registerCommand("crabcode.openPromptSettings", () => {
+      PromptSettingsPanel.show();
     }),
   );
 

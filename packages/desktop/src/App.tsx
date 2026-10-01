@@ -181,6 +181,8 @@ import type {
   GatewayViewState,
   ModelSettingsResponse,
   ModelSettingsMutation,
+  PromptSettingsMutation,
+  PromptSettingsResponse,
   RuntimeSettingsResponse,
   RuntimeSettingsMutation,
   ProjectPreset,
@@ -215,6 +217,12 @@ type ModelSettingsLoadState = {
 type RuntimeSettingsLoadState = {
   key: string;
   data: RuntimeSettingsResponse | null;
+  loading: boolean;
+  error: string | null;
+};
+type PromptSettingsLoadState = {
+  key: string;
+  data: PromptSettingsResponse | null;
   loading: boolean;
   error: string | null;
 };
@@ -880,6 +888,8 @@ function App() {
   const [modelSettingsState, setModelSettingsState] = useState<ModelSettingsLoadState | null>(null);
   const [runtimeSettingsState, setRuntimeSettingsState] = useState<RuntimeSettingsLoadState | null>(null);
   const runtimeSettingsRevisionRef = useRef(new Map<string, number>());
+  const [promptSettingsState, setPromptSettingsState] = useState<PromptSettingsLoadState | null>(null);
+  const promptSettingsRevisionRef = useRef(new Map<string, number>());
   const [connectionModal, setConnectionModal] = useState<"new" | string | null>(null);
   const [checkpointModal, setCheckpointModal] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
@@ -1187,6 +1197,56 @@ function App() {
     const data = await api.mutateRuntimeSettings(mutation);
     runtimeSettingsRevisionRef.current.set(key, (runtimeSettingsRevisionRef.current.get(key) ?? 0) + 1);
     setRuntimeSettingsState((current) => current?.key === key
+      ? { key, data, loading: false, error: null }
+      : current);
+  }, []);
+
+  const refreshPromptSettings = useCallback(async (connectionId: string, cwd?: string) => {
+    const key = `${connectionId}\u0000${cwd ?? ""}`;
+    const revision = (promptSettingsRevisionRef.current.get(key) ?? 0) + 1;
+    promptSettingsRevisionRef.current.set(key, revision);
+    const api = apiRef.current.get(connectionId);
+    if (!api) {
+      setPromptSettingsState({ key, data: null, loading: false, error: "Gateway 尚未连接" });
+      return;
+    }
+    setPromptSettingsState((current) => ({
+      key,
+      data: current?.key === key ? current.data : null,
+      loading: true,
+      error: null,
+    }));
+    try {
+      const data = await api.promptSettings(cwd);
+      if (promptSettingsRevisionRef.current.get(key) !== revision) return;
+      setPromptSettingsState((current) => current?.key === key
+        ? { key, data, loading: false, error: null }
+        : current);
+    } catch (error) {
+      if (promptSettingsRevisionRef.current.get(key) !== revision) return;
+      setPromptSettingsState((current) => current?.key === key
+        ? {
+            key,
+            data: current.data,
+            loading: false,
+            error: error instanceof Error ? error.message : String(error),
+          }
+        : current);
+    }
+  }, []);
+
+  const mutatePromptSettings = useCallback(async (
+    connectionId: string,
+    mutation: PromptSettingsMutation,
+  ) => {
+    const api = apiRef.current.get(connectionId);
+    if (!api) throw new Error("Gateway 尚未连接");
+    const cwd = mutation.cwd ?? "";
+    const key = `${connectionId}\u0000${cwd}`;
+    promptSettingsRevisionRef.current.set(key, (promptSettingsRevisionRef.current.get(key) ?? 0) + 1);
+    const data = await api.mutatePromptSettings(mutation);
+    promptSettingsRevisionRef.current.set(key, (promptSettingsRevisionRef.current.get(key) ?? 0) + 1);
+    setPromptSettingsState((current) => current?.key === key
       ? { key, data, loading: false, error: null }
       : current);
   }, []);
@@ -2242,6 +2302,23 @@ function App() {
     refreshRuntimeSettings,
   ]);
 
+  useEffect(() => {
+    if (
+      !settingsOpen
+      || settingsSection !== "prompts"
+      || !activeConnection
+      || activeGateway?.status !== "online"
+    ) return;
+    void refreshPromptSettings(activeConnection.id, activeProject?.path);
+  }, [
+    activeConnection?.id,
+    activeGateway?.status,
+    activeProject?.path,
+    refreshPromptSettings,
+    settingsOpen,
+    settingsSection,
+  ]);
+
   const deleteConnection = useCallback(async (id: string) => {
     if (!settings) return;
     const connection = settings.connections.find((item) => item.id === id);
@@ -3247,6 +3324,12 @@ function App() {
   const activeRuntimeSettingsState = runtimeSettingsState?.key === activeRuntimeSettingsKey
     ? runtimeSettingsState
     : null;
+  const activePromptSettingsKey = activeConnection
+    ? `${activeConnection.id}\u0000${activeProject?.path ?? ""}`
+    : null;
+  const activePromptSettingsState = promptSettingsState?.key === activePromptSettingsKey
+    ? promptSettingsState
+    : null;
 
   return (
     <div className="app-shell">
@@ -3384,6 +3467,16 @@ function App() {
           onMutateRuntimeSettings={(mutation) => {
             if (!activeConnection) return Promise.reject(new Error("未选择 Gateway"));
             return mutateRuntimeSettings(activeConnection.id, mutation);
+          }}
+          promptSettings={activePromptSettingsState?.data ?? null}
+          promptSettingsLoading={activePromptSettingsState?.loading ?? false}
+          promptSettingsError={activePromptSettingsState?.error ?? null}
+          onRefreshPromptSettings={() => {
+            if (activeConnection) void refreshPromptSettings(activeConnection.id, activeProject?.path);
+          }}
+          onMutatePromptSettings={(mutation) => {
+            if (!activeConnection) return Promise.reject(new Error("未选择 Gateway"));
+            return mutatePromptSettings(activeConnection.id, mutation);
           }}
           onNewProject={beginNewProject}
           onEditProject={setProjectModal}

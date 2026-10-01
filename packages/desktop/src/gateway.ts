@@ -15,6 +15,8 @@ import type {
   GoalState,
   ModelSettingsResponse,
   ModelSettingsMutation,
+  PromptSettingsMutation,
+  PromptSettingsResponse,
   RuntimeSettingsResponse,
   RuntimeSettingsMutation,
   ReasoningEffort,
@@ -393,6 +395,18 @@ export class GatewayApi {
 
   mutateRuntimeSettings(mutation: RuntimeSettingsMutation): Promise<RuntimeSettingsResponse> {
     return this.request("/config/runtime-settings", {
+      method: "POST",
+      body: JSON.stringify(mutation),
+    });
+  }
+
+  promptSettings(cwd?: string): Promise<PromptSettingsResponse> {
+    const query = cwd ? `?${new URLSearchParams({ cwd })}` : "";
+    return this.request(`/config/prompt-settings${query}`);
+  }
+
+  mutatePromptSettings(mutation: PromptSettingsMutation): Promise<PromptSettingsResponse> {
+    return this.request("/config/prompt-settings", {
       method: "POST",
       body: JSON.stringify(mutation),
     });

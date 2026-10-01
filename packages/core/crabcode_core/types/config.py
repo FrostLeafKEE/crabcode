@@ -285,6 +285,53 @@ class ToolLoadingSettings(BaseModel):
     pinned_tools: list[str] = Field(default_factory=list)
 
 
+class PromptTemplateConfig(BaseModel):
+    """A named system-prompt template. Blank sections mean the built-in default."""
+
+    id: str
+    name: str
+    sections: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("id", "name")
+    @classmethod
+    def _required_name(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("must not be blank")
+        if len(text) > 80:
+            raise ValueError("is too long")
+        return text
+
+    @field_validator("sections", mode="before")
+    @classmethod
+    def _section_text(cls, value: Any) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+        cleaned: dict[str, str] = {}
+        for key, item in value.items():
+            if isinstance(key, str) and isinstance(item, str):
+                cleaned[key] = item
+        return cleaned
+
+
+class UserAppendPromptConfig(BaseModel):
+    """A saved prompt that can be appended to the user message sent to the model."""
+
+    id: str
+    text: str
+    enabled: bool = False
+
+    @field_validator("id", "text")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("must not be blank")
+        if len(text) > 8000:
+            raise ValueError("is too long")
+        return text
+
+
 class CrabCodeSettings(BaseModel):
     """Full settings.json schema."""
     permissions: PermissionsSettings = Field(default_factory=PermissionsSettings)
@@ -302,6 +349,9 @@ class CrabCodeSettings(BaseModel):
     language: str | None = None
     output_style: str | None = None
     prompt_profile: dict[str, Any] | None = None
+    prompt_templates: list[PromptTemplateConfig] = Field(default_factory=list)
+    active_prompt_template: str | None = None
+    user_append_prompts: list[UserAppendPromptConfig] = Field(default_factory=list)
     extra_tools: list[str] = Field(default_factory=list)
     tool_loading: ToolLoadingSettings = Field(default_factory=ToolLoadingSettings)
     ultra_mode: bool = False
@@ -325,6 +375,16 @@ class CrabCodeSettings(BaseModel):
     lsp: dict[str, LspServerConfig] | bool = Field(default_factory=dict)
 
     model_config = {"extra": "allow"}
+
+    @field_validator("active_prompt_template", mode="before")
+    @classmethod
+    def _blank_active_prompt_template(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            return text or None
+        return value
 
     @model_validator(mode="after")
     def _resolve_model_groups(self) -> "CrabCodeSettings":

@@ -69,6 +69,10 @@
         "title": "CrabCode：打开扩展设置"
       },
       {
+        "command": "crabcode.openPromptSettings",
+        "title": "CrabCode：打开提示词设置"
+      },
+      {
         "command": "crabcode.connect",
         "title": "CrabCode：连接网关"
       },
@@ -232,6 +236,13 @@
       }
     },
     "menus": {
+      "view/title": [
+        {
+          "command": "crabcode.openPromptSettings",
+          "when": "view == crabcode.chatPanel",
+          "group": "navigation"
+        }
+      ],
       "editor/context": [
         {
           "command": "crabcode.explainCode",

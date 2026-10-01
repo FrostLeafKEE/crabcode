@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, AsyncGenerator, Callable, Coroutine
 
 import httpx
@@ -424,6 +424,8 @@ class QueryParams:
     tool_loading_state: ToolLoadingState | None = None
     on_tools_loaded: Callable[[list[str]], None] | None = None
     pinned_tools: tuple[str, ...] = ()
+    # Checked user prompts. Applied only to the model request, not the transcript.
+    user_append_prompts: list[str] = field(default_factory=list)
 
 
 def _plan_mode_is_active(params: QueryParams) -> bool:
@@ -480,6 +482,66 @@ def _prepend_user_context(
     )
 
     return [meta_msg, *messages]
+
+
+def _user_rules_block(prompts: list[str]) -> str:
+    lines = [text.strip() for text in prompts if text and text.strip()]
+    if not lines:
+        return ""
+    return "<user-rules>\n" + "\n\n".join(lines) + "\n</user-rules>"
+
+
+def _is_conversational_user_message(message: Message) -> bool:
+    role = getattr(message.role, "value", message.role)
+    if role != "user" or message.is_compact_summary:
+        return False
+    if message.origin in {"peer-message", "task-notification"}:
+        return False
+    content = message.content
+    if isinstance(content, str):
+        return True
+    if not content:
+        return False
+    return any(not isinstance(block, ToolResultBlock) for block in content)
+
+
+def _append_user_prompts(messages: list[Message], prompts: list[str]) -> list[Message]:
+    """Append checked prompts to the latest user message in a request copy."""
+    block = _user_rules_block(prompts)
+    if not block:
+        return messages
+    index = next(
+        (
+            position
+            for position in range(len(messages) - 1, -1, -1)
+            if _is_conversational_user_message(messages[position])
+        ),
+        None,
+    )
+    if index is None:
+        return messages
+    cloned = messages[index].model_copy(deep=True)
+    suffix = f"\n\n{block}"
+    if isinstance(cloned.content, str):
+        cloned.content = f"{cloned.content}{suffix}" if cloned.content else block
+    else:
+        blocks = list(cloned.content)
+        text_indexes = [position for position, item in enumerate(blocks) if isinstance(item, TextBlock)]
+        if text_indexes:
+            text_index = text_indexes[-1]
+            current = blocks[text_index]
+            blocks[text_index] = current.model_copy(update={"text": f"{current.text}{suffix}"})
+        else:
+            blocks.append(TextBlock(text=block))
+        cloned.content = blocks
+    copied = list(messages)
+    copied[index] = cloned
+    return copied
+
+
+def _messages_for_model(messages: list[Message], params: QueryParams) -> list[Message]:
+    prepared = _prepend_user_context(messages, params.user_context)
+    return _append_user_prompts(prepared, params.user_append_prompts)
 
 
 def _find_tool(tools: list[Tool], name: str) -> Tool | None:
@@ -1309,7 +1371,7 @@ async def query_loop(
         full_system = _append_system_context(
             params.system_prompt, params.system_context
         )
-        messages_for_api = _prepend_user_context(messages, params.user_context)
+        messages_for_api = _messages_for_model(messages, params)
 
         plan_mode_active = _plan_mode_is_active(params)
         available_tools = [
@@ -1396,10 +1458,7 @@ async def query_loop(
                     system=full_system,
                     tools=tool_schemas,
                 ):
-                    pruned_for_api = _prepend_user_context(
-                        pruned_messages,
-                        params.user_context,
-                    )
+                    pruned_for_api = _messages_for_model(pruned_messages, params)
                     pruned_measurement = await _measure_input(pruned_for_api)
                     if pruned_measurement.tokens <= compact_limit:
                         messages[:] = pruned_messages
@@ -1435,7 +1494,7 @@ async def query_loop(
                     trigger="auto",
                 )
                 if compact_event:
-                    messages_for_api = _prepend_user_context(messages, params.user_context)
+                    messages_for_api = _messages_for_model(messages, params)
                     measurement = await _measure_input(messages_for_api)
                     estimated = measurement.tokens
                     yield compact_event
@@ -1505,7 +1564,7 @@ async def query_loop(
             })
 
         def _turn_complete_event(reason: str, snapshot: list[Message]) -> TurnCompleteEvent:
-            context_messages = _prepend_user_context(snapshot, params.user_context)
+            context_messages = _messages_for_model(snapshot, params)
             context_snapshot = RequestSnapshot.capture(
                 params.api_adapter, model_config, context_messages, full_system, tool_schemas,
             )
@@ -1806,7 +1865,7 @@ async def query_loop(
                             )
                             return
                         yield compact_event
-                        messages_for_api = _prepend_user_context(messages, params.user_context)
+                        messages_for_api = _messages_for_model(messages, params)
                         turn_count -= 1
                         _retry_after_compact = True
                         break
@@ -1886,7 +1945,7 @@ async def query_loop(
                     )
                     return
                 yield compact_event
-                messages_for_api = _prepend_user_context(messages, params.user_context)
+                messages_for_api = _messages_for_model(messages, params)
                 turn_count -= 1
                 continue
             is_network_error = _is_recoverable_api_exception(e)

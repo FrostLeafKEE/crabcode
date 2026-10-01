@@ -347,6 +347,50 @@ class RuntimeSettingsMutationRequest(BaseModel):
         return self
 
 
+class PromptSettingsMutationRequest(BaseModel):
+    """Create templates and choose which saved prompts are appended to user input."""
+
+    action: Literal[
+        "save_template",
+        "delete_template",
+        "set_active_template",
+        "add_user_prompt",
+        "set_user_prompt_enabled",
+        "delete_user_prompt",
+    ]
+    source: Literal["userSettings", "projectSettings", "localSettings"] = "projectSettings"
+    cwd: str | None = None
+    template_id: str | None = None
+    template_name: str | None = None
+    sections: dict[str, str] | None = None
+    prompt_id: str | None = None
+    prompt_text: str | None = None
+    enabled: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_mutation(self) -> "PromptSettingsMutationRequest":
+        if self.action == "save_template":
+            if self.template_name is None or not self.template_name.strip():
+                raise ValueError("template_name is required")
+            self.template_name = self.template_name.strip()
+        elif self.action in {"delete_template", "set_active_template"}:
+            if self.template_id is not None:
+                self.template_id = self.template_id.strip() or None
+            if self.action == "delete_template" and not self.template_id:
+                raise ValueError("template_id is required")
+        elif self.action == "add_user_prompt":
+            if self.prompt_text is None or not self.prompt_text.strip():
+                raise ValueError("prompt_text is required")
+            self.prompt_text = self.prompt_text.strip()
+        else:
+            if self.prompt_id is None or not self.prompt_id.strip():
+                raise ValueError("prompt_id is required")
+            self.prompt_id = self.prompt_id.strip()
+            if self.action == "set_user_prompt_enabled" and self.enabled is None:
+                raise ValueError("enabled is required")
+        return self
+
+
 class GoalRequest(BaseModel):
     action: Literal[
         "set", "edit", "pause", "resume", "complete", "blocked", "clear"
@@ -1078,6 +1122,37 @@ class RuntimeSettingsResponse(BaseModel):
     extra_tools: list[str] = Field(default_factory=list)
     extra_tools_by_source: dict[str, list[str]] = Field(default_factory=dict)
     sources: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    editable_sources: list[ModelSettingsSource] = Field(default_factory=list)
+
+
+class PromptSectionInfo(BaseModel):
+    key: str
+    label: str
+
+
+class PromptTemplateView(BaseModel):
+    id: str
+    name: str
+    sections: dict[str, str] = Field(default_factory=dict)
+    source: str
+
+
+class UserAppendPromptView(BaseModel):
+    id: str
+    text: str
+    enabled: bool = False
+    source: str
+
+
+class PromptSettingsResponse(BaseModel):
+    """Prompt templates and user-input prompts visible from one workspace."""
+
+    cwd: str
+    active_template_id: str | None = None
+    templates: list[PromptTemplateView] = Field(default_factory=list)
+    user_prompts: list[UserAppendPromptView] = Field(default_factory=list)
+    sections: list[PromptSectionInfo] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     editable_sources: list[ModelSettingsSource] = Field(default_factory=list)
 

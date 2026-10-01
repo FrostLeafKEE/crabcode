@@ -666,7 +666,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           }
           break;
         case "openSettings":
-          void vscode.commands.executeCommand("workbench.action.openSettings", "crabcode");
+          void this.chooseSettingsDestination();
           break;
         case "clearMessages":
           void this.clearSessionHistory();
@@ -4432,6 +4432,22 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     for (const msg of queue) {
       void this.view.webview.postMessage(msg);
     }
+  }
+
+  private async chooseSettingsDestination(): Promise<void> {
+    const choice = await vscode.window.showQuickPick(
+      [
+        { label: "提示词", description: "自定义提示词模版，以及追加到用户输入的提示", id: "prompts" },
+        { label: "扩展设置", description: "连接、权限和其他 CrabCode 设置", id: "extension" },
+      ],
+      { title: "CrabCode 设置", placeHolder: "选择要打开的设置" },
+    );
+    if (!choice) return;
+    if (choice.id === "prompts") {
+      await vscode.commands.executeCommand("crabcode.openPromptSettings");
+      return;
+    }
+    await vscode.commands.executeCommand("workbench.action.openSettings", "crabcode");
   }
 
   // ── HTML ───────────────────────────────────────────────────────

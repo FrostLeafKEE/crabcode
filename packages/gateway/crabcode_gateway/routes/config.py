@@ -32,8 +32,13 @@ from crabcode_gateway.schemas import (
     ModelSettingsMutationRequest,
     ModelSettingsResponse,
     ModelSettingsSource,
+    PromptSectionInfo,
+    PromptSettingsMutationRequest,
+    PromptSettingsResponse,
+    PromptTemplateView,
     RuntimeSettingsMutationRequest,
     RuntimeSettingsResponse,
+    UserAppendPromptView,
     SetPermissionModeRequest,
     SetReasoningEffortRequest,
     SetUltraModeRequest,
@@ -771,6 +776,277 @@ def _mutate_runtime_settings(
     _atomic_write_settings(path, current)
     ConfigManager(cwd=cwd).reset_cache()
     return _runtime_settings_from_files(cwd)
+
+
+def _prompt_source_map(manager: ConfigManager, key: str) -> dict[str, str]:
+    from crabcode_core.config.manager import SETTING_SOURCES
+
+    sources: dict[str, str] = {}
+    for source_name in SETTING_SOURCES:
+        raw = manager.get_settings_for_source(source_name) or {}
+        items = raw.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip():
+                sources[item["id"].strip()] = source_name
+    return sources
+
+
+def _editable_prompt_sources(cwd: str) -> list[ModelSettingsSource]:
+    manager = ConfigManager(cwd=cwd)
+    editable_sources = []
+    for source_name, label in (
+        ("userSettings", "用户配置"),
+        ("projectSettings", "项目配置"),
+        ("localSettings", "项目本地配置"),
+    ):
+        source_path = manager.settings_file_paths.get(source_name)
+        if not source_path:
+            continue
+        path = Path(source_path)
+        editable_sources.append(
+            ModelSettingsSource(
+                id=source_name,
+                label=label,
+                path=str(path),
+                exists=path.is_file(),
+                writable=_is_writable_settings_path(path),
+            )
+        )
+    return editable_sources
+
+
+def _prompt_settings_from_files(cwd: str) -> PromptSettingsResponse:
+    from crabcode_core.prompts.library import PROMPT_SECTIONS, last_by_id
+
+    manager = ConfigManager(cwd=cwd)
+    settings = manager.load()
+    templates = last_by_id(list(settings.prompt_templates))
+    user_prompts = last_by_id(list(settings.user_append_prompts))
+    template_sources = _prompt_source_map(manager, "prompt_templates")
+    prompt_sources = _prompt_source_map(manager, "user_append_prompts")
+    template_ids = {item.id for item in templates}
+    active = settings.active_prompt_template
+    warnings: list[str] = []
+    if active and active not in template_ids:
+        warnings.append("已选择的提示词模版不存在，已回退为默认。")
+        active = None
+    return PromptSettingsResponse(
+        cwd=cwd,
+        active_template_id=active,
+        templates=[
+            PromptTemplateView(
+                id=item.id,
+                name=item.name,
+                sections=dict(item.sections),
+                source=template_sources.get(item.id, "userSettings"),
+            )
+            for item in templates
+        ],
+        user_prompts=[
+            UserAppendPromptView(
+                id=item.id,
+                text=item.text,
+                enabled=item.enabled,
+                source=prompt_sources.get(item.id, "userSettings"),
+            )
+            for item in user_prompts
+        ],
+        sections=[PromptSectionInfo(key=key, label=label) for key, label in PROMPT_SECTIONS],
+        warnings=warnings,
+        editable_sources=_editable_prompt_sources(cwd),
+    )
+
+
+def _stored_prompt_items(current: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    items = current.get(key)
+    if items is None:
+        items = []
+        current[key] = items
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        raise HTTPException(status_code=422, detail=f"{key} must be a list of objects")
+    return items
+
+
+def _clean_prompt_sections(sections: dict[str, str] | None) -> dict[str, str]:
+    from crabcode_core.prompts.library import PROMPT_SECTION_KEYS
+
+    cleaned: dict[str, str] = {}
+    for key, value in (sections or {}).items():
+        if key not in PROMPT_SECTION_KEYS or not isinstance(value, str):
+            continue
+        text = value.strip()
+        if not text:
+            continue
+        if len(text) > 20000:
+            raise HTTPException(status_code=422, detail=f"{key} is too long")
+        cleaned[key] = text
+    return cleaned
+
+
+_PROMPT_LAYERS = ("localSettings", "projectSettings", "userSettings")
+
+
+def _layers_containing_prompt(cwd: str, key: str, item_id: str) -> list[tuple[str, Path, dict[str, Any], list[Any]]]:
+    found = []
+    for source in _PROMPT_LAYERS:
+        path = _settings_mutation_path(cwd, source)
+        if not path.is_file():
+            continue
+        current = _read_settings_object(path)
+        items = current.get(key)
+        if not isinstance(items, list):
+            continue
+        if any(isinstance(item, dict) and item.get("id") == item_id for item in items):
+            found.append((source, path, current, items))
+    return found
+
+
+def _remove_prompt_id(cwd: str, key: str, item_id: str, *, clear_active: bool) -> None:
+    layers = _layers_containing_prompt(cwd, key, item_id)
+    if not layers:
+        label = "模版" if key == "prompt_templates" else "用户提示"
+        raise HTTPException(status_code=404, detail=f"找不到要删除的{label}")
+    for _source, path, current, items in layers:
+        kept = [item for item in items if not (isinstance(item, dict) and item.get("id") == item_id)]
+        if kept:
+            current[key] = kept
+        else:
+            current.pop(key, None)
+        if clear_active and current.get("active_prompt_template") == item_id:
+            current["active_prompt_template"] = None
+        _atomic_write_settings(path, current)
+
+
+def _set_user_prompt_enabled(cwd: str, prompt_id: str, enabled: bool) -> None:
+    layers = _layers_containing_prompt(cwd, "user_append_prompts", prompt_id)
+    if not layers:
+        raise HTTPException(status_code=404, detail="找不到要更新的用户提示")
+    for _source, path, current, items in layers:
+        for item in items:
+            if isinstance(item, dict) and item.get("id") == prompt_id:
+                item["enabled"] = enabled
+        current["user_append_prompts"] = items
+        _atomic_write_settings(path, current)
+
+
+def _mutate_prompt_settings(
+    request: Request,
+    req: PromptSettingsMutationRequest,
+) -> PromptSettingsResponse:
+    import uuid
+
+    from crabcode_core.types.config import PromptTemplateConfig, UserAppendPromptConfig
+
+    cwd = _resolve_model_settings_cwd(request, req.cwd)
+    path = _settings_mutation_path(cwd, req.source)
+    current = _read_settings_object(path)
+
+    if req.action == "save_template":
+        name = req.template_name or ""
+        if name == "默认":
+            raise HTTPException(status_code=400, detail="模版名称不能是「默认」")
+        sections = _clean_prompt_sections(req.sections)
+        template_id = (req.template_id or "").strip() or uuid.uuid4().hex
+        preview = _prompt_settings_from_files(cwd)
+        if any(item.name == name and item.id != template_id for item in preview.templates):
+            raise HTTPException(status_code=409, detail=f"模版「{name}」已存在")
+        try:
+            stored = PromptTemplateConfig(id=template_id, name=name, sections=sections).model_dump()
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"提示词模版无效：{exc}") from exc
+        templates = _stored_prompt_items(current, "prompt_templates")
+        if len(templates) >= 40 and all(item.get("id") != template_id for item in templates):
+            raise HTTPException(status_code=422, detail="提示词模版数量已达上限")
+        replaced = False
+        for index, item in enumerate(templates):
+            if item.get("id") == template_id:
+                templates[index] = stored
+                replaced = True
+                break
+        if not replaced:
+            templates.append(stored)
+        current["active_prompt_template"] = template_id
+    elif req.action == "delete_template":
+        _remove_prompt_id(cwd, "prompt_templates", req.template_id or "", clear_active=True)
+        ConfigManager(cwd=cwd).reset_cache()
+        return _prompt_settings_from_files(cwd)
+    elif req.action == "set_active_template":
+        template_id = req.template_id
+        if template_id:
+            preview = _prompt_settings_from_files(cwd)
+            if template_id not in {item.id for item in preview.templates}:
+                raise HTTPException(status_code=400, detail="提示词模版不存在")
+        current["active_prompt_template"] = template_id
+    elif req.action == "add_user_prompt":
+        prompts = _stored_prompt_items(current, "user_append_prompts")
+        if len(prompts) >= 80:
+            raise HTTPException(status_code=422, detail="用户提示数量已达上限")
+        try:
+            stored = UserAppendPromptConfig(
+                id=uuid.uuid4().hex,
+                text=req.prompt_text or "",
+                enabled=True,
+            ).model_dump()
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"用户提示无效：{exc}") from exc
+        prompts.append(stored)
+    elif req.action == "set_user_prompt_enabled":
+        _set_user_prompt_enabled(cwd, req.prompt_id or "", bool(req.enabled))
+        ConfigManager(cwd=cwd).reset_cache()
+        return _prompt_settings_from_files(cwd)
+    else:
+        _remove_prompt_id(cwd, "user_append_prompts", req.prompt_id or "", clear_active=False)
+        ConfigManager(cwd=cwd).reset_cache()
+        return _prompt_settings_from_files(cwd)
+
+    _atomic_write_settings(path, current)
+    ConfigManager(cwd=cwd).reset_cache()
+    return _prompt_settings_from_files(cwd)
+
+
+def _reload_prompt_settings_for_source(request: Request, cwd: str, source: str) -> None:
+    sessions = getattr(request.app.state, "sessions", None)
+    if not isinstance(sessions, dict):
+        return
+    changed_path = _settings_mutation_path(cwd, source).resolve()
+    for session in sessions.values():
+        session_cwd = getattr(session, "cwd", None)
+        if not isinstance(session_cwd, str) or not session_cwd:
+            continue
+        session_path = ConfigManager(cwd=session_cwd).settings_file_paths.get(source)
+        if not session_path or Path(session_path).resolve() != changed_path:
+            continue
+        reload_prompt = getattr(session, "reload_prompt_settings", None)
+        if callable(reload_prompt):
+            reload_prompt()
+
+
+@router.get("/config/prompt-settings", response_model=PromptSettingsResponse)
+async def get_prompt_settings(
+    request: Request,
+    cwd: str | None = None,
+) -> PromptSettingsResponse:
+    """Inspect prompt templates and prompts that can be appended to user input."""
+    return _prompt_settings_from_files(_resolve_model_settings_cwd(request, cwd))
+
+
+@router.post("/config/prompt-settings", response_model=PromptSettingsResponse)
+async def mutate_prompt_settings(
+    req: PromptSettingsMutationRequest,
+    request: Request,
+) -> PromptSettingsResponse:
+    """Save a prompt template or change which user prompts are appended."""
+    lock = getattr(request.app.state, "model_settings_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        request.app.state.model_settings_lock = lock
+    async with lock:
+        async with get_session_lock(request.app.state):
+            result = _mutate_prompt_settings(request, req)
+            _reload_prompt_settings_for_source(request, result.cwd, req.source)
+            return result
 
 
 @router.get("/config/models", response_model=list[ModelInfo])
