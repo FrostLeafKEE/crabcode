@@ -1,5 +1,13 @@
-import { AlertTriangle, LoaderCircle, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { AlertTriangle, Download, LoaderCircle, Plus, RefreshCw, Search, Trash2, Upload } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { savePromptExport } from "./native";
+import {
+  parsePromptTemplateFile,
+  promptTemplateFilename,
+  serializePromptTemplate,
+  serializePromptTemplates,
+  type PortablePromptTemplate,
+} from "./promptTemplateFile";
 import type {
   ConnectionPreset,
   GatewayViewState,
@@ -48,6 +56,39 @@ function sameDraft(left: Record<string, string>, right: Record<string, string>, 
   return keys.every((key) => (left[key] ?? "") === (right[key] ?? ""));
 }
 
+function sectionsForExport(draft: Record<string, string>, keys: string[]): Record<string, string> {
+  const sections: Record<string, string> = {};
+  const ordered = [...keys, ...Object.keys(draft).filter((key) => !keys.includes(key))];
+  for (const key of ordered) {
+    const text = (draft[key] ?? "").trim();
+    if (text) sections[key] = text;
+  }
+  return sections;
+}
+
+function readFileText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => reject(reader.error ?? new Error("无法读取 JSON 文件"));
+    reader.readAsText(file);
+  });
+}
+
+async function downloadPromptFile(filename: string, text: string): Promise<string | null> {
+  const bytes = new TextEncoder().encode(text);
+  const nativePath = await savePromptExport(filename, bytes);
+  if (nativePath) return nativePath;
+  const blob = new Blob([bytes], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  return null;
+}
+
 export function PromptSettingsPanel({
   activeConnection,
   activeProject,
@@ -68,7 +109,9 @@ export function PromptSettingsPanel({
   const [templateQuery, setTemplateQuery] = useState("");
   const [promptQuery, setPromptQuery] = useState("");
   const [mutationError, setMutationError] = useState<string | null>(null);
+  const [transferMessage, setTransferMessage] = useState<string | null>(null);
   const [mutationBusy, setMutationBusy] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const sourceOptions = editableSources(data);
   const writableSources = useMemo(() => sourceOptions.filter((item) => item.writable), [sourceOptions]);
   const online = gateway?.status === "online";
@@ -109,6 +152,7 @@ export function PromptSettingsPanel({
     if (!onMutate) return;
     setMutationBusy(true);
     setMutationError(null);
+    setTransferMessage(null);
     try {
       await onMutate({ ...mutation, cwd: activeProject?.path });
     } catch (reason) {
@@ -176,6 +220,93 @@ export function PromptSettingsPanel({
       });
     } catch {
       // The mutation banner contains the remote error.
+    }
+  };
+
+  const templatesForExport = (): PortablePromptTemplate[] => {
+    const saved: PortablePromptTemplate[] = (data?.templates ?? []).map((item) => (
+      item.id === selectedId
+        ? {
+          id: item.id,
+          name: templateName.trim() || item.name,
+          sections: sectionsForExport(draft, sectionKeys),
+        }
+        : { id: item.id, name: item.name, sections: item.sections }
+    ));
+    if (selectedId === DEFAULT_TEMPLATE && templateName.trim()) {
+      saved.push({
+        name: templateName.trim(),
+        sections: sectionsForExport(draft, sectionKeys),
+      });
+    }
+    return saved;
+  };
+
+  const exportTemplates = async (kind: "current" | "all") => {
+    setTransferMessage(null);
+    const currentName = templateName.trim();
+    if (kind === "current" && !currentName) {
+      setMutationError("请先填写模版名称");
+      return;
+    }
+    const templates = kind === "current"
+      ? [{
+        id: selectedId === DEFAULT_TEMPLATE ? undefined : selectedId,
+        name: currentName,
+        sections: sectionsForExport(draft, sectionKeys),
+      }]
+      : templatesForExport();
+    if (templates.length === 0) {
+      setMutationError("还没有可导出的模版");
+      return;
+    }
+    try {
+      const parsed = parsePromptTemplateFile(JSON.stringify(kind === "all" ? { templates } : templates[0]));
+      const text = kind === "all" ? serializePromptTemplates(parsed) : serializePromptTemplate(parsed[0]);
+      const filename = kind === "all" ? "prompt-templates.json" : promptTemplateFilename(parsed[0].name);
+      const path = await downloadPromptFile(filename, text);
+      setMutationError(null);
+      setTransferMessage(path
+        ? `已导出到 ${path}`
+        : kind === "all" ? `已导出 ${parsed.length} 个模版` : `已导出 ${parsed[0].name}`);
+    } catch (reason) {
+      setMutationError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const importTemplateFile = async (file: File) => {
+    if (!canEdit) return;
+    if (dirty && !window.confirm("当前修改尚未保存为模版，导入后会丢弃这些修改。")) return;
+    setTransferMessage(null);
+    if (file.size > 12 * 1024 * 1024) {
+      setMutationError("JSON 文件过大");
+      return;
+    }
+    let templates: PortablePromptTemplate[];
+    try {
+      templates = parsePromptTemplateFile(await readFileText(file));
+    } catch (reason) {
+      setMutationError(reason instanceof Error ? reason.message : String(reason));
+      return;
+    }
+    let imported = 0;
+    try {
+      for (const template of templates) {
+        await mutate({
+          action: "save_template",
+          source,
+          template_id: template.id,
+          template_name: template.name,
+          sections: template.sections,
+        });
+        imported += 1;
+      }
+      setTransferMessage(imported === 1 ? `已导入 ${templates[0].name}` : `已导入 ${imported} 个模版`);
+    } catch (reason) {
+      if (imported > 0) {
+        const detail = reason instanceof Error ? reason.message : String(reason);
+        setMutationError(`已导入 ${imported} 个，随后失败：${detail}`);
+      }
     }
   };
 
@@ -269,6 +400,9 @@ export function PromptSettingsPanel({
       {mutationError && mutationError !== error && (
         <div className="settings-inline-note model-settings-error"><AlertTriangle />{mutationError}</div>
       )}
+      {transferMessage && (
+        <div className="settings-inline-note prompt-transfer-note">{transferMessage}</div>
+      )}
       {data?.warnings.map((warning) => (
         <div className="settings-inline-note" key={warning}><AlertTriangle />{warning}</div>
       ))}
@@ -282,7 +416,7 @@ export function PromptSettingsPanel({
             <div className="settings-subsection-heading">
               <div>
                 <h3 id="prompt-template-title">自定义提示词模版</h3>
-                <p>留空的段落使用内置默认。选择「默认」时不套用模版；若配置里已有 prompt_profile，仍会沿用它。</p>
+                <p>留空的段落使用内置默认。选择「默认」时不套用模版；若配置里已有 prompt_profile，仍会沿用它。导入和导出走 JSON，写入当前选择的配置层。</p>
               </div>
             </div>
             <div className="prompt-template-layout">
@@ -392,6 +526,46 @@ export function PromptSettingsPanel({
                       <span>另存为新模版</span>
                     </button>
                   )}
+                  <button
+                    className="settings-command"
+                    type="button"
+                    disabled={mutationBusy}
+                    onClick={() => void exportTemplates("current")}
+                  >
+                    <Download />
+                    <span>导出 JSON</span>
+                  </button>
+                  <button
+                    className="settings-command"
+                    type="button"
+                    aria-label="导出全部提示词模版 JSON"
+                    disabled={mutationBusy}
+                    onClick={() => void exportTemplates("all")}
+                  >
+                    <Download />
+                    <span>导出全部</span>
+                  </button>
+                  <button
+                    className="settings-command"
+                    type="button"
+                    disabled={!canEdit || mutationBusy}
+                    onClick={() => importInputRef.current?.click()}
+                  >
+                    <Upload />
+                    <span>导入 JSON</span>
+                  </button>
+                  <input
+                    ref={importInputRef}
+                    type="file"
+                    accept="application/json,.json"
+                    hidden
+                    aria-label="导入提示词模版 JSON"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = "";
+                      if (file) void importTemplateFile(file);
+                    }}
+                  />
                 </div>
               </div>
             </div>

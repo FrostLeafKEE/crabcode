@@ -447,6 +447,11 @@ export async function saveThemeExport(filename: string, bytes: Uint8Array): Prom
   return invoke<string>("save_theme_export", { filename, bytes: Array.from(bytes) });
 }
 
+export async function savePromptExport(filename: string, bytes: Uint8Array): Promise<string | null> {
+  if (!isDesktopShell()) return null;
+  return invoke<string>("save_prompt_export", { filename, bytes: Array.from(bytes) });
+}
+
 export async function storeCredential(reference: string, password: string): Promise<void> {
   if (isDesktopShell()) {
     await invoke("store_credential", { credentialRef: reference, password });

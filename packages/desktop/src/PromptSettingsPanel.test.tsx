@@ -6,6 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PromptSettingsPanel } from "./PromptSettingsPanel";
 import type { GatewayViewState, PromptSettingsMutation, PromptSettingsResponse } from "./types";
 
+const { savePromptExport } = vi.hoisted(() => ({
+  savePromptExport: vi.fn(async (_filename: string, _bytes: Uint8Array) => "/tmp/客服.json"),
+}));
+
+vi.mock("./native", () => ({
+  savePromptExport,
+}));
+
 const gateway: GatewayViewState = {
   status: "online",
   error: null,
@@ -61,6 +69,7 @@ describe("PromptSettingsPanel", () => {
   let root: Root;
 
   beforeEach(() => {
+    savePromptExport.mockClear();
     (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -200,5 +209,103 @@ describe("PromptSettingsPanel", () => {
     await act(async () => setValue(search, "客服"));
     const options = Array.from(container.querySelectorAll('[aria-label="使用的提示词模版"] [role="option"]'));
     expect(options.map((option) => option.textContent ?? "")).toEqual([expect.stringContaining("客服")]);
+  });
+
+  it("exports the current template and every saved template as JSON", async () => {
+    const onMutate = vi.fn(async (_mutation: PromptSettingsMutation) => undefined);
+    await act(async () => {
+      root.render(
+        <PromptSettingsPanel
+          activeConnection={null}
+          activeProject={null}
+          gateway={gateway}
+          data={data}
+          loading={false}
+          error={null}
+          onRefresh={() => undefined}
+          onMutate={onMutate}
+        />,
+      );
+    });
+
+    const click = async (label: string) => {
+      const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.includes(label));
+      await act(async () => button?.click());
+    };
+    await click("客服");
+    await click("导出 JSON");
+
+    const current = JSON.parse(new TextDecoder().decode(savePromptExport.mock.calls[0][1])) as {
+      id: string;
+      name: string;
+      sections: Record<string, string>;
+    };
+    expect(savePromptExport.mock.calls[0][0]).toBe("客服.json");
+    expect(current).toEqual({ id: "care", name: "客服", sections: { intro: "custom identity" } });
+    expect(container.textContent).toContain("已导出到 /tmp/客服.json");
+
+    await click("导出全部");
+    const all = JSON.parse(new TextDecoder().decode(savePromptExport.mock.calls[1][1])) as {
+      templates: Array<{ id: string; name: string }>;
+    };
+    expect(savePromptExport.mock.calls[1][0]).toBe("prompt-templates.json");
+    expect(all.templates).toEqual([{ id: "care", name: "客服", sections: { intro: "custom identity" } }]);
+  });
+
+  it("imports a template object and a template list from JSON", async () => {
+    const onMutate = vi.fn(async (_mutation: PromptSettingsMutation) => undefined);
+    await act(async () => {
+      root.render(
+        <PromptSettingsPanel
+          activeConnection={null}
+          activeProject={null}
+          gateway={gateway}
+          data={data}
+          loading={false}
+          error={null}
+          onRefresh={() => undefined}
+          onMutate={onMutate}
+        />,
+      );
+    });
+
+    const input = container.querySelector<HTMLInputElement>('[aria-label="导入提示词模版 JSON"]')!;
+    const choose = async (contents: string, filename: string) => {
+      const file = new File([contents], filename, { type: "application/json" });
+      await act(async () => {
+        Object.defineProperty(input, "files", { configurable: true, value: [file] });
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    };
+
+    await choose(JSON.stringify({ name: "值班", sections: { intro: "先结论", extra: "  " } }), "值班.json");
+    expect(onMutate).toHaveBeenLastCalledWith(expect.objectContaining({
+      action: "save_template",
+      source: "userSettings",
+      template_name: "值班",
+      sections: { intro: "先结论" },
+    }));
+    expect(onMutate.mock.calls.at(-1)?.[0].template_id).toBeUndefined();
+    expect(container.textContent).toContain("已导入 值班");
+
+    await choose(JSON.stringify({
+      templates: [
+        { id: "care", name: "客服", sections: { intro: "更新" } },
+        { name: "夜班", sections: { system: "简短" } },
+      ],
+    }), "prompt-templates.json");
+    expect(onMutate).toHaveBeenCalledWith(expect.objectContaining({
+      action: "save_template",
+      template_id: "care",
+      template_name: "客服",
+      sections: { intro: "更新" },
+    }));
+    expect(onMutate).toHaveBeenLastCalledWith(expect.objectContaining({
+      action: "save_template",
+      template_name: "夜班",
+      sections: { system: "简短" },
+    }));
+    expect(container.textContent).toContain("已导入 2 个模版");
   });
 });

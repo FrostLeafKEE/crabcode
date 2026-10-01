@@ -11023,7 +11023,8 @@ html[data-theme="light"] .model-detail-field > small.default {
   height: 15px;
 }
 
-.settings-inline-note.model-test-success {
+.settings-inline-note.model-test-success,
+.settings-inline-note.prompt-transfer-note {
   border-color: color-mix(in srgb, var(--green) 40%, transparent);
   background: color-mix(in srgb, var(--green) 15%, transparent);
   color: var(--green);

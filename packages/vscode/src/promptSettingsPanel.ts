@@ -1,4 +1,11 @@
+import * as os from "os";
 import * as vscode from "vscode";
+import {
+  parsePromptTemplateFile,
+  promptTemplateFilename,
+  serializePromptTemplate,
+  serializePromptTemplates,
+} from "./promptTemplateFile";
 
 interface PromptSection {
   key: string;
@@ -107,9 +114,18 @@ export class PromptSettingsPanel {
     this.panel.webview.html = html();
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
     this.panel.webview.onDidReceiveMessage(
-      (message: { type?: string; mutation?: PromptMutation }) => {
+      (message: {
+        type?: string;
+        mutation?: PromptMutation;
+        source?: string;
+        template?: unknown;
+        templates?: unknown;
+      }) => {
         if (message?.type === "refresh") void this.refresh();
         if (message?.type === "mutate" && message.mutation) void this.mutate(message.mutation);
+        if (message?.type === "export-current") void this.exportTemplates("current", message.template);
+        if (message?.type === "export-all") void this.exportTemplates("all", message.templates);
+        if (message?.type === "import" && message.source) void this.importTemplates(message.source);
       },
       null,
       this.disposables,
@@ -139,14 +155,81 @@ export class PromptSettingsPanel {
 
   private async mutate(mutation: PromptMutation): Promise<void> {
     try {
-      const response = await fetch(gatewayUrl("/config/prompt-settings"), {
-        method: "POST",
-        headers: { ...gatewayHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ ...mutation, cwd: workspaceCwd() }),
+      await this.saveMutation(mutation);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.panel.webview.postMessage({ type: "error", message });
+    }
+  }
+
+  private async saveMutation(mutation: PromptMutation): Promise<void> {
+    const response = await fetch(gatewayUrl("/config/prompt-settings"), {
+      method: "POST",
+      headers: { ...gatewayHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ ...mutation, cwd: workspaceCwd() }),
+    });
+    if (!response.ok) throw new Error(await readError(response));
+    const data = await response.json() as PromptSettingsPayload;
+    await this.panel.webview.postMessage({ type: "state", data });
+  }
+
+  private async exportTemplates(kind: "current" | "all", payload: unknown): Promise<void> {
+    try {
+      const wrapped = kind === "all" ? { templates: payload } : payload;
+      const templates = parsePromptTemplateFile(JSON.stringify(wrapped));
+      const text = kind === "all" ? serializePromptTemplates(templates) : serializePromptTemplate(templates[0]);
+      const filename = kind === "all" ? "prompt-templates.json" : promptTemplateFilename(templates[0].name);
+      const folder = vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(os.homedir());
+      const uri = await vscode.window.showSaveDialog({
+        title: kind === "all" ? "导出全部提示词模版" : "导出提示词模版",
+        defaultUri: vscode.Uri.joinPath(folder, filename),
+        filters: { JSON: ["json"] },
+        saveLabel: "导出",
       });
-      if (!response.ok) throw new Error(await readError(response));
-      const data = await response.json() as PromptSettingsPayload;
-      await this.panel.webview.postMessage({ type: "state", data });
+      if (!uri) return;
+      await vscode.workspace.fs.writeFile(uri, Buffer.from(text, "utf8"));
+      await this.panel.webview.postMessage({ type: "notice", message: `已导出到 ${uri.fsPath}` });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.panel.webview.postMessage({ type: "error", message });
+    }
+  }
+
+  private async importTemplates(source: string): Promise<void> {
+    if (source !== "userSettings" && source !== "projectSettings" && source !== "localSettings") {
+      await this.panel.webview.postMessage({ type: "error", message: "请选择要写入的配置层" });
+      return;
+    }
+    const picked = await vscode.window.showOpenDialog({
+      title: "导入提示词模版",
+      canSelectMany: false,
+      openLabel: "导入",
+      filters: { JSON: ["json"] },
+    });
+    if (!picked?.length) return;
+    try {
+      const bytes = await vscode.workspace.fs.readFile(picked[0]);
+      const templates = parsePromptTemplateFile(new TextDecoder("utf-8").decode(bytes));
+      let imported = 0;
+      try {
+        for (const template of templates) {
+          await this.saveMutation({
+            action: "save_template",
+            source,
+            template_id: template.id,
+            template_name: template.name,
+            sections: template.sections,
+          });
+          imported += 1;
+        }
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        const message = imported > 0 ? `已导入 ${imported} 个，随后失败：${detail}` : detail;
+        await this.panel.webview.postMessage({ type: "error", message });
+        return;
+      }
+      const message = templates.length === 1 ? `已导入 ${templates[0].name}` : `已导入 ${templates.length} 个模版`;
+      await this.panel.webview.postMessage({ type: "notice", message });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await this.panel.webview.postMessage({ type: "error", message });
@@ -179,6 +262,7 @@ function html(): string {
   button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
   button:disabled { opacity: .5; cursor: default; }
   .note, .error { margin-top: 10px; padding: 8px 10px; border-radius: 4px; }
+  .note { background: var(--vscode-textBlockQuote-background); }
   .error { background: var(--vscode-inputValidation-errorBackground); color: var(--vscode-errorForeground); }
   ul { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   li { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border-radius: 6px; background: var(--vscode-input-background); }
@@ -204,7 +288,7 @@ function html(): string {
   </div>
   <section>
     <h2>自定义提示词模版</h2>
-    <p>留空的段落使用内置默认。第一个选项是「默认」，未选择模版时也使用它。若配置里已有 prompt_profile，选择默认时仍会沿用它。</p>
+    <p>留空的段落使用内置默认。第一个选项是「默认」，未选择模版时也使用它。若配置里已有 prompt_profile，选择默认时仍会沿用它。导入和导出走 JSON，写入当前选择的配置层。</p>
     <label class="field">使用模版
       <select id="template"></select>
     </label>
@@ -216,6 +300,9 @@ function html(): string {
       <button type="button" class="primary" id="save">保存为模版</button>
       <button type="button" id="save-as">另存为新模版</button>
       <button type="button" id="remove-template">删除模版</button>
+      <button type="button" id="export">导出 JSON</button>
+      <button type="button" id="export-all">导出全部</button>
+      <button type="button" id="import">导入 JSON</button>
     </div>
   </section>
   <section>
@@ -366,6 +453,7 @@ function html(): string {
         prompts.append(row);
       });
       const locked = sources.length === 0;
+      document.getElementById("import").disabled = locked;
       saveButton.disabled = locked;
       saveAsButton.disabled = locked;
       removeButton.disabled = locked || !(selectedTemplate() && sources.some((item) => item.id === selectedTemplate().source));
@@ -430,6 +518,41 @@ function html(): string {
       if (!current || !confirm("删除提示词模版「" + current.name + "」？")) return;
       mutate({ action: "delete_template", source: current.source, template_id: current.id });
     });
+    function cleanedSections() {
+      const sections = {};
+      Object.keys(draft).forEach((key) => {
+        const text = (draft[key] || "").trim();
+        if (text) sections[key] = text;
+      });
+      return sections;
+    }
+    function currentTemplate() {
+      const template = { name: nameInput.value.trim(), sections: cleanedSections() };
+      if (selectedId !== DEFAULT_ID) template.id = selectedId;
+      return template;
+    }
+    document.getElementById("export").addEventListener("click", () => {
+      if (!nameInput.value.trim()) { showError("请先填写模版名称"); return; }
+      clearError();
+      vscode.postMessage({ type: "export-current", template: currentTemplate() });
+    });
+    document.getElementById("export-all").addEventListener("click", () => {
+      const templates = (state ? state.templates : []).map((item) => {
+        if (item.id === selectedId) {
+          return { id: item.id, name: nameInput.value.trim() || item.name, sections: cleanedSections() };
+        }
+        return { id: item.id, name: item.name, sections: item.sections || {} };
+      });
+      if (selectedId === DEFAULT_ID && nameInput.value.trim()) templates.push(currentTemplate());
+      if (!templates.length) { showError("还没有可导出的模版"); return; }
+      clearError();
+      vscode.postMessage({ type: "export-all", templates });
+    });
+    document.getElementById("import").addEventListener("click", () => {
+      if (dirty() && !confirm("当前修改尚未保存为模版，导入后会丢弃这些修改。")) return;
+      clearError();
+      vscode.postMessage({ type: "import", source: currentSource() });
+    });
     document.getElementById("add").addEventListener("click", () => {
       const text = document.getElementById("prompt-text").value.trim();
       if (!text) { showError("用户提示不能为空"); return; }
@@ -442,6 +565,11 @@ function html(): string {
     });
     window.addEventListener("message", (event) => {
       const message = event.data || {};
+      if (message.type === "notice") {
+        banner.innerHTML = '<div class="note"></div>';
+        banner.firstChild.textContent = message.message || "";
+        return;
+      }
       if (message.type === "error") {
         showError(message.message || "读取提示词设置失败");
         status.textContent = "读取失败";

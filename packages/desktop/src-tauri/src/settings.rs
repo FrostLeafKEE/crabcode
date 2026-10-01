@@ -208,7 +208,7 @@ pub fn save_desktop_settings(settings: Value) -> Result<(), String> {
     Ok(())
 }
 
-fn safe_export_filename(filename: &str) -> bool {
+fn safe_download_basename(filename: &str) -> bool {
     let stem = filename
         .split('.')
         .next()
@@ -228,7 +228,48 @@ fn safe_export_filename(filename: &str) -> bool {
             .file_name()
             .and_then(|value| value.to_str())
             == Some(filename)
+}
+
+fn safe_export_filename(filename: &str) -> bool {
+    safe_download_basename(filename)
         && (filename.ends_with(".crabtheme.json") || filename.ends_with(".crabskin"))
+}
+
+fn safe_prompt_export_filename(filename: &str) -> bool {
+    safe_download_basename(filename)
+        && filename.ends_with(".json")
+        && !filename.ends_with(".crabtheme.json")
+}
+
+fn persist_download(filename: &str, bytes: &[u8], suffix: &str, kind: &str) -> Result<String, String> {
+    let directory = dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| "Unable to locate a Downloads directory".to_string())?;
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Unable to create the export directory: {error}"))?;
+    let stem = filename
+        .strip_suffix(suffix)
+        .ok_or_else(|| format!("{kind} filename is invalid"))?;
+    let mut destination = directory.join(filename);
+    for index in 1..10_000 {
+        if !destination.exists() {
+            break;
+        }
+        destination = directory.join(format!("{stem}-{index}{suffix}"));
+    }
+    if destination.exists() {
+        return Err(format!("Unable to allocate a unique {kind} filename"));
+    }
+    let mut temporary = tempfile::NamedTempFile::new_in(&directory)
+        .map_err(|error| format!("Unable to create a temporary export: {error}"))?;
+    temporary
+        .write_all(bytes)
+        .and_then(|_| temporary.as_file_mut().sync_all())
+        .map_err(|error| format!("Unable to write the {kind}: {error}"))?;
+    temporary
+        .persist(&destination)
+        .map_err(|error| format!("Unable to save the {kind}: {}", error.error))?;
+    Ok(destination.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -239,39 +280,23 @@ pub fn save_theme_export(filename: String, bytes: Vec<u8>) -> Result<String, Str
     if bytes.is_empty() || bytes.len() > 12 * 1024 * 1024 {
         return Err("Theme export must be between 1 byte and 12MB".to_string());
     }
-    let directory = dirs::download_dir()
-        .or_else(dirs::home_dir)
-        .ok_or_else(|| "Unable to locate a Downloads directory".to_string())?;
-    fs::create_dir_all(&directory)
-        .map_err(|error| format!("Unable to create the export directory: {error}"))?;
     let suffix = if filename.ends_with(".crabtheme.json") {
         ".crabtheme.json"
     } else {
         ".crabskin"
     };
-    let stem = filename
-        .strip_suffix(suffix)
-        .ok_or_else(|| "Theme export filename is invalid".to_string())?;
-    let mut destination = directory.join(&filename);
-    for index in 1..10_000 {
-        if !destination.exists() {
-            break;
-        }
-        destination = directory.join(format!("{stem}-{index}{suffix}"));
+    persist_download(&filename, &bytes, suffix, "theme export")
+}
+
+#[tauri::command]
+pub fn save_prompt_export(filename: String, bytes: Vec<u8>) -> Result<String, String> {
+    if !safe_prompt_export_filename(&filename) {
+        return Err("Prompt export filename is invalid".to_string());
     }
-    if destination.exists() {
-        return Err("Unable to allocate a unique theme export filename".to_string());
+    if bytes.is_empty() || bytes.len() > 12 * 1024 * 1024 {
+        return Err("Prompt export must be between 1 byte and 12MB".to_string());
     }
-    let mut temporary = tempfile::NamedTempFile::new_in(&directory)
-        .map_err(|error| format!("Unable to create a temporary export: {error}"))?;
-    temporary
-        .write_all(&bytes)
-        .and_then(|_| temporary.as_file_mut().sync_all())
-        .map_err(|error| format!("Unable to write the theme export: {error}"))?;
-    temporary
-        .persist(&destination)
-        .map_err(|error| format!("Unable to save the theme export: {}", error.error))?;
-    Ok(destination.to_string_lossy().into_owned())
+    persist_download(&filename, &bytes, ".json", "prompt export")
 }
 
 #[tauri::command]
@@ -375,7 +400,7 @@ pub fn read_credential(credential_ref: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_settings, safe_export_filename};
+    use super::{default_settings, safe_export_filename, safe_prompt_export_filename};
 
     #[cfg(target_os = "windows")]
     #[test]
@@ -417,5 +442,10 @@ mod tests {
         assert!(!safe_export_filename("CON.crabskin"));
         assert!(!safe_export_filename("lpt9.crabtheme.json"));
         assert!(!safe_export_filename("theme.zip"));
+        assert!(safe_prompt_export_filename("客服.json"));
+        assert!(safe_prompt_export_filename("prompt-templates.json"));
+        assert!(!safe_prompt_export_filename("客服.crabtheme.json"));
+        assert!(!safe_prompt_export_filename("../客服.json"));
+        assert!(!safe_prompt_export_filename("CON.json"));
     }
 }
