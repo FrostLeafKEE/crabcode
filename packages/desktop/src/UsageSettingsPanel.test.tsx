@@ -34,6 +34,13 @@ function changeDate(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+function previousDate(value: string): string {
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() - 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 describe("UsageSettingsPanel", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -64,12 +71,14 @@ describe("UsageSettingsPanel", () => {
     expect(query.disabled).toBe(true);
     await act(async () => query.click());
     expect(usage).toHaveBeenCalledTimes(2);
-    await act(async () => changeDate(heatStart, end.value));
+    // 每月 1 日默认开始日就是今天，改成结束日不会让范围发生变化。
+    const nextStart = heatStart.value === end.value ? previousDate(heatStart.value) : end.value;
+    await act(async () => changeDate(heatStart, nextStart));
     expect(usage).toHaveBeenCalledTimes(2);
     expect(query.disabled).toBe(false);
     await act(async () => query.click());
     expect(usage).toHaveBeenCalledTimes(3);
-    expect(usage.mock.calls[2][0]).toBe(end.value);
+    expect(usage.mock.calls[2][0]).toBe(nextStart);
     expect(query.disabled).toBe(true);
     expect(container.textContent).toContain("Token 使用热力图");
   });
