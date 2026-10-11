@@ -12,6 +12,7 @@
 
 import * as vscode from "vscode";
 import { createSlashCommands } from "../../shared/slashCommands.js";
+import { createTurnProcessPolicy } from "../../shared/turnProcess.js";
 import * as os from "os";
 import * as path from "path";
 import type { CrabCodeConnection, SessionLaunchOverrides } from "./connection";
@@ -330,6 +331,7 @@ export interface PendingEditActionMessage {
 }
 
 type HistoryItem =
+  | { kind: "turnEnd"; reason?: string; finalMessageId?: string | null; timestamp?: number }
   | { kind: "message"; message: ChatMessage }
   | { kind: "tool"; card: ToolCard }
   | { kind: "thinking"; card: ThinkingCard }
@@ -1042,6 +1044,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
   /** 将 CrabCode 扩展配置（模型列表、权限模式）推送到 Webview。 */
   public notifyConfigurationChanged(): void {
+    this.postMessage({ type: "processDisplayOptions", autoCollapseProcess:
+      vscode.workspace.getConfiguration("crabcode").get<boolean>("autoCollapseProcess", true) !== false });
     // Reset cooldown so the next pushChatOptions actually fetches
     this._lastModelsFetchTime = 0;
     void this.pushChatOptions();
@@ -3115,6 +3119,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       selectedModel,
       permissionMode: mode,
       pendingEditsVisibleFiles,
+      autoCollapseProcess: cfg.get<boolean>("autoCollapseProcess", true) !== false,
       fileUploadMaxSizeMb,
       composerSendKey,
       followUpMode: this.followUpMode,
@@ -3895,6 +3900,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           }
         }
         state.activeOperationId = null;
+        const boundary: HistoryItem = { kind: "turnEnd", reason: payload.reason ?? "end_turn",
+          finalMessageId: assistantMessageUuid, timestamp: Date.now() };
+        state.history.push(boundary);
+        if (updateWebview) this.postMessage({ type: "processTurnEnd", ...boundary });
         state.isBusy = false;
         state.batchDenied = false;
         state.retryLabel = null;
@@ -4094,6 +4103,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         // Signatures and future block types carry no standalone UI surface.
       }
       flushText();
+      if (msg.turn_details?.source === "recorded") {
+        state.history.push({ kind: "turnEnd", reason: msg.turn_details.reason ?? undefined,
+          finalMessageId: role === "assistant" ? baseId : undefined, timestamp });
+      }
     }
 
     this.restoreClientTurnDetails(state, sessionId, this.busySessions.has(sessionId));
@@ -4510,6 +4523,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   }
 
   private expandAllCards(): void {
+    this.postMessage({ type: "expandAllProcesses" });
     for (const [id, card] of this.toolCards) {
       if (!card.collapsed) continue;
       card.collapsed = false;
@@ -4659,6 +4673,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   }
 
   private postMessage(msg: any): void {
+    if (msg.type === "history") {
+      msg = { ...msg, busy: this.currentState.isBusy,
+        autoCollapseProcess: vscode.workspace.getConfiguration("crabcode").get<boolean>("autoCollapseProcess", true) !== false,
+        processSessionKey: `${vscode.workspace.getConfiguration("crabcode").get("serverUrl", "")}:${this.displayedSessionId ?? "new"}` };
+    }
     if (!this.view) {
       return;
     }
@@ -4794,6 +4813,8 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
     .turn-summary {
       display: inline-flex;
+      flex-wrap: wrap;
+      max-width: 100%;
       align-items: center;
       gap: 7px;
       align-self: flex-start;
@@ -7544,6 +7565,53 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     let mentionTriggerRange = null;
     let currentMentionQuery = '';
     let turnCounter = 0;
+    const processPolicy = (${createTurnProcessPolicy.toString()})();
+    let autoCollapseProcess = true;
+    let replayingHistory = false;
+    let processSessionKey = '';
+    let processChoices = vscode.getState?.()?.processChoices || {};
+
+    function rememberProcessChoice(turn, value) {
+      processPolicy.viewKeys(turn.sessionKey, turn).forEach(key => { processChoices[key] = value; });
+      processChoices = Object.fromEntries(Object.entries(processChoices).slice(-400));
+      vscode.setState?.({ ...(vscode.getState?.() || {}), processChoices });
+    }
+
+    function processItems(turn) {
+      return turn.entries.map(entry => {
+        const item = entry.item;
+        if (item.kind === 'tool') {
+          const card = toolCards.get(item.id);
+          return { ...item, status: card?.result === null ? 'running' : 'complete',
+            images: card?.images, isError: card?.isError, agent_id: card?.agentId };
+        }
+        if (item.kind === 'permission') return { ...item, status: permissionCards.get(item.id)?.allowed === null ? 'pending' : 'complete' };
+        if (item.kind === 'choice') return { ...item, status: choiceCards.get(item.id)?.completed ? 'complete' : 'pending' };
+        if (item.kind === 'plan') return { ...item, status: planCards.get(item.id)?.status };
+        return item;
+      });
+    }
+
+    function processInteractionActive(turn) {
+      const selection = window.getSelection();
+      return turn.entries.some(({ el }) => turn.processIds?.includes(el.dataset.processId)
+        && (el.contains(document.activeElement) || selection && !selection.isCollapsed
+          && selection.anchorNode && el.contains(selection.anchorNode)));
+    }
+
+    function preserveProcessScroll(change, hiding) {
+      const bottom = isNearBottom();
+      const top = msgContainer.getBoundingClientRect().top;
+      const anchor = [...msgContainer.querySelectorAll('[data-process-id]')].find(el =>
+        !hiding.has(el) && el.getBoundingClientRect().height > 0 && el.getBoundingClientRect().bottom > top);
+      const offset = anchor?.getBoundingClientRect().top;
+      change();
+      if (bottom) msgContainer.scrollTop = msgContainer.scrollHeight;
+      else if (anchor && offset !== undefined) {
+        const delta = anchor.getBoundingClientRect().top - offset;
+        msgContainer.scrollTop += delta;
+      }
+    }
     let activeTurn = null;
     const turns = [];
     const SEND_ICON_HTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>';
@@ -7886,12 +7954,63 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     function updateTurnSummary(turn) {
+      if (autoCollapseProcess) {
+        const description = processPolicy.describeTurn(processItems(turn), {
+          completed: turn.completedConfirmed, reason: turn.reason, finalMessageId: turn.terminalMessageId,
+        });
+        Object.assign(turn, description);
+        if (turn.manualCollapsed === undefined) {
+          turn.manualCollapsed = processPolicy.viewKeys(turn.sessionKey, turn)
+            .map(key => processChoices[key]).find(value => typeof value === 'boolean');
+        }
+        if (turn.manualCollapsed !== undefined && turn.savedFinalId !== turn.finalMessageId) {
+          rememberProcessChoice(turn, turn.manualCollapsed);
+          turn.savedFinalId = turn.finalMessageId;
+        }
+        const collapsed = processPolicy.isCollapsed(turn, true, turn.manualCollapsed, processInteractionActive(turn));
+        const hidden = new Set(turn.entries.filter(entry => collapsed && turn.processIds.includes(entry.item.id)).map(entry => entry.el));
+        const apply = () => {
+          turn.entries.forEach(({ el }) => el.classList.toggle('turn-detail-hidden', hidden.has(el)));
+          const first = turn.entries.find(entry => turn.processIds.includes(entry.item.id));
+          if (first && (turn.summaryEl.parentElement !== turn.contentEl || turn.summaryEl.nextSibling !== first.el)) {
+            turn.contentEl.insertBefore(turn.summaryEl, first.el);
+          }
+        };
+        if (turn.processCollapsed !== collapsed || turn.lastAutoMode !== true) preserveProcessScroll(apply, hidden);
+        else apply();
+        turn.processCollapsed = collapsed;
+        turn.lastAutoMode = true;
+        turn.summaryEl.style.display = turn.processIds.length ? 'inline-flex' : 'none';
+        turn.summaryEl.classList.toggle('is-running', !turn.completedConfirmed);
+        turn.summaryEl.classList.toggle('is-expanded', !collapsed);
+        turn.summaryEl.setAttribute('aria-expanded', String(!collapsed));
+        turn.summaryEl.setAttribute('aria-label', (collapsed ? '展开' : '收起') + '处理过程');
+        turn.summaryStatusEl.textContent = !turn.completedConfirmed ? '处理中'
+          : turn.reason === 'interrupted' ? '已中断'
+          : turn.reason && !['end_turn', 'stop'].includes(turn.reason) ? '处理已停止' : '处理过程';
+        turn.summaryTimeEl.textContent = [
+          turn.durationMs != null ? formatTurnDuration(turn.durationMs) : turn.endTime && !turn.historical ? formatTurnDuration(getTurnDurationMs(turn)) : '',
+          turn.toolCount ? turn.toolCount + '次工具调用' : '',
+          turn.errorCount ? turn.errorCount + '次工具错误' : '',
+        ].filter(Boolean).join(' · ');
+        return;
+      }
+      if (turn.lastAutoMode !== false) {
+        preserveProcessScroll(() => {
+          turn.entries.forEach(({ el }) => el.classList.remove('turn-detail-hidden'));
+          turn.rootEl.insertBefore(turn.summaryEl, turn.contentEl);
+          syncTurnDetailVisibility(turn);
+        }, new Set());
+        turn.lastAutoMode = false;
+      }
       const hasDetails = turn.detailCount > 0;
       turn.summaryEl.style.display = hasDetails ? 'inline-flex' : 'none';
       turn.summaryEl.classList.toggle('is-running', turn.status === 'running');
       turn.summaryEl.classList.toggle('is-expanded', !!turn.expanded);
       turn.summaryStatusEl.textContent = getTurnSummaryLabel(turn);
       turn.summaryTimeEl.textContent = formatTurnDuration(getTurnDurationMs(turn));
+      turn.summaryEl.setAttribute('aria-expanded', String(!!turn.expanded));
+      turn.summaryEl.setAttribute('aria-label', '展开或收起工具和思考');
       syncTurnDetailVisibility(turn);
     }
 
@@ -7899,24 +8018,37 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       turns.forEach(updateTurnSummary);
     }
 
-    function finishActiveTurn() {
+    function finishActiveTurn(boundary = {}) {
       if (!activeTurn) return;
       activeTurn.status = 'done';
-      activeTurn.endTime = Date.now();
+      activeTurn.endTime = boundary.timestamp || Date.now();
+      activeTurn.completedConfirmed = boundary.confirmed === true;
+      activeTurn.reason = boundary.reason;
+      activeTurn.terminalMessageId = boundary.finalMessageId;
       updateTurnSummary(activeTurn);
-      activeTurn = null;
+      if (boundary.confirmed) activeTurn = null;
     }
 
     function toggleTurnDetails(turn) {
+      if (autoCollapseProcess) {
+        turn.manualCollapsed = !turn.processCollapsed;
+        rememberProcessChoice(turn, turn.manualCollapsed);
+        updateTurnSummary(turn);
+        return;
+      }
       if (!turn || turn.detailCount === 0) return;
       turn.expanded = !turn.expanded;
       updateTurnSummary(turn);
     }
 
-    function createTurn(startTime) {
+    function createTurn(startTime, stableId) {
       const shouldStick = captureScrollAnchor();
       const turn = {
-        id: 'turn-' + (++turnCounter),
+        id: stableId || 'turn-' + (++turnCounter),
+        sessionKey: processSessionKey || currentSessionId || 'new',
+        entries: [],
+        completedConfirmed: false,
+        historical: replayingHistory,
         startTime: startTime || Date.now(),
         endTime: null,
         status: 'running',
@@ -7957,16 +8089,21 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
     function getCurrentTurn() {
       if (activeTurn) return activeTurn;
-      return turns.length > 0 ? turns[turns.length - 1] : null;
+      return createTurn(Date.now());
     }
 
     function getTurnById(turnId) {
       return turns.find(turn => turn.id === turnId) || null;
     }
 
-    function appendToTurnContent(turn, el) {
+    function appendToTurnContent(turn, el, item) {
       if (turn) {
         turn.contentEl.appendChild(el);
+        if (item) {
+          turn.entries.push({ el, item });
+          el.dataset.processId = item.id;
+          updateTurnSummary(turn);
+        }
       } else {
         msgContainer.appendChild(el);
       }
@@ -7978,6 +8115,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         turn.detailCount += 1;
         if (options.toolId) turn.toolIds.push(options.toolId);
         if (options.thinkingId) turn.thinkingIds.push(options.thinkingId);
+        const item = { id: options.toolId || options.thinkingId, kind: options.toolId ? 'tool' : 'thinking' };
+        turn.entries.push({ el, item });
+        el.dataset.processId = item.id;
         if (turn.status === 'running' || options.forceExpanded) {
           turn.expanded = true;
         }
@@ -8014,6 +8154,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     setInterval(() => {
       updateAllTurnSummaries();
     }, 1000);
+    document.addEventListener('selectionchange', updateAllTurnSummaries);
+    document.addEventListener('focusin', updateAllTurnSummaries);
+    document.addEventListener('focusout', () => queueMicrotask(updateAllTurnSummaries));
 
     function updatePanelWidthMode() {
       const width = (document.body ? document.body.clientWidth : 0) || window.innerWidth || 0;
@@ -8362,12 +8505,13 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         html += '<div class="message-actions">' + (msg.role === 'assistant' ? turnDetailsButtonHtml(msg.turnDetails) : '') + copyButtonHtml(msg.text || '', msg.copyLabel || '复制回复') + (msg.role === 'assistant' ? forkButtonHtml(msg.messageUuid) : '') + '</div>';
       }
       div.innerHTML = html;
-      if (msg.role === 'user') {
-        finishActiveTurn();
-        const turn = createTurn(msg.timestamp);
-        appendToTurnContent(turn, div);
+      const processItem = { ...msg, kind: msg.role };
+      if (processPolicy.startsTurn(processItem)) {
+        finishActiveTurn({ confirmed: true });
+        const turn = createTurn(msg.timestamp, msg.id);
+        appendToTurnContent(turn, div, processItem);
       } else {
-        appendToTurnContent(getCurrentTurn(), div);
+        appendToTurnContent(getCurrentTurn(), div, processItem);
       }
       restoreScrollAnchor(shouldStick);
     }
@@ -8795,7 +8939,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       div.innerHTML =
         '<span class="action ' + actionClass + '">' + escapeHtml(payload.action) + '</span>' +
         '<span class="path" data-path="' + escapeHtml(payload.path) + '" title="' + escapeHtml(payload.path) + '">' + escapeHtml(shortPath) + '</span>';
-      appendToTurnContent(getCurrentTurn(), div);
+      appendToTurnContent(getCurrentTurn(), div, { id: 'file-change-' + (++turnCounter), kind: 'file_change' });
       restoreScrollAnchor(shouldStick);
 
       div.querySelector('.path').addEventListener('click', () => {
@@ -8804,7 +8948,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     function renderHistoryItem(item) {
-      if (item.kind === 'message') {
+      if (item.kind === 'turnEnd') {
+        finishActiveTurn({ ...item, confirmed: true });
+      } else if (item.kind === 'message') {
         addMessageEl(item.message);
       } else if (item.kind === 'tool') {
         renderToolCard(item.card);
@@ -8830,7 +8976,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       el.className = 'request-card';
       el.id = 'choice-' + card.id;
       el.innerHTML = buildChoiceCardHtml(card);
-      appendToTurnContent(getCurrentTurn(), el);
+      appendToTurnContent(getCurrentTurn(), el, { id: card.id, kind: 'choice' });
       restoreScrollAnchor(shouldStick);
       bindChoiceCardEvents(el, card);
       choiceCards.set(card.id, card);
@@ -8925,7 +9071,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       el.className = 'request-card plan';
       el.id = 'plan-' + card.id;
       el.innerHTML = buildPlanCardHtml(card);
-      appendToTurnContent(getCurrentTurn(), el);
+      appendToTurnContent(getCurrentTurn(), el, { id: card.id, kind: 'plan' });
       restoreScrollAnchor(shouldStick);
       bindPlanCardEvents(el, card);
       planCards.set(card.id, card);
@@ -9007,7 +9153,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       el.className = 'request-card permission';
       el.id = 'permission-' + card.id;
       el.innerHTML = buildPermissionCardHtml(card);
-      appendToTurnContent(getCurrentTurn(), el);
+      appendToTurnContent(getCurrentTurn(), el, { id: card.id, kind: 'permission' });
       restoreScrollAnchor(shouldStick);
       bindPermissionCardEvents(el, card);
       permissionCards.set(card.id, card);
@@ -9727,6 +9873,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       const newPerm = msg.permissionMode === 'run_everything' ? 'run_everything' : (msg.permissionMode === 'ai_review' ? 'ai_review' : (msg.permissionMode === 'ask' ? 'ask' : 'default'));
       renderPermissionPolicy(undefined, newPerm);
       const nextPendingEditsVisibleFiles = normalizePendingEditsVisibleFiles(msg.pendingEditsVisibleFiles);
+      if (autoCollapseProcess !== (msg.autoCollapseProcess !== false)) {
+        autoCollapseProcess = msg.autoCollapseProcess !== false;
+        updateAllTurnSummaries();
+      }
       if (nextPendingEditsVisibleFiles !== pendingEditsVisibleFiles) {
         pendingEditsVisibleFiles = nextPendingEditsVisibleFiles;
         if (currentPendingEditSummary) renderPendingEdits(currentPendingEditSummary);
@@ -10935,7 +11085,26 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         case 'newMessage':
           addMessageEl(msg.message);
           break;
+        case 'processDisplayOptions':
+          autoCollapseProcess = msg.autoCollapseProcess !== false;
+          updateAllTurnSummaries();
+          break;
+        case 'processTurnEnd':
+          finishActiveTurn({ ...msg, confirmed: true });
+          break;
+        case 'expandAllProcesses':
+          turns.forEach(turn => {
+            turn.manualCollapsed = false;
+            turn.expanded = true;
+            rememberProcessChoice(turn, false);
+            updateTurnSummary(turn);
+          });
+          break;
         case 'messageForkable': {
+          for (const turn of turns) {
+            const entry = turn.entries.find(entry => entry.item.id === msg.id);
+            if (entry) Object.assign(entry.item, { messageUuid: msg.messageUuid, turnDetails: msg.turnDetails });
+          }
           const messageEl = document.getElementById('msg-' + msg.id);
           if (messageEl && (msg.messageUuid || msg.turnDetails)) {
             let actions = messageEl.querySelector('.message-actions');
@@ -10954,6 +11123,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           break;
         }
         case 'appendText': {
+          for (const turn of turns) {
+            const entry = turn.entries.find(entry => entry.item.id === msg.id);
+            if (entry) entry.item.text = (entry.item.text || '') + String(msg.chunk || '');
+          }
           const el = document.getElementById('msg-' + msg.id);
           if (el) {
             const textEl = el.querySelector('.text');
@@ -10984,8 +11157,12 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           turns.length = 0;
           activeTurn = null;
           turnCounter = 0;
+          processSessionKey = msg.processSessionKey || currentSessionId || 'new';
+          if (typeof msg.autoCollapseProcess === 'boolean') autoCollapseProcess = msg.autoCollapseProcess;
+          replayingHistory = true;
           (msg.items || []).forEach(renderHistoryItem);
-          finishActiveTurn();
+          if (!msg.busy) finishActiveTurn({ confirmed: true });
+          replayingHistory = false;
           updateBusyLabel();
           updateAllTurnSummaries();
           scrollMessagesToBottom(true);

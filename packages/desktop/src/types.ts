@@ -124,6 +124,7 @@ export interface DesktopSettings {
   font_smoothing: boolean;
   show_turn_duration: boolean;
   show_file_edit_summary: boolean;
+  auto_collapse_process?: boolean;
   turn_duration_format: TurnDurationFormat;
   session_notify_on_start: boolean;
   session_notify_on_complete: boolean;
@@ -779,6 +780,10 @@ export interface ImageAttachment {
 
 export interface ChatItem {
   id: string;
+  origin?: string | null;
+  messageUuid?: string | null;
+  turnEndReason?: string;
+  finalMessageId?: string;
   turnDetails?: TurnDetails;
   kind: ChatItemKind;
   text?: string;

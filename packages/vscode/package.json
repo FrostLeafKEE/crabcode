@@ -168,6 +168,12 @@
           "maximum": 50,
           "description": "待审核修改面板一次可见的文件行数；超过后列表滚动"
         },
+        "crabcode.autoCollapseProcess": {
+          "tags": ["crabcodeExtension"],
+          "type": "boolean",
+          "default": true,
+          "description": "本轮正常结束后，自动收起中间说明、思考和工具调用。最终回答保持展开，可随时查看完整过程。"
+        },
         "crabcode.fileUploadMaxSizeMb": {
           "tags": [
             "crabcodeProduct"

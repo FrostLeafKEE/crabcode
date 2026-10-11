@@ -51,6 +51,13 @@ export interface LocalDefinition {
 }
 export const LOCAL_SETTINGS: LocalDefinition[] = [
   {
+    key: "autoCollapseProcess",
+    section: "general",
+    title: "自动折叠中间过程",
+    description: "本轮正常结束后，收起中间说明、思考和工具调用。最终回答保持展开，可随时查看完整过程。",
+    default: true,
+  },
+  {
     key: "composerSendKey",
     section: "general",
     title: "发送快捷键",

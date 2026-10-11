@@ -48,8 +48,8 @@ function historyItems(messages: Array<Record<string, unknown>>, cwd: string): Ch
   let turnDurationId = "";
   let summarizedUntil = 0;
 
-  const finishTurn = () => {
-    if (turnStartedAt === null || turnCompletedAt === null) return;
+  const finishTurn = (reason?: string, finalMessageId?: string) => {
+    if ((turnStartedAt === null || turnCompletedAt === null) && finalMessageId === undefined) return;
     const summary = summarizeFileEdits(items.slice(summarizedUntil), cwd);
     const summaryId = `${turnDurationId || randomUuid()}:file-edits`;
     if (summary) items.push(fileEditSummaryItem(summaryId, summary));
@@ -57,9 +57,11 @@ function historyItems(messages: Array<Record<string, unknown>>, cwd: string): Ch
       id: `${turnDurationId || randomUuid()}:turn-duration`,
       kind: "turn_duration",
       status: "complete",
-      startedAt: turnStartedAt,
-      completedAt: turnCompletedAt,
-      durationMs: Math.max(0, turnCompletedAt - turnStartedAt),
+      startedAt: turnStartedAt ?? undefined,
+      completedAt: turnCompletedAt ?? undefined,
+      durationMs: turnStartedAt === null || turnCompletedAt === null ? undefined : Math.max(0, turnCompletedAt - turnStartedAt),
+      turnEndReason: reason,
+      finalMessageId,
     });
     summarizedUntil = items.length;
   };
@@ -93,14 +95,24 @@ function historyItems(messages: Array<Record<string, unknown>>, cwd: string): Ch
       : message.role === "assistant"
         ? "assistant"
         : "system";
-    const messageTiming = messageTimestamp === null
-      ? {}
-      : { startedAt: messageTimestamp, completedAt: messageTimestamp, durationMs: 0 };
+    const messageTiming = {
+      origin: typeof message.origin === "string" ? message.origin : undefined,
+      messageUuid: kind === "assistant" ? baseId : undefined,
+      ...(messageTimestamp === null ? {} : { startedAt: messageTimestamp, completedAt: messageTimestamp, durationMs: 0 }),
+    };
     const turnDetails = kind === "assistant" && message.turn_details
       ? { turnDetails: message.turn_details as TurnDetails } : {};
+    const finishRecordedTurn = () => {
+      if (turnDetails.turnDetails?.source !== "recorded") return;
+      finishTurn(turnDetails.turnDetails.reason ?? undefined, baseId);
+      turnStartedAt = null;
+      turnCompletedAt = null;
+      turnDurationId = "";
+    };
     const content = message.content;
     if (typeof content === "string") {
       if (content) items.push({ id: baseId, kind, status: "complete", ...messageTiming, ...turnDetails, ...displayedUserText(kind, content) });
+      finishRecordedTurn();
       continue;
     }
     if (!Array.isArray(content)) continue;
@@ -242,6 +254,7 @@ function historyItems(messages: Array<Record<string, unknown>>, cwd: string): Ch
       }
     });
     flushText();
+    finishRecordedTurn();
   }
 
   finishTurn();
@@ -325,7 +338,7 @@ function currentTurnItems(items: ChatItem[]): ChatItem[] {
   let start = 0;
   items.forEach((item, index) => {
     if (item.kind === "turn_duration" || item.kind === "file_edit_summary") start = index + 1;
-    else if (item.kind === "user") start = index;
+    else if (item.kind === "user" && !item.origin) start = index;
   });
   return items.slice(start);
 }
@@ -336,12 +349,14 @@ function closeTurn(
   completedAt: number,
   operationId: string | null | undefined,
   cwd: string,
+  reason?: string,
+  finalMessageId?: string,
 ): ChatItem[] {
   const summary = summarizeFileEdits(currentTurnItems(items), cwd);
   const withSummary = summary
     ? [...items, fileEditSummaryItem(`${operationId || "turn"}:${items.length}:file-edits`, summary)]
     : items;
-  return appendTurnDuration(withSummary, startedAt, completedAt, operationId ?? undefined);
+  return appendTurnDuration(withSummary, startedAt, completedAt, operationId ?? undefined, reason, finalMessageId);
 }
 
 function appendTurnDuration(
@@ -349,17 +364,21 @@ function appendTurnDuration(
   startedAt: number | null | undefined,
   completedAt: number,
   operationId?: string,
+  reason?: string,
+  finalMessageId?: string,
 ): ChatItem[] {
-  if (startedAt === null || startedAt === undefined) return items;
+  if (startedAt == null && reason === undefined) return items;
   return [
     ...items,
     {
       id: `${operationId || randomUuid()}:turn-duration`,
       kind: "turn_duration",
       status: "complete",
-      startedAt,
+      startedAt: startedAt ?? undefined,
       completedAt,
-      durationMs: Math.max(0, completedAt - startedAt),
+      durationMs: startedAt == null ? undefined : Math.max(0, completedAt - startedAt),
+      turnEndReason: reason,
+      finalMessageId,
     },
   ];
 }
@@ -383,7 +402,7 @@ export function applyGatewayEvent(
       return {
         ...state,
         pendingFollowUps: pending.filter((item) => item !== entry),
-        items: event.action === "steer" ? [...state.items, entry.item] : state.items,
+        items: event.action === "steer" ? [...state.items, { ...entry.item, origin: "user-steering" }] : state.items,
       };
     }
     case "queued_message_started": {
@@ -788,6 +807,8 @@ export function applyGatewayEvent(
           now,
           event.operation_id ?? state.operationId,
           state.cwd,
+          event.reason ?? "end_turn",
+          durableAssistantId ?? undefined,
         ), state.id),
         status: state.status && event.context_used_tokens !== undefined
           ? {

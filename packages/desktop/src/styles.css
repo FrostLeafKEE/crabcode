@@ -17582,3 +17582,22 @@ html[data-theme="light"] .project-file-code .token.class-name {
   font-size: 13px;
 }
 .follow-up-menu button { width: 100%; justify-content: flex-start; padding: 9px 10px; color: var(--text); }
+.conversation-turn { display: contents; }
+[data-process-entry][hidden] { display: none !important; }
+.process-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 6px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.process-summary svg { width: 15px; height: 15px; }
+.process-summary:hover { color: var(--text); }
+.process-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.process-error-count { color: var(--red); }

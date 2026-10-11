@@ -66,7 +66,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { cloneElement, isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown, { type Components } from "react-markdown";
 import SyntaxHighlighter from "react-syntax-highlighter/dist/esm/prism-light";
@@ -87,6 +87,7 @@ import DocumentWorkspace from "./DocumentWorkspace";
 import { ComposerEditor, composerModifierLabel, createComposerCommandOptions, type ComposerReferenceOption } from "./ComposerEditor";
 import { CopyButton } from "./CopyButton";
 import { TurnDetailsButton } from "./TurnDetailsButton";
+import { ConversationTurns, type ProcessPresentation } from "./ConversationTurns";
 import { withClientTurnDetails } from "./turnDetails";
 import { applyGatewayEvent } from "./events";
 import { FollowUpQueue } from "./FollowUpQueue";
@@ -2570,7 +2571,7 @@ function App() {
               },
               items: [
                 ...current[activeSessionKey].items,
-                userItem,
+                { ...userItem, origin: "user-steering" },
               ],
             },
           }));
@@ -4439,8 +4440,14 @@ function App() {
                         <h2>在 {activeProject?.name ?? "项目"} 中构建什么？</h2>
                       </div>
                     )}
-                    {withClientTurnDetails(activeSession.items, activeSession.id, activeSession.busy).map((item) => (
+                    <ConversationTurns
+                      items={withClientTurnDetails(activeSession.items, activeSession.id, activeSession.busy)}
+                      busy={activeSession.busy} sessionKey={activeSessionKey ?? activeSession.id}
+                      enabled={settings.auto_collapse_process !== false}
+                      showDuration={settings.show_turn_duration} durationFormat={settings.turn_duration_format}
+                      renderItem={(item, presentation) => (
                       <ChatItemView
+                        presentation={presentation}
                         key={item.id}
                         item={item}
                         now={runClock}
@@ -4474,7 +4481,7 @@ function App() {
                           })
                           : undefined}
                       />
-                    ))}
+                    )} />
                     {activeSession.busy && (
                       <ExecutionStatusBar
                         startedAt={activeSession.runStartedAt ?? runClock}
@@ -6751,7 +6758,8 @@ export function MessageMarkdown({ children }: { children: string }) {
   );
 }
 
-export function ChatItemView({ item, now, showTurnDuration, showFileEditSummary = true, turnDurationFormat, onPermission, approvalShortcuts = DEFAULT_APPROVAL_SHORTCUTS, onToggleChoice, onSubmitChoice, onPlan, onCompatibilityRetry, onFork, forkDisabled, onUndoFileEdits, onOpenFileEdits }: {
+export function ChatItemView({ presentation, item, now, showTurnDuration, showFileEditSummary = true, turnDurationFormat, onPermission, approvalShortcuts = DEFAULT_APPROVAL_SHORTCUTS, onToggleChoice, onSubmitChoice, onPlan, onCompatibilityRetry, onFork, forkDisabled, onUndoFileEdits, onOpenFileEdits }: {
+  presentation?: ProcessPresentation;
   item: ChatItem;
   now: number;
   showTurnDuration: boolean;
@@ -6768,13 +6776,14 @@ export function ChatItemView({ item, now, showTurnDuration, showFileEditSummary 
   onUndoFileEdits?: () => Promise<void> | void;
   onOpenFileEdits?: (request: FileEditReviewRequest) => void;
 }) {
+  const present = (element: ReactElement) => presentation ? cloneElement(element, presentation) : element;
   const [collapsed, setCollapsed] = useState(item.collapsed ?? false);
   const durationMs = item.durationMs ?? (item.startedAt ? Math.max(0, now - item.startedAt) : null);
   const durationLabel = durationMs === null ? null : formatElapsed(durationMs);
   if (item.kind === "turn_duration") {
     if (!showTurnDuration || durationMs === null) return null;
     const label = `已处理：${formatTurnDuration(durationMs, turnDurationFormat)}`;
-    return <div className="turn-duration-divider" role="separator" aria-label={label}><span>{label}</span></div>;
+    return present(<div className="turn-duration-divider" role="separator" aria-label={label}><span>{label}</span></div>);
   }
   if (item.kind === "file_edit_summary") {
     if (!showFileEditSummary) return null;
@@ -6784,7 +6793,7 @@ export function ChatItemView({ item, now, showTurnDuration, showFileEditSummary 
     const presented = presentUserMessage(item.text ?? "");
     const attachments = [...(item.attachments ?? []), ...presented.attachments];
     const text = presented.text;
-    return (
+    return present(
       <article className="message user-message-shell">
         {(item.images?.length || attachments.length > 0) && (
           <div className="user-attachment-row" aria-label="附件">
@@ -6812,7 +6821,7 @@ export function ChatItemView({ item, now, showTurnDuration, showFileEditSummary 
     );
   }
   if (item.kind === "assistant") {
-    return (
+    return present(
       <article className="message assistant-message">
         <MessageMarkdown>{item.text ?? ""}</MessageMarkdown>
         <InlineImages images={item.images} />
@@ -6836,7 +6845,7 @@ export function ChatItemView({ item, now, showTurnDuration, showFileEditSummary 
     );
   }
   if (item.kind === "command") {
-    return (
+    return present(
       <article className="command-card">
         <header className="command-card-header">
           <Terminal />
@@ -6850,7 +6859,7 @@ export function ChatItemView({ item, now, showTurnDuration, showFileEditSummary 
   }
   if (item.kind === "system") return <div className="system-line">{item.text}</div>;
   if (item.kind === "error") {
-    return (
+    return present(
       <div className="error-line copyable-inline">
         <AlertTriangle />
         <span>{item.text}</span>
@@ -6869,7 +6878,7 @@ export function ChatItemView({ item, now, showTurnDuration, showFileEditSummary 
           : item.status === "retrying"
             ? "校验后重试"
             : "运行中";
-    return (
+    return present(
       <article className={`activity-card document-job-card is-${item.status ?? "running"}`}>
         <div className="activity-header">
           <i className="tool-glyph" aria-hidden="true">
@@ -6894,7 +6903,7 @@ export function ChatItemView({ item, now, showTurnDuration, showFileEditSummary 
     );
   }
   if (item.kind === "thinking") {
-    return (
+    return present(
       <article className="activity-card thinking-card">
         <button className="activity-header" onClick={() => setCollapsed((value) => !value)}>
           {item.status === "running" ? <LoaderCircle className="spin" /> : <Bot />}
@@ -6914,7 +6923,7 @@ export function ChatItemView({ item, now, showTurnDuration, showFileEditSummary 
     );
     const result = item.result ?? (typeof item.detail === "string" ? item.detail : undefined);
     const presentation = getToolPresentation(item.title ?? "Tool", input);
-    return (
+    return present(
       <article className={`activity-card tool-card tool-kind-${presentation.kind} ${item.isError ? "is-error" : ""}`}>
         <button className="activity-header" onClick={() => setCollapsed((value) => !value)}>
           <i className="tool-glyph" aria-hidden="true">{item.status === "running" ? <LoaderCircle className="spin" /> : presentation.glyph}</i>
@@ -6950,7 +6959,7 @@ export function ChatItemView({ item, now, showTurnDuration, showFileEditSummary 
     );
   }
   if (item.kind === "file_change") {
-    return (
+    return present(
       <article className="activity-card diff-card">
         <button className="activity-header" onClick={() => setCollapsed((value) => !value)}>
           <FileDiff />
@@ -6969,7 +6978,7 @@ export function ChatItemView({ item, now, showTurnDuration, showFileEditSummary 
     );
   }
   if (item.kind === "permission") {
-    return (
+    return present(
       <article className="request-card">
         <div className="request-title"><ShieldAlert /><strong>{item.title}</strong>{durationLabel && <small className="activity-duration">{durationLabel}</small>}</div>
         {item.text && <p>{item.text}</p>}
@@ -6990,7 +6999,7 @@ export function ChatItemView({ item, now, showTurnDuration, showFileEditSummary 
     );
   }
   if (item.kind === "choice") {
-    return (
+    return present(
       <article className="request-card">
         <div className="request-title"><MoreHorizontal /><strong>{item.title}</strong>{durationLabel && <small className="activity-duration">{durationLabel}</small>}</div>
         <div className="choice-list">
@@ -7015,7 +7024,7 @@ export function ChatItemView({ item, now, showTurnDuration, showFileEditSummary 
     );
   }
   if (item.kind === "plan") {
-    return (
+    return present(
       <article className="request-card plan-card">
         <div className="request-title"><Bot /><strong>{item.title}</strong></div>
         <CopyablePre text={textFromUnknown(item.detail)} />

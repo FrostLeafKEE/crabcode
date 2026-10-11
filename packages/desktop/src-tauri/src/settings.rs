@@ -104,6 +104,7 @@ fn default_settings() -> Value {
         "font_smoothing": true,
         "show_turn_duration": true,
         "show_file_edit_summary": true,
+        "auto_collapse_process": true,
         "turn_duration_format": "hms",
         "session_notify_on_start": false,
         "session_notify_on_complete": true,
