@@ -66,6 +66,17 @@ test('webview defaults to folding the completed process while final text and act
     assert.equal(w.doc.querySelector('.turn-summary').getAttribute('aria-expanded'), 'false');
     assert.equal(w.doc.getElementById('msg-u').nextElementSibling, w.doc.querySelector('.turn-summary'));
     assert.ok(w.doc.querySelector('#msg-f [data-copy-label="复制回复"]'));
+    assert.equal(w.doc.querySelector('.turn-summary-status').textContent, '已完成');
+    assert.doesNotMatch(w.doc.querySelector('.turn-summary').textContent, /次工具调用/);
+    w.send({ type: 'processDisplayOptions', showToolCallCount: true });
+    assert.match(w.doc.querySelector('.turn-summary').textContent, /1次工具调用/);
+    assert.equal(w.hidden('tool-t'), true);
+    w.send({ type: 'options', showToolCallCount: false });
+    assert.doesNotMatch(w.doc.querySelector('.turn-summary').textContent, /次工具调用/);
+    w.replay(history(), { showToolCallCount: true });
+    assert.match(w.doc.querySelector('.turn-summary').textContent, /1次工具调用/);
+    w.send({ type: 'options', autoCollapseProcess: false });
+    assert.equal(w.doc.querySelector('.turn-summary-status').textContent, '已完成');
     assert.deepEqual(w.errors, []);
   } finally { w.dom.window.close(); }
 });
@@ -145,13 +156,16 @@ test('the extension sends the terminal boundary and exposes the default-on setti
   assert.equal(state.history.at(-1).kind, 'turnEnd');
   const settings = require('../package.json').contributes.configuration.properties;
   assert.equal(settings['crabcode.autoCollapseProcess'].default, true);
+  assert.equal(settings['crabcode.showToolCallCount'].default, false);
 });
 
 test('display preference updates do not wait for the model-list request', () => {
   const { panel, messages, config } = loadPanel(() => new Promise(() => {}));
   config.autoCollapseProcess = false;
+  config.showToolCallCount = true;
   panel.notifyConfigurationChanged();
   assert.equal(messages.find(m => m.type === 'processDisplayOptions').autoCollapseProcess, false);
+  assert.equal(messages.find(m => m.type === 'processDisplayOptions').showToolCallCount, true);
 });
 
 test('steering stays in the active turn and queued prompts start another turn', () => {

@@ -125,6 +125,7 @@ export interface DesktopSettings {
   show_turn_duration: boolean;
   show_file_edit_summary: boolean;
   auto_collapse_process?: boolean;
+  show_tool_call_count?: boolean;
   turn_duration_format: TurnDurationFormat;
   session_notify_on_start: boolean;
   session_notify_on_complete: boolean;

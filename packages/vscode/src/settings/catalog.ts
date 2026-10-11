@@ -58,6 +58,13 @@ export const LOCAL_SETTINGS: LocalDefinition[] = [
     default: true,
   },
   {
+    key: "showToolCallCount",
+    section: "general",
+    title: "显示工具调用次数",
+    description: "在处理状态旁显示本轮工具调用次数及错误次数。默认关闭。",
+    default: false,
+  },
+  {
     key: "composerSendKey",
     section: "general",
     title: "发送快捷键",
@@ -160,6 +167,10 @@ export function validateLocalSetting(key: string, value: unknown): void {
   const spec = LOCAL_SETTINGS.find((item) => item.key === key);
   if (!spec) throw new Error("未知的 CrabCode 设置");
   if (value === undefined) return;
+  if (typeof spec.default === "boolean") {
+    if (typeof value !== "boolean") throw new Error("设置值必须是开关");
+    return;
+  }
   if (spec.options && !spec.options.some((option) => option[0] === value))
     throw new Error("无效的设置选项");
   if (

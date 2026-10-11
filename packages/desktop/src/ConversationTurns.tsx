@@ -19,9 +19,9 @@ function saveChoice(keys: string[], value: boolean) {
   try { sessionStorage.setItem(storageKey, JSON.stringify(cachedChoices)); } catch { /* Storage can be unavailable. */ }
 }
 
-function ProcessTurnView({ turn, sessionKey, enabled, showDuration, durationFormat, renderItem }: {
+function ProcessTurnView({ turn, sessionKey, enabled, showDuration, showToolCallCount = false, durationFormat, renderItem }: {
   turn: ProcessTurn<ChatItem>; sessionKey: string; enabled: boolean;
-  showDuration: boolean; durationFormat: TurnDurationFormat; renderItem: (item: ChatItem, presentation: ProcessPresentation) => ReactNode;
+  showDuration: boolean; showToolCallCount?: boolean; durationFormat: TurnDurationFormat; renderItem: (item: ChatItem, presentation: ProcessPresentation) => ReactNode;
 }) {
   const keys = policy.viewKeys(sessionKey, turn);
   const [manual, setManual] = useState<boolean | undefined>(() => keys.map((key) => cachedChoices[key]).find((value) => typeof value === "boolean"));
@@ -86,7 +86,7 @@ function ProcessTurnView({ turn, sessionKey, enabled, showDuration, durationForm
   const duration = durationFormat === "seconds" || seconds < 60 ? `${seconds}秒`
     : `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
   const label = !turn.completed ? "处理中" : turn.reason === "interrupted" ? "已中断"
-    : turn.reason && !["end_turn", "stop"].includes(turn.reason) ? "处理已停止" : "处理过程";
+    : turn.reason && !["end_turn", "stop"].includes(turn.reason) ? "处理已停止" : "已完成";
   return <div className="conversation-turn" ref={root} data-turn-id={turn.id}>
     {turn.items.map((item, index) => <Fragment key={item.id}>
       {enabled && index === firstProcess && <button type="button" className="process-summary"
@@ -94,8 +94,8 @@ function ProcessTurnView({ turn, sessionKey, enabled, showDuration, durationForm
         onClick={() => setManual(!collapsed)}>
         {collapsed ? <ChevronRight /> : <ChevronDown />}<span>{label}</span>
         {showDuration && turn.durationMs !== null && <span>· {duration}</span>}
-        {turn.toolCount > 0 && <span>· {turn.toolCount}次工具调用</span>}
-        {turn.errorCount > 0 && <span className="process-error-count">· {turn.errorCount}次工具错误</span>}
+        {showToolCallCount && turn.toolCount > 0 && <span>· {turn.toolCount}次工具调用</span>}
+        {showToolCallCount && turn.errorCount > 0 && <span className="process-error-count">· {turn.errorCount}次工具错误</span>}
       </button>}
       {renderItem(item, { "data-process-entry": item.id,
         "data-process-content": processIds.has(item.id) ? "" : undefined,
@@ -107,7 +107,7 @@ function ProcessTurnView({ turn, sessionKey, enabled, showDuration, durationForm
 
 export function ConversationTurns({ items, busy, ...props }: {
   items: ChatItem[]; busy: boolean; sessionKey: string; enabled: boolean;
-  showDuration: boolean; durationFormat: TurnDurationFormat; renderItem: (item: ChatItem, presentation: ProcessPresentation) => ReactNode;
+  showDuration: boolean; showToolCallCount?: boolean; durationFormat: TurnDurationFormat; renderItem: (item: ChatItem, presentation: ProcessPresentation) => ReactNode;
 }) {
   return <>{policy.groupTurns(items, busy).map((turn) =>
     <ProcessTurnView key={`${props.sessionKey}:${turn.id}`} {...props} turn={turn} />)}</>;

@@ -4444,6 +4444,7 @@ function App() {
                       items={withClientTurnDetails(activeSession.items, activeSession.id, activeSession.busy)}
                       busy={activeSession.busy} sessionKey={activeSessionKey ?? activeSession.id}
                       enabled={settings.auto_collapse_process !== false}
+                      showToolCallCount={settings.show_tool_call_count === true}
                       showDuration={settings.show_turn_duration} durationFormat={settings.turn_duration_format}
                       renderItem={(item, presentation) => (
                       <ChatItemView

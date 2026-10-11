@@ -1044,8 +1044,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
   /** 将 CrabCode 扩展配置（模型列表、权限模式）推送到 Webview。 */
   public notifyConfigurationChanged(): void {
-    this.postMessage({ type: "processDisplayOptions", autoCollapseProcess:
-      vscode.workspace.getConfiguration("crabcode").get<boolean>("autoCollapseProcess", true) !== false });
+    const cfg = vscode.workspace.getConfiguration("crabcode");
+    this.postMessage({ type: "processDisplayOptions",
+      autoCollapseProcess: cfg.get<boolean>("autoCollapseProcess", true) !== false,
+      showToolCallCount: cfg.get<boolean>("showToolCallCount", false) === true });
     // Reset cooldown so the next pushChatOptions actually fetches
     this._lastModelsFetchTime = 0;
     void this.pushChatOptions();
@@ -3120,6 +3122,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       permissionMode: mode,
       pendingEditsVisibleFiles,
       autoCollapseProcess: cfg.get<boolean>("autoCollapseProcess", true) !== false,
+      showToolCallCount: cfg.get<boolean>("showToolCallCount", false) === true,
       fileUploadMaxSizeMb,
       composerSendKey,
       followUpMode: this.followUpMode,
@@ -4676,6 +4679,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     if (msg.type === "history") {
       msg = { ...msg, busy: this.currentState.isBusy,
         autoCollapseProcess: vscode.workspace.getConfiguration("crabcode").get<boolean>("autoCollapseProcess", true) !== false,
+        showToolCallCount: vscode.workspace.getConfiguration("crabcode").get<boolean>("showToolCallCount", false) === true,
         processSessionKey: `${vscode.workspace.getConfiguration("crabcode").get("serverUrl", "")}:${this.displayedSessionId ?? "new"}` };
     }
     if (!this.view) {
@@ -7567,6 +7571,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     let turnCounter = 0;
     const processPolicy = (${createTurnProcessPolicy.toString()})();
     let autoCollapseProcess = true;
+    let showToolCallCount = false;
     let replayingHistory = false;
     let processSessionKey = '';
     let processChoices = vscode.getState?.()?.processChoices || {};
@@ -7950,7 +7955,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
 
     function getTurnSummaryLabel(turn) {
-      return turn.status === 'running' ? '处理中' : '已处理';
+      return turn.status === 'running' ? '处理中' : '已完成';
     }
 
     function updateTurnSummary(turn) {
@@ -7987,11 +7992,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         turn.summaryEl.setAttribute('aria-label', (collapsed ? '展开' : '收起') + '处理过程');
         turn.summaryStatusEl.textContent = !turn.completedConfirmed ? '处理中'
           : turn.reason === 'interrupted' ? '已中断'
-          : turn.reason && !['end_turn', 'stop'].includes(turn.reason) ? '处理已停止' : '处理过程';
+          : turn.reason && !['end_turn', 'stop'].includes(turn.reason) ? '处理已停止' : '已完成';
         turn.summaryTimeEl.textContent = [
           turn.durationMs != null ? formatTurnDuration(turn.durationMs) : turn.endTime && !turn.historical ? formatTurnDuration(getTurnDurationMs(turn)) : '',
-          turn.toolCount ? turn.toolCount + '次工具调用' : '',
-          turn.errorCount ? turn.errorCount + '次工具错误' : '',
+          showToolCallCount && turn.toolCount ? turn.toolCount + '次工具调用' : '',
+          showToolCallCount && turn.errorCount ? turn.errorCount + '次工具错误' : '',
         ].filter(Boolean).join(' · ');
         return;
       }
@@ -8016,6 +8021,16 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
     function updateAllTurnSummaries() {
       turns.forEach(updateTurnSummary);
+    }
+
+    function applyProcessDisplayOptions(msg) {
+      const collapse = typeof msg.autoCollapseProcess === 'boolean' ? msg.autoCollapseProcess : autoCollapseProcess;
+      const counts = typeof msg.showToolCallCount === 'boolean' ? msg.showToolCallCount : showToolCallCount;
+      if (autoCollapseProcess !== collapse || showToolCallCount !== counts) {
+        autoCollapseProcess = collapse;
+        showToolCallCount = counts;
+        updateAllTurnSummaries();
+      }
     }
 
     function finishActiveTurn(boundary = {}) {
@@ -9873,10 +9888,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       const newPerm = msg.permissionMode === 'run_everything' ? 'run_everything' : (msg.permissionMode === 'ai_review' ? 'ai_review' : (msg.permissionMode === 'ask' ? 'ask' : 'default'));
       renderPermissionPolicy(undefined, newPerm);
       const nextPendingEditsVisibleFiles = normalizePendingEditsVisibleFiles(msg.pendingEditsVisibleFiles);
-      if (autoCollapseProcess !== (msg.autoCollapseProcess !== false)) {
-        autoCollapseProcess = msg.autoCollapseProcess !== false;
-        updateAllTurnSummaries();
-      }
+      applyProcessDisplayOptions(msg);
       if (nextPendingEditsVisibleFiles !== pendingEditsVisibleFiles) {
         pendingEditsVisibleFiles = nextPendingEditsVisibleFiles;
         if (currentPendingEditSummary) renderPendingEdits(currentPendingEditSummary);
@@ -11086,8 +11098,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           addMessageEl(msg.message);
           break;
         case 'processDisplayOptions':
-          autoCollapseProcess = msg.autoCollapseProcess !== false;
-          updateAllTurnSummaries();
+          applyProcessDisplayOptions(msg);
           break;
         case 'processTurnEnd':
           finishActiveTurn({ ...msg, confirmed: true });
@@ -11159,6 +11170,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           turnCounter = 0;
           processSessionKey = msg.processSessionKey || currentSessionId || 'new';
           if (typeof msg.autoCollapseProcess === 'boolean') autoCollapseProcess = msg.autoCollapseProcess;
+          if (typeof msg.showToolCallCount === 'boolean') showToolCallCount = msg.showToolCallCount;
           replayingHistory = true;
           (msg.items || []).forEach(renderHistoryItem);
           if (!msg.busy) finishActiveTurn({ confirmed: true });

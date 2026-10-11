@@ -450,7 +450,7 @@ describe("SettingsView", () => {
     expect(handlers.onInstallGatewaySuite).not.toHaveBeenCalled();
   });
 
-  it("controls turn duration visibility and format", () => {
+  it("controls turn duration and opt-in tool counts", () => {
     const handlers = callbacks();
     act(() => root.render(
       <SettingsView
@@ -471,6 +471,11 @@ describe("SettingsView", () => {
 
     expect(handlers.onConversationChange).toHaveBeenNthCalledWith(1, { turn_duration_format: "seconds" });
     expect(handlers.onConversationChange).toHaveBeenNthCalledWith(2, { show_turn_duration: false });
+    const counts = container.querySelector<HTMLButtonElement>('[aria-label="显示工具调用次数"]')!;
+    expect(counts.getAttribute("aria-checked")).toBe("false");
+    act(() => counts.click());
+    expect(handlers.onConversationChange).toHaveBeenNthCalledWith(3, { show_tool_call_count: true });
+    expect(filterSettingsSections("工具调用次数").map((section) => section.id)).toContain("general");
   });
 
   it("toggles session start and completion notifications", () => {

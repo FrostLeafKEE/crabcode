@@ -464,8 +464,11 @@ function localRows(page: HTMLElement, section: Section): void {
         : input(
           String(current),
           spec.title,
-          spec.min !== undefined ? "number" : "text",
+          typeof spec.default === "boolean" ? "checkbox" : spec.min !== undefined ? "number" : "text",
         );
+    if (control instanceof HTMLInputElement && control.type === "checkbox") {
+      control.checked = current === true;
+    }
     if (control instanceof HTMLTextAreaElement) {
       control.rows = 3;
       control.value = (current as string[]).join("\n");
@@ -495,7 +498,9 @@ function localRows(page: HTMLElement, section: Section): void {
           ? control.value.trim()
             ? Number(control.value)
             : NaN
-          : control.value;
+          : control instanceof HTMLInputElement && control.type === "checkbox"
+            ? control.checked
+            : control.value;
       control.disabled = true;
       try {
         const next = await rpc("saveLocal", { key: spec.key, value, scope });
@@ -538,10 +543,13 @@ function syncLocalControls(): void {
   >("[data-local-key]")) {
     const key = control.dataset.localKey!;
     const value = snapshot.local[key]?.value;
-    if (!control.dataset.dirty)
-      control.value = Array.isArray(value)
+    if (!control.dataset.dirty) {
+      if (control instanceof HTMLInputElement && control.type === "checkbox")
+        control.checked = value === true;
+      else control.value = Array.isArray(value)
         ? value.join("\n")
         : String(value ?? "");
+    }
     if (control instanceof HTMLSelectElement) {
       const spec = LOCAL_SETTINGS.find((item) => item.key === key);
       for (const option of control.options) {

@@ -101,7 +101,7 @@ export const SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     id: "general",
     title: "常规",
     description: "运行环境、文件上传、文件查看与会话设置",
-    searchText: "常规 运行环境 Python 路径 自动检测 本地启动 CrabCode 套件 安装 Gateway Search Debugger Browser Playwright Chromium 浏览器工具 网页浏览 Ripgrep rg 语义搜索 文本搜索 调试 浏览器模式 文件 上传 内容 路径 引用 查看 浏览 标签 标签页 最大标签数 最大数量 上限 会话 自动折叠 中间过程 展开 思考 工具调用 在会话结尾显示编辑卡片 编辑卡片 文件变更摘要 跟进 处理方式 排队 引导 queue steer 反向发送 显示 处理用时 耗时 仅秒数 时分秒 发送快捷键 Enter 回车 Ctrl Cmd Command Option 权限快捷键 全局 审批 允许 始终允许 拒绝 Windows macOS F9 F10 F11 系统通知 通知 执行时 执行完毕 开始执行 右下角 气泡 通知权限",
+    searchText: "常规 运行环境 Python 路径 自动检测 本地启动 CrabCode 套件 安装 Gateway Search Debugger Browser Playwright Chromium 浏览器工具 网页浏览 Ripgrep rg 语义搜索 文本搜索 调试 浏览器模式 文件 上传 内容 路径 引用 查看 浏览 标签 标签页 最大标签数 最大数量 上限 会话 自动折叠 中间过程 展开 思考 显示工具调用次数 错误次数 在会话结尾显示编辑卡片 编辑卡片 文件变更摘要 跟进 处理方式 排队 引导 queue steer 反向发送 显示 处理用时 耗时 仅秒数 时分秒 发送快捷键 Enter 回车 Ctrl Cmd Command Option 权限快捷键 全局 审批 允许 始终允许 拒绝 Windows macOS F9 F10 F11 系统通知 通知 执行时 执行完毕 开始执行 右下角 气泡 通知权限",
   },
   {
     id: "appearance",
@@ -355,6 +355,7 @@ export type ConversationSettingsUpdate = Partial<Pick<DesktopSettings,
   | "show_turn_duration"
   | "show_file_edit_summary"
   | "auto_collapse_process"
+  | "show_tool_call_count"
   | "turn_duration_format"
   | "session_notify_on_start"
   | "session_notify_on_complete"
@@ -1209,6 +1210,19 @@ export function SettingsView({
                       aria-checked={settings.auto_collapse_process !== false}
                       aria-label="自动折叠中间过程"
                       onClick={() => onConversationChange({ auto_collapse_process: settings.auto_collapse_process === false })}
+                    ><span /></button>
+                  </div>
+                  <div className="settings-row compact">
+                    <div className="settings-row-copy">
+                      <strong>显示工具调用次数</strong>
+                      <span>在处理状态旁显示本轮工具调用次数及错误次数。默认关闭。</span>
+                    </div>
+                    <button
+                      className={`settings-switch ${settings.show_tool_call_count === true ? "on" : ""}`}
+                      type="button" role="switch"
+                      aria-checked={settings.show_tool_call_count === true}
+                      aria-label="显示工具调用次数"
+                      onClick={() => onConversationChange({ show_tool_call_count: settings.show_tool_call_count !== true })}
                     ><span /></button>
                   </div>
                   <div className="settings-row compact">

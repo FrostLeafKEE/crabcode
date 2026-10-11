@@ -174,6 +174,12 @@
           "default": true,
           "description": "本轮正常结束后，自动收起中间说明、思考和工具调用。最终回答保持展开，可随时查看完整过程。"
         },
+        "crabcode.showToolCallCount": {
+          "tags": ["crabcodeExtension"],
+          "type": "boolean",
+          "default": false,
+          "description": "在处理状态旁显示本轮工具调用次数及错误次数。默认关闭。"
+        },
         "crabcode.fileUploadMaxSizeMb": {
           "tags": [
             "crabcodeProduct"

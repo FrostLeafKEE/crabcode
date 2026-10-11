@@ -27,8 +27,8 @@ function harness(sessionKey: string) {
   node.className = 'messages';
   document.body.append(node);
   const root = createRoot(node);
-  const render = (items: ChatItem[], enabled = true, busy = false, key = sessionKey) => act(() => root.render(
-    <ConversationTurns items={items} busy={busy} sessionKey={key} enabled={enabled} showDuration durationFormat="hms"
+  const render = (items: ChatItem[], enabled = true, busy = false, key = sessionKey, showToolCallCount = false) => act(() => root.render(
+    <ConversationTurns items={items} busy={busy} sessionKey={key} enabled={enabled} showDuration showToolCallCount={showToolCallCount} durationFormat="hms"
       renderItem={(item, presentation) => <StatefulItem item={item} presentation={presentation} />} />));
   const hidden = (id: string) => node.querySelector<HTMLElement>(`[data-process-entry="${id}"]`)?.hidden;
   const close = () => { act(() => root.unmount()); node.remove(); };
@@ -39,6 +39,8 @@ describe('automatic process disclosure', () => {
   it('defaults on for existing settings and respects an explicit false', () => {
     expect(normalizeSettings({ connections: [] } as unknown as DesktopSettings).auto_collapse_process).toBe(true);
     expect(normalizeSettings({ connections: [], auto_collapse_process: false } as unknown as DesktopSettings).auto_collapse_process).toBe(false);
+    expect(normalizeSettings({ connections: [] } as unknown as DesktopSettings).show_tool_call_count).toBe(false);
+    expect(normalizeSettings({ connections: [], show_tool_call_count: true } as unknown as DesktopSettings).show_tool_call_count).toBe(true);
   });
 
   it('folds only the completed process and preserves card state across setting changes', () => {
@@ -49,6 +51,13 @@ describe('automatic process disclosure', () => {
       expect(h.hidden('tool')).toBe(true);
       for (const id of ['u', 'f', 'edits']) expect(h.hidden(id)).toBe(false);
       expect(h.node.querySelector('.process-summary')?.textContent).toContain('1分23秒');
+      expect(h.node.querySelector('.process-summary')?.textContent).toContain('已完成');
+      expect(h.node.querySelector('.process-summary')?.textContent).not.toContain('次工具调用');
+      h.render(fixture(), true, false, 'completed', true);
+      expect(h.node.querySelector('.process-summary')?.textContent).toContain('1次工具调用');
+      expect(h.hidden('tool')).toBe(true);
+      h.render(fixture());
+      expect(h.node.querySelector('.process-summary')?.textContent).not.toContain('次工具调用');
       act(() => h.node.querySelector<HTMLButtonElement>('.process-summary')!.click());
       expect(h.hidden('tool')).toBe(false);
       act(() => h.node.querySelector<HTMLButtonElement>('[data-item="tool"]')!.click());
@@ -69,6 +78,7 @@ describe('automatic process disclosure', () => {
     try {
       h.render(fixture().slice(0, -2), true, true);
       expect(h.hidden('pre')).toBe(false);
+      expect(h.node.querySelector('.process-summary')?.textContent).toContain('处理中');
       h.render(fixture().map(item => item.kind === 'turn_duration' ? { ...item, turnEndReason: 'interrupted' } : item));
       expect(h.hidden('tool')).toBe(false);
       const items = fixture();

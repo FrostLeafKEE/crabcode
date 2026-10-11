@@ -38,6 +38,22 @@ test("local preferences preserve user/workspace precedence and validate in the h
     /未知/,
   );
   assert.ok(!h.panel.webview.html.includes("test-only-secret"));
+  assert.equal(h.doc.querySelector('[aria-label="显示工具调用次数"]').type, "checkbox");
+  assert.equal(h.doc.querySelector('[aria-label="显示工具调用次数"]').checked, false);
+  h.change("显示工具调用次数", true);
+  await h.settle();
+  assert.equal(h.workspace.showToolCallCount, true);
+  assert.equal(h.writes.at(-1).key, "showToolCallCount");
+  assert.equal(h.doc.querySelector('[aria-label="显示工具调用次数"]').checked, true);
+  h.change("显示工具调用次数", false);
+  await h.settle();
+  assert.equal(h.workspace.showToolCallCount, false);
+  assert.equal(h.doc.querySelector('[aria-label="自动折叠中间过程"]').checked, true);
+  h.change("自动折叠中间过程", false);
+  await h.settle();
+  assert.equal(h.workspace.autoCollapseProcess, false);
+  const invalidBoolean = await h.rpc({ action: "saveLocal", key: "showToolCallCount", value: "true", scope: "user" });
+  assert.match(invalidBoolean.error, /开关/);
   h.dom.window.close();
 });
 

@@ -105,6 +105,7 @@ fn default_settings() -> Value {
         "show_turn_duration": true,
         "show_file_edit_summary": true,
         "auto_collapse_process": true,
+        "show_tool_call_count": false,
         "turn_duration_format": "hms",
         "session_notify_on_start": false,
         "session_notify_on_complete": true,
