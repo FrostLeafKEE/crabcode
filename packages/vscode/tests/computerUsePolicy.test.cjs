@@ -75,3 +75,19 @@ test('a stricter workspace permission overrides a global foreground grant', () =
   conn.sendResumeSession('s');
   assert.equal(messages[0].computer_use_delivery_policy, 'strict_background');
 });
+
+test('native host binding follows create and resume and enablement follows every send', () => {
+  const { conn, messages } = connection({});
+  conn.setComputerUseBinding({ hostId: 'vscode-native', enabled: true });
+  conn.sendNewSession('/workspace');
+  conn.sendResumeSession('s');
+  conn.send('observe', { sessionId: 's' });
+  conn.setComputerUseBinding({ hostId: 'vscode-native', enabled: false });
+  conn.send('disabled', { sessionId: 's' });
+  for (const message of messages.slice(0, 2)) {
+    assert.equal(message.computer_use_host_id, 'vscode-native');
+    assert.equal(message.computer_use_enabled, true);
+  }
+  assert.equal(messages[2].computer_use_enabled, true);
+  assert.equal(messages[3].computer_use_enabled, false);
+});

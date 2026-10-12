@@ -1024,7 +1024,9 @@ Default permission behavior:
 
 ### Computer Use modes
 
-After a Crab Desktop Computer Use host is connected, agents can inspect and operate desktop applications. Background application mode is the default:
+Desktop and VS Code share a standalone Computer Use component; VS Code does not require Crab Desktop. In VS Code, enable `crabcode.computerUseEnabled` and use the Computer Use status-bar menu for monitoring, permission settings and refresh. Remote SSH/WSL/container windows use the **local** CrabCode Computer Use companion extension. On macOS, grant **Crab Computer Use** Accessibility and Screen Recording permissions. See [component development and packaging](packages/computer-use/README.md).
+
+Once a host is connected, agents can inspect and operate desktop applications. Background application mode is the default:
 
 ```json
 {

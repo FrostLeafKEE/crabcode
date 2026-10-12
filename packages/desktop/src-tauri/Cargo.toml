@@ -13,9 +13,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+crabcode-computer-use-core = { path = "../../computer-use/core" }
+crabcode-computer-use-host = { path = "../../computer-use/host" }
 dirs = "6"
 base64 = "0.22"
-enigo = "0.6.1"
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
@@ -23,23 +24,10 @@ serde_json = "1"
 tauri = { version = "2", features = ["image-png"] }
 tempfile = "3"
 url = "2"
-xcap = "0.9.8"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
 
-[target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = [
-    "Win32_Foundation",
-    "Win32_System_DataExchange",
-    "Win32_System_Memory",
-    "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_UI_WindowsAndMessaging",
-] }
-
 [target.'cfg(target_os = "macos")'.dependencies]
-core-foundation = "0.10"
-core-graphics = { version = "0.25", features = ["elcapitan", "highsierra"] }
-foreign-types = "0.5"
 libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage"] }

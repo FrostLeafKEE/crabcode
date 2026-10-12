@@ -99,6 +99,14 @@ You can also configure existing keys in settings JSON:
 }
 ```
 
+Enable `crabcode.computerUseEnabled` to use the bundled standalone native
+component without Crab Desktop. The Computer Use status-bar menu provides
+monitoring, permission settings and refresh. On macOS, grant **Crab Computer
+Use** Accessibility and Screen Recording access. Remote SSH/WSL/container
+windows require **CrabCode Computer Use** installed on the local UI side;
+operations target the local desktop. Use the VSIX matching your local OS and
+architecture.
+
 Explicit VS Code values override the Gateway's `computer_use.target_scope`
 and `computer_use.delivery_policy` when creating, resuming or sending to a
 session. Merely inheriting an extension default does not override Gateway settings.

@@ -7,6 +7,7 @@
 import * as vscode from "vscode";
 
 import { CrabCodeConnection } from "./connection";
+import { ComputerUseController } from "./computerUse";
 import { ChatPanelProvider } from "./chatPanel";
 import { CrabCodeSettingsPanel } from "./crabCodeSettingsPanel";
 import { EXTENSION_SETTINGS_QUERY } from "./settings/catalog";
@@ -660,6 +661,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const activeConnection = new CrabCodeConnection(config, outputChannel);
   connection = activeConnection;
   push(activeConnection);
+  const computerUse = push(new ComputerUseController(context, activeConnection, outputChannel));
+  await computerUse.configure();
 
   // 4. Register ChatProvider as WebviewViewProvider
   const activeChatProvider = new ChatPanelProvider(context.extensionUri, activeConnection, outputChannel, context.workspaceState);
@@ -689,6 +692,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("crabcode")) {
         activeConnection.refreshConfiguration();
+        if (e.affectsConfiguration("crabcode.computerUseEnabled") || e.affectsConfiguration("crabcode.serverUrl") || e.affectsConfiguration("crabcode.password")) {
+          void computerUse.configure();
+        }
         activeChatProvider.notifyConfigurationChanged();
         if (activeConnection.connected && activeConnection.sessionId) {
           void activeChatProvider.syncSessionPreferencesFromSettings();

@@ -998,7 +998,9 @@ CrabCode 集成了 **Language Server Protocol (LSP)** 服务器，为 AI agent �
 
 ### Computer Use 操作模式
 
-连接 Crab Desktop 的 Computer Use 宿主后，Agent 可以查看和操作桌面应用。默认使用后台应用模式：
+Desktop 和 VS Code 共用独立的 Computer Use 组件，VS Code 无需启动或安装 Crab Desktop。在 VS Code 中开启 `crabcode.computerUseEnabled`，可从状态栏 Computer Use 菜单查看监看截图、操作记录、系统权限和重新检测。Remote SSH、WSL 和容器窗口通过安装在**本机**的 CrabCode Computer Use 配套扩展操作本机桌面。macOS 需要为 **Crab Computer Use** 单独授予辅助功能和录屏权限。参见[组件开发与打包说明](packages/computer-use/README.md)。
+
+连接 Computer Use 宿主后，Agent 可以查看和操作桌面应用。默认使用后台应用模式：
 
 ```json
 {

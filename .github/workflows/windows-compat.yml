@@ -46,6 +46,10 @@ jobs:
         working-directory: packages/vscode
       - run: npx tsc --noEmit
         working-directory: packages/vscode
+      - run: npm run computer-use:build -- --debug
+        working-directory: packages/desktop
+      - run: cargo test --locked --workspace
+        working-directory: packages/computer-use
       - run: cargo test --locked
         working-directory: packages/desktop/src-tauri
       - run: cargo test --locked windows_credentials_survive_a_new_entry -- --ignored

@@ -231,7 +231,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
               <AlertTriangle />
               <div>
                 <strong>需要开启辅助功能权限</strong>
-                <span>{computerUse.capabilities?.environment === "local_vm" ? "请在虚拟机内为 Crab Computer Use 授予辅助功能和录屏权限。宿主机权限不影响虚拟机输入。" : "点击、输入和滚动需要在 macOS“系统设置 → 隐私与安全性 → 辅助功能”中允许 Crab Desktop，同时需要前台权限策略支持。当前仍可查看屏幕。"}</span>
+                <span>{computerUse.capabilities?.environment === "local_vm" ? "请在虚拟机内为 Crab Computer Use 授予辅助功能和录屏权限。宿主机权限不影响虚拟机输入。" : "点击、输入和滚动需要在 macOS“系统设置 → 隐私与安全性 → 辅助功能”中允许 Crab Computer Use，同时需要前台权限策略支持。当前仍可查看屏幕。"}</span>
               </div>
               <div className="computer-use-permission-actions">
                 <button type="button" onClick={onComputerUseOpenInputSettings}>打开系统设置</button>

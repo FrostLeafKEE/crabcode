@@ -15,6 +15,7 @@ from crabcode_core.types.message import create_user_message
 from crabcode_core.types.tool import ToolContext
 from crabcode_gateway.computer_use import ComputerUseBroker
 from crabcode_gateway.routes.computer_use import _sync_bound_sessions
+from crabcode_gateway.routes.session import _bind_computer_use
 
 
 class FakeBackend:
@@ -37,6 +38,24 @@ class FakeBackend:
                 "height": 10,
             },
         }
+
+
+def test_host_reconnection_preserves_explicit_session_enablement():
+    async def scenario():
+        enabled = SimpleNamespace()
+        disabled = SimpleNamespace()
+        state = SimpleNamespace(computer_use_broker=ComputerUseBroker(), sessions={"on": enabled, "off": disabled})
+        _bind_computer_use(enabled, state, "shared", True)
+        _bind_computer_use(disabled, state, "shared", False)
+        await _sync_bound_sessions(state, "shared", False)
+        assert enabled.computer_use_enabled is True
+        assert enabled.computer_use_host_available is False
+        assert disabled.computer_use_enabled is False
+        await _sync_bound_sessions(state, "shared", True)
+        assert enabled.computer_use_enabled is True
+        assert enabled.computer_use_host_available is True
+        assert disabled.computer_use_enabled is False
+    asyncio.run(scenario())
 
 
 class SessionBinding:

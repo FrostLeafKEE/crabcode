@@ -29,6 +29,7 @@ export interface SendMessageCommand {
   session_id: string | null;
   operation_id?: string;
   images?: ImageAttachment[];
+  computer_use_enabled?: boolean;
   computer_use_mode?: "background_app" | "foreground_desktop";
   computer_use_target_scope?: "app_window" | "desktop";
   computer_use_delivery_policy?: "strict_background" | "allow_foreground";
@@ -169,6 +170,7 @@ export function buildSendMessageCommand(
     sessionId?: string;
     operationId?: string;
     images?: ImageAttachment[];
+    computerUseEnabled?: boolean;
     computerUseMode?: "background_app" | "foreground_desktop";
     computerUseTargetScope?: "app_window" | "desktop";
     computerUseDeliveryPolicy?: "strict_background" | "allow_foreground";
@@ -181,6 +183,7 @@ export function buildSendMessageCommand(
     session_id: options.sessionId ?? null,
   };
   if (options.operationId) cmd.operation_id = options.operationId;
+  if (options.computerUseEnabled !== undefined) cmd.computer_use_enabled = options.computerUseEnabled;
   if (options.images && options.images.length > 0) {
     cmd.images = options.images;
   }

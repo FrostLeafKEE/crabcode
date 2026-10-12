@@ -1,0 +1,40 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, cpSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const version = readFileSync(path.join(root, "host/Cargo.toml"), "utf8").match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+if (!version) throw new Error("Computer Use component version is missing");
+const debug = process.argv.includes("--debug");
+const destinationArg = process.argv.indexOf("--out");
+const destination = destinationArg < 0 ? path.join(root, "dist", `${process.platform}-${process.arch}`) : path.resolve(process.argv[destinationArg + 1]);
+const executable = `crabcode-computer-use-host${process.platform === "win32" ? ".exe" : ""}`;
+execFileSync("cargo", ["build", "--locked", "--manifest-path", path.join(root, "Cargo.toml"), "-p", "crabcode-computer-use-host", ...(debug ? [] : ["--release"])], { stdio: "inherit" });
+const target = process.env.CARGO_TARGET_DIR || path.join(root, "target");
+const binary = path.join(target, debug ? "debug" : "release", executable);
+mkdirSync(destination, { recursive: true });
+if (process.platform === "darwin") {
+  const bundle = path.join(destination, "Crab Computer Use.app");
+  rmSync(bundle, { recursive: true, force: true });
+  mkdirSync(path.join(bundle, "Contents", "MacOS"), { recursive: true });
+  cpSync(binary, path.join(bundle, "Contents", "MacOS", executable));
+  writeFileSync(path.join(bundle, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>io.crabcode.computer-use</string>
+<key>CFBundleName</key><string>Crab Computer Use</string>
+<key>CFBundleExecutable</key><string>${executable}</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>${version}</string>
+<key>CFBundleShortVersionString</key><string>${version}</string>
+<key>LSUIElement</key><true/>
+<key>NSHighResolutionCapable</key><true/>
+</dict></plist>`);
+  // Release CI supplies a stable Developer ID. Local builds are explicitly ad hoc.
+  const identity = process.env.CRABCODE_SIGNING_IDENTITY || "-";
+  execFileSync("/usr/bin/codesign", ["--force", "--sign", identity, ...(identity === "-" ? [] : ["--timestamp", "--options", "runtime"]), bundle], { stdio: "inherit" });
+} else {
+  cpSync(binary, path.join(destination, executable));
+}
+writeFileSync(path.join(destination, "runtime.json"), JSON.stringify({ protocol_version: 1, version, platform: process.platform, arch: process.arch }, null, 2) + "\n");
+console.log(`Computer Use component: ${destination}`);

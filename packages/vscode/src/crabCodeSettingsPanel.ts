@@ -171,7 +171,7 @@ export class CrabCodeSettingsPanel {
       const inspected = config.inspect(spec.key);
       const explicit = inspected?.workspaceValue ?? inspected?.globalValue;
       // These options intentionally inherit Gateway unless explicitly configured.
-      const value = spec.key.startsWith("computerUse")
+      const value = spec.key.startsWith("computerUse") && spec.key !== "computerUseEnabled"
         ? (explicit ?? "")
         : config.get(spec.key, spec.default);
       local[spec.key] = {

@@ -4,9 +4,9 @@
   "version": "0.1.5",
   "identifier": "io.crabcode.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run computer-use:build -- --debug && npm run dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run computer-use:build && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -26,6 +26,7 @@
     }
   },
   "bundle": {
+    "resources": ["resources/computer-use/"],
     "active": true,
     "targets": "all",
     "icon": [

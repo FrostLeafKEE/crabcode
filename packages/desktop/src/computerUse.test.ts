@@ -38,6 +38,49 @@ describe("ComputerUseChannel", () => {
     window.sessionStorage.clear();
   });
 
+  it("rotates AX ownership and clears previews when the shared executor restarts", async () => {
+    let instance = "before";
+    invokeMock.mockImplementation(async (command: string) => command === "computer_use_capabilities"
+      ? { gui_available: true, input_available: true, ax_available: true, ax_protocol_version: 1,
+        delivery_policy_version: 1, instance_id: instance, platform: "macos", displays: [], supported_modes: ["background_app"] }
+      : { ok: true, observation_kind: "ax", accessibility: { elements: [] } });
+    const publish = vi.fn();
+    const channel = new ComputerUseChannel({ authenticate: async () => {}, computerUseWebSocketUrl: () => "ws://localhost/test" } as unknown as GatewayApi,
+      "host", true, publish);
+    await channel.connect();
+    const socket = FakeWebSocket.instances[0]; socket.emit("open");
+    const observe = (id: string) => socket.emit("message", { data: JSON.stringify({ type: "computer_use_request", request_id: id,
+      session_id: "session", target_scope: "app_window", delivery_policy: "strict_background", action: { action: "observe", window_id: "7" } }) });
+    observe("first");
+    await vi.waitFor(() => expect(publish.mock.lastCall?.[0].status).toBe("ready"));
+    const before = invokeMock.mock.calls.find(([command]) => command === "computer_use_execute")![1];
+    expect(before.instanceId).toBe("before");
+    expect(before.lease).toEqual(before.request.owner);
+    instance = "after";
+    channel.refresh();
+    await vi.waitFor(() => expect(publish.mock.lastCall?.[0].capabilities.instance_id).toBe("after"));
+    expect(publish.mock.lastCall?.[0].previews).toEqual([]);
+    observe("second");
+    await vi.waitFor(() => expect(invokeMock.mock.calls.filter(([command]) => command === "computer_use_execute")).toHaveLength(2));
+    const after = invokeMock.mock.calls.filter(([command]) => command === "computer_use_execute")[1][1];
+    expect(after.instanceId).toBe("after");
+    expect(after.request.owner.connection_id).not.toBe(before.request.owner.connection_id);
+    channel.dispose();
+  });
+
+  it("releases shared host leases on disable even on a non-AX platform", async () => {
+    invokeMock.mockResolvedValue({ gui_available: true, input_available: true, instance_id: "windows-host",
+      platform: "windows", displays: [], supported_modes: ["background_app"], delivery_policy_version: 1 });
+    const channel = new ComputerUseChannel({ authenticate: async () => {}, computerUseWebSocketUrl: () => "ws://localhost/test" } as unknown as GatewayApi,
+      "host", true, vi.fn());
+    await channel.connect();
+    channel.setEnabled(false);
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("computer_use_release_ax", {
+      hostId: "host", connectionId: expect.any(String), sessionId: null, agentId: null, allAgents: true,
+    }));
+    channel.dispose();
+  });
+
   it("binds AX references to a host connection and releases them before preview retention expires", async () => {
     const caps = { gui_available: true, input_available: true, capture_available: false,
       ax_available: true, ax_protocol_version: 1, platform: "macos", displays: [],

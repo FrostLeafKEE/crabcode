@@ -20,6 +20,7 @@ pub fn run() {
             computer_use::computer_use_execute,
             computer_use::computer_use_release_ax,
             computer_use::computer_use_open_input_settings,
+            computer_use::computer_use_heartbeat,
             virtual_machine::computer_use_vm_list,
             virtual_machine::computer_use_vm_manage,
             virtual_machine::computer_use_vm_capabilities,

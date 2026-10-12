@@ -17,7 +17,10 @@ async def _sync_bound_sessions(state: Any, host_id: str, enabled: bool) -> None:
     async with get_session_lock(state):
         for session in state.sessions.values():
             if getattr(session, "computer_use_host_id", None) == host_id:
-                session.computer_use_enabled = enabled
+                session.computer_use_host_available = enabled
+                # A reconnect is availability, not user intent. Legacy sessions
+                # without an explicit choice keep their historical behavior.
+                session.computer_use_enabled = getattr(session, "_computer_use_requested_enabled", enabled)
 
 
 @router.websocket("/computer-use/ws")

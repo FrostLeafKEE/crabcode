@@ -1,0 +1,32 @@
+name: Shared Computer Use
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: cargo test --locked --workspace
+        working-directory: packages/computer-use
+      - run: node packages/computer-use/scripts/build.mjs --debug
+      - run: npm ci
+        working-directory: packages/vscode
+      - run: npm run build
+        working-directory: packages/vscode
+      - run: node --test tests/computerUse*.test.cjs
+        working-directory: packages/vscode
+      - run: npm ci
+        working-directory: packages/vscode-computer-use
+      - run: npm run build
+        working-directory: packages/vscode-computer-use

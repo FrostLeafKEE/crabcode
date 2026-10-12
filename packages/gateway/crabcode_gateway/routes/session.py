@@ -263,6 +263,7 @@ def _bind_computer_use(
     """Bind a session to a Desktop host before tools are initialized."""
     if enabled is not None:
         session.computer_use_enabled = enabled
+        session._computer_use_requested_enabled = enabled
     if target_scope is not None:
         mode = "foreground_desktop" if target_scope == "desktop" else "background_app"
     if mode is not None:

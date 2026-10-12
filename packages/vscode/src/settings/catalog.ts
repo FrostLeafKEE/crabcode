@@ -125,6 +125,13 @@ export const LOCAL_SETTINGS: LocalDefinition[] = [
     ],
   },
   {
+    key: "computerUseEnabled",
+    section: "tools",
+    title: "启用 Computer Use",
+    description: "使用独立本机执行器，无需启动 Desktop；可在状态栏查看权限和监看截图。",
+    default: false,
+  },
+  {
     key: "computerUseTargetScope",
     section: "tools",
     title: "Computer Use 操作目标覆盖",

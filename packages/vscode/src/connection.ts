@@ -56,6 +56,7 @@ type Listener<E extends ConnectionEventName> = E extends "disconnected"
 // ── Connection class ──────────────────────────────────────────────
 
 export class CrabCodeConnection implements vscode.Disposable {
+  private computerUseBinding?: { hostId: string; enabled: boolean };
   private ws: WebSocket | null = null;
   private listeners = new Map<string, Set<Listener<any>>>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -78,6 +79,14 @@ export class CrabCodeConnection implements vscode.Disposable {
   ) {}
 
   // ── Public state ───────────────────────────────────────────────
+
+  setComputerUseBinding(binding: { hostId: string; enabled: boolean }): void {
+    this.computerUseBinding = binding;
+  }
+
+  private computerUseSessionOptions(): { computer_use_host_id?: string; computer_use_enabled?: boolean } {
+    return this.computerUseBinding ? { computer_use_host_id: this.computerUseBinding.hostId, computer_use_enabled: this.computerUseBinding.enabled } : {};
+  }
 
   refreshConfiguration(): void {
     this.config = vscode.workspace.getConfiguration("crabcode");
@@ -212,6 +221,7 @@ export class CrabCodeConnection implements vscode.Disposable {
       sessionId,
       operationId,
       images: options?.images,
+      computerUseEnabled: this.computerUseBinding?.enabled,
       computerUseMode: this.computerUseModeOverride(),
       computerUseTargetScope: this.computerUseTargetScopeOverride(),
       computerUseDeliveryPolicy: this.computerUseDeliveryPolicyOverride(),
@@ -339,6 +349,7 @@ export class CrabCodeConnection implements vscode.Disposable {
       computer_use_target_scope: this.computerUseTargetScopeOverride(),
       computer_use_delivery_policy: this.computerUseDeliveryPolicyOverride(),
       ...overrides,
+      ...this.computerUseSessionOptions(),
     })));
   }
 
@@ -351,6 +362,7 @@ export class CrabCodeConnection implements vscode.Disposable {
       computer_use_target_scope: this.computerUseTargetScopeOverride(),
       computer_use_delivery_policy: this.computerUseDeliveryPolicyOverride(),
       ...overrides,
+      ...this.computerUseSessionOptions(),
     })));
   }
 
