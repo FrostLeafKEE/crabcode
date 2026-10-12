@@ -16,3 +16,4 @@ esbuild.js
 tsconfig.json
 tsconfig.webview.json
 node_modules/.package-lock.json
+computer-use/**

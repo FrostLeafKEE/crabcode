@@ -3,8 +3,8 @@ import { isDesktopShell } from "./native";
 import { randomUuid } from "./uuid";
 import type { GatewayApi } from "./gateway";
 import type { LocalVmConfig } from "./virtualMachine";
-import { ComputerUseChannel as SharedComputerUseChannel, type ComputerUseState } from "../../shared/computerUse/channel.js";
-export * from "../../shared/computerUse/channel.js";
+import { ComputerUseChannel as SharedComputerUseChannel, type ComputerUseState } from "../../computer-use/client/channel.js";
+export * from "../../computer-use/client/channel.js";
 const COMPUTER_USE_HOST_ID_STORAGE_KEY = "crabcode.computer-use-host-id";
 
 export function computerUseHostId(): string {

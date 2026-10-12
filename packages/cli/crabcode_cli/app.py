@@ -23,6 +23,13 @@ document_engine_app = typer.Typer(
 )
 app.add_typer(document_engine_app, name="document-engine")
 
+computer_use_app = typer.Typer(
+    name="computer-use",
+    help="Manage the shared native Computer Use component (automatically used by the CLI).",
+    add_completion=False,
+)
+app.add_typer(computer_use_app, name="computer-use")
+
 logger = get_logger(__name__)
 
 
@@ -32,6 +39,62 @@ def _configure_utf8_stdio() -> None:
         reconfigure = getattr(stream, "reconfigure", None)
         if callable(reconfigure):
             reconfigure(encoding="utf-8", errors="replace")
+
+
+def _computer_use_command(*, bundle: str | None = None, permissions: bool = False, json_output: bool = False) -> None:
+    import json
+    from pathlib import Path
+
+    from crabcode_cli.computer_use import ComputerUseError, NativeClient
+
+    async def run() -> dict:
+        client = NativeClient()
+        await client.start(Path(bundle).expanduser().resolve() if bundle else None)
+        if permissions:
+            await client.request("permissions", timeout=10)
+        caps = await client.request("capabilities", timeout=25)
+        return {"installed": True, "path": str(client.state_dir), **caps}
+
+    try:
+        status = asyncio.run(run())
+    except ComputerUseError as exc:
+        if json_output:
+            typer.echo(json.dumps({"status": "unavailable", "detail": str(exc)}, ensure_ascii=False))
+        else:
+            typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps(status, ensure_ascii=False))
+    else:
+        typer.echo(f"Computer Use: {status['path']}")
+        for key, label in (("gui_available", "图形桌面"), ("capture_available", "截图"),
+                           ("input_available", "输入"), ("ax_available", "辅助功能树")):
+            typer.echo(f"  {label}: {'可用' if status.get(key) else '不可用'}")
+        if not status.get("capture_available") or not status.get("input_available"):
+            typer.echo("请检查图形会话及系统权限；macOS 请为 Crab Computer Use 开启录屏和辅助功能。")
+
+
+@computer_use_app.command("status")
+def computer_use_status_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Print capabilities as JSON"),
+) -> None:
+    """Start the installed component and check its current capabilities."""
+    _computer_use_command(json_output=json_output)
+
+
+@computer_use_app.command("install")
+def computer_use_install_cmd(
+    bundle: str = typer.Option(..., "--bundle", help="Native component directory (or macOS .app)"),
+    json_output: bool = typer.Option(False, "--json", help="Print capabilities as JSON"),
+) -> None:
+    """Install a native component bundle; no Desktop or VS Code installation required."""
+    _computer_use_command(bundle=bundle, json_output=json_output)
+
+
+@computer_use_app.command("permissions")
+def computer_use_permissions_cmd() -> None:
+    """Open the native input permission settings (macOS)."""
+    _computer_use_command(permissions=True)
 
 
 @document_engine_app.command("status")
@@ -696,7 +759,7 @@ def stats(
 
 def entry() -> None:
     _configure_utf8_stdio()
-    known_subcommands = {"main", "sessions", "stats", "gateway", "acp", "document-engine"}
+    known_subcommands = {"main", "sessions", "stats", "gateway", "acp", "document-engine", "computer-use"}
     args = sys.argv[1:]
     # Preserve root --help so users can still discover all subcommands.
     if args and args[0] in ("--help", "-h"):

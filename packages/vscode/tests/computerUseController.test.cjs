@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 
 const source = buildSync({ entryPoints: [path.join(__dirname, '../src/computerUse.ts')], bundle: true,
-  write: false, platform: 'node', format: 'cjs', external: ['vscode', 'ws', '../../shared/computerUse/vscodeHost.js'],
+  write: false, platform: 'node', format: 'cjs', external: ['vscode', 'ws', '../../computer-use/client/vscodeHost.js'],
 }).outputFiles[0].text;
 
 function harness(remote = false) {

@@ -998,7 +998,25 @@ CrabCode 集成了 **Language Server Protocol (LSP)** 服务器，为 AI agent �
 
 ### Computer Use 操作模式
 
-Desktop 和 VS Code 共用独立的 Computer Use 组件，VS Code 无需启动或安装 Crab Desktop。在 VS Code 中开启 `crabcode.computerUseEnabled`，可从状态栏 Computer Use 菜单查看监看截图、操作记录、系统权限和重新检测。Remote SSH、WSL 和容器窗口通过安装在**本机**的 CrabCode Computer Use 配套扩展操作本机桌面。macOS 需要为 **Crab Computer Use** 单独授予辅助功能和录屏权限。参见[组件开发与打包说明](packages/computer-use/README.md)。
+Desktop、VS Code 和 CLI 共用独立的 Computer Use 原生组件，VS Code 和 CLI 无需启动或安装 Crab Desktop。CLI 在交互式和管道会话中自动检测已安装的组件，直接运行 `crabcode` 即可，**不需要 `--computer-use` 启动参数**。组件可用时，Agent 的工具列表会自动提供 `ComputerUse`，操作仍遵循现有工具权限和投递策略；未安装组件或没有可用图形桌面时，普通编程功能不受影响。
+
+可通过以下命令检查组件和权限：
+
+```sh
+crabcode computer-use status
+crabcode computer-use status --json
+crabcode computer-use permissions  # macOS：打开辅助功能权限设置
+```
+
+如果 Desktop 或 VS Code 已安装原生组件，CLI 会直接复用。仅安装 CLI 时，需准备与当前操作系统、架构匹配的组件包，再安装一次；Python 包本身不包含原生执行器：
+
+```sh
+crabcode computer-use install --bundle <原生组件目录>
+```
+
+macOS 的 `--bundle` 也接受 `.app` 路径。首次安装后启动新的 CLI 会话；已有会话会定期重新检测系统权限。macOS 需要为 **Crab Computer Use** 单独授予辅助功能和录屏权限，安装位置为 `~/Library/Application Support/CrabCode/ComputerUse/Crab Computer Use.app`。
+
+在 VS Code 中开启 `crabcode.computerUseEnabled`，可从状态栏 Computer Use 菜单查看监看截图、操作记录、系统权限和重新检测。Remote SSH、WSL 和容器窗口通过安装在**本机**的 CrabCode Computer Use 配套扩展操作本机桌面。直接在 SSH 中运行 CLI 时，操作目标是 CLI 所在机器，不会自动转发到本机桌面。参见[组件开发与打包说明](packages/computer-use/README.md)。
 
 连接 Computer Use 宿主后，Agent 可以查看和操作桌面应用。默认使用后台应用模式：
 
@@ -2083,13 +2101,23 @@ crabcode/
 │   │   ├── app.py              # 入口（typer）
 │   │   ├── repl.py             # 交互式 REPL
 │   │   ├── pipe.py             # 管道模式
+│   │   ├── computer_use.py     # 自动接入共享原生执行器的 Python 适配层
 │   │   └── render/             # 终端渲染
-│   └── search/crabcode_search/ # 语义搜索（可选）
-│       ├── chunker.py          # AST + 正则代码分块
-│       ├── embedder.py         # 嵌入后端（Ollama、Gemini、OpenAI、HuggingFace、ModelScope）
-│       ├── store.py            # USearch 向量存储（精确搜索 → HNSW，阈值 10 万 chunks）
-│       ├── indexer.py          # 文件扫描、变更检测、批量索引
-│       └── tool.py             # CodebaseSearchTool（extra_tools 挂载入口）
+│   ├── computer-use/           # 各客户端共用的 Computer Use 组件
+│   │   ├── core/              # Rust 原生引擎：截图、输入、AX 和投递策略
+│   │   ├── host/              # 每个系统用户共用的独立执行器
+│   │   ├── client/            # Desktop / VS Code 共用的 JavaScript 通道
+│   │   └── scripts/           # 构建、打包与实机验证
+│   ├── desktop/               # Crab Desktop（React + Tauri）
+│   ├── vscode/                # VS Code 主扩展
+│   │   └── computer-use/      # 远程工作区使用的本机 UI 配套扩展
+│   ├── shared/                # 跨客户端聊天公共代码（斜杠命令、过程折叠等）
+│   ├── search/crabcode_search/ # 语义搜索（可选）
+│   │   ├── chunker.py          # AST + 正则代码分块
+│   │   ├── embedder.py         # 嵌入后端（Ollama、Gemini、OpenAI、HuggingFace、ModelScope）
+│   │   ├── store.py            # USearch 向量存储（精确搜索 → HNSW，阈值 10 万 chunks）
+│   │   ├── indexer.py          # 文件扫描、变更检测、批量索引
+│   │   └── tool.py             # CodebaseSearchTool（extra_tools 挂载入口）
 │   └── gateway/crabcode_gateway/ # 网关服务器（可选）
 │       ├── server.py           # GatewayServer 主入口
 │       ├── adapter.py          # ProtocolAdapter 抽象（HTTP、gRPC）

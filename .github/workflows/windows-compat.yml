@@ -24,8 +24,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: python -m pip install -e . fastapi pypdf python-multipart
+      - run: python -m pip install -e . fastapi pypdf python-multipart pytest
       - run: python -m unittest discover -s tests -p "test_windows*.py" -v
+      - run: python -m pytest tests/test_cli_computer_use.py -q
 
   windows-clients:
     runs-on: windows-latest

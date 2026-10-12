@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
-import { VSCodeComputerUseHost, type ComputerUseBinding, type ComputerUseHostOptions } from '../../shared/computerUse/vscodeHost.js';
+import { VSCodeComputerUseHost, type ComputerUseBinding, type ComputerUseHostOptions } from '../../computer-use/client/vscodeHost.js';
 import type { CrabCodeConnection } from './connection';
 
 export class ComputerUseController implements vscode.Disposable {

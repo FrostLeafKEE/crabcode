@@ -14,5 +14,5 @@ permissions. Crab Desktop is not required. Delivery policy remains controlled
 by the existing CrabCode session settings.
 
 Build the platform-specific package with `npm ci`, then
-`npm run vscode:prepublish`. See `../computer-use/README.md` in the source
+`npm run vscode:prepublish`. See `../../computer-use/README.md` in the source
 repository for native development, signing and regression validation.

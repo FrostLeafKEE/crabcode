@@ -2227,7 +2227,15 @@ async def run_repl(
 
     session.on_tool_event = _on_tool_event
 
+    computer_use = None
     try:
+        from crabcode_cli.computer_use import connect_session
+
+        computer_use = await connect_session(session)
+        if computer_use is not None:
+            caps = computer_use.capabilities(computer_use.host_id)
+            available = "ready" if caps.get("gui_available") and caps.get("input_available") else "limited — check crabcode computer-use status"
+            console.print(f"  Computer Use: {available}", style="dim")
         if resume_session_id:
             await session.initialize()
             ok = await session.resume(resume_session_id)
@@ -2751,10 +2759,14 @@ async def run_repl(
             try:
                 await session.close()
             finally:
-                if composer is not None:
-                    await composer.close()
-                if stdout_patch is not None:
-                    stdout_patch.__exit__(None, None, None)
+                try:
+                    if computer_use is not None:
+                        await computer_use.close()
+                finally:
+                    if composer is not None:
+                        await composer.close()
+                    if stdout_patch is not None:
+                        stdout_patch.__exit__(None, None, None)
 
 
 async def _prompt_plan_action(session: CoreSession, console: Console) -> None:

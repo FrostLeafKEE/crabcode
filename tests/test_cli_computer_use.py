@@ -1,0 +1,292 @@
+"""CLI discovery/lifecycle and native IPC, without touching the user's desktop."""
+
+import asyncio
+from contextlib import asynccontextmanager
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+from typer.testing import CliRunner
+
+from crabcode_cli import computer_use as cu
+from crabcode_cli.app import app
+from crabcode_core.tools.computer_use import ComputerUseTool
+from crabcode_core.types.tool import ToolContext
+
+
+CAPS = {"instance_id": "first", "host_protocol_version": 1, "gui_available": True,
+        "input_available": True, "capture_available": True, "ax_available": True,
+        "ax_protocol_version": 1, "delivery_policy_version": 1,
+        "supported_modes": ["background_app", "foreground_desktop"]}
+
+
+@asynccontextmanager
+async def executor(tmp_path, reply=None):
+    messages = []
+    writers = []
+
+    async def handle(reader, writer):
+        writers.append(writer)
+        message = json.loads(await reader.readline())
+        messages.append(message)
+        if reply is None:
+            result = CAPS if message["method"] == "capabilities" else {"ok": True}
+            wire = json.dumps({"ok": True, "result": result}).encode() + b"\n"
+        else:
+            wire = reply(message)
+        if wire is not None:
+            for index in range(0, len(wire), 1703):
+                writer.write(wire[index:index + 1703])
+            await writer.drain()
+            writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    client = cu.NativeClient(tmp_path)
+    endpoint = {"protocol_version": 1, "port": server.sockets[0].getsockname()[1],
+                "token": "a" * 64, "instance_id": "first"}
+    (tmp_path / "endpoint.json").write_text(json.dumps(endpoint))
+    executable = cu.bundled_executable(tmp_path)
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.touch()
+    client.start = AsyncMock()
+    try:
+        yield client, messages
+    finally:
+        for writer in writers:
+            writer.close()
+        server.close()
+        await server.wait_closed()
+
+
+def test_native_large_frames_and_authenticated_framing(tmp_path):
+    async def scenario():
+        result = {"screenshot": {"data": "a" * 256000}, "effect_verified": False,
+                  "accessibility": {"snapshot_id": "snapshot"}}
+        wire = json.dumps({"ok": True, "result": result}).encode() + b"\n"
+        async with executor(tmp_path, lambda _: wire) as (client, messages):
+            assert await client.request("execute", {"instanceId": "first"}, instance_id="first") == result
+            assert len(messages) == 1
+            assert messages[0]["token"] == "a" * 64
+            assert messages[0]["instance_id"] == "first"
+            assert messages[0]["params"] == {"instanceId": "first"}
+            assert messages[0]["deadline_ms"] > 0
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("wire,error", [(b'{"ok":true,', "不完整"), (None, "超时"),
+                                       (b'{"ok":false,"error":"stale"}\n', "stale")])
+def test_native_errors_never_replay_input(tmp_path, wire, error):
+    async def scenario():
+        async with executor(tmp_path, lambda _: wire) as (client, messages):
+            with pytest.raises(cu.ComputerUseError, match=error):
+                await client.request("execute", timeout=0.05)
+            assert len(messages) == 1
+    asyncio.run(scenario())
+
+
+def test_old_instance_and_oversize_requests_are_not_sent(tmp_path):
+    async def scenario():
+        async with executor(tmp_path) as (client, messages):
+            with pytest.raises(cu.ComputerUseError, match="已重启"):
+                await client.request("execute", instance_id="old")
+            with pytest.raises(cu.ComputerUseError, match="大小限制"):
+                await client.request("execute", {"text": "a" * 1048576})
+            assert messages == []
+    asyncio.run(scenario())
+
+
+def test_automatic_binding_uses_core_policy_and_scopes_leases(tmp_path, monkeypatch):
+    async def scenario():
+        async with executor(tmp_path) as (client, messages):
+            monkeypatch.setattr(cu, "NativeClient", lambda: client)
+            session = SimpleNamespace(computer_use_mode="background_app",
+                                      computer_use_delivery_policy="strict_background")
+            backend = await cu.connect_session(session)
+            assert session.computer_use_enabled
+            tool = ComputerUseTool()
+            context = ToolContext(session=session, session_id="session", agent_id="child")
+            await tool.setup(context)
+            assert tool.is_available(context)
+            result = await tool.call({"action": "list_windows"}, context)
+            assert not result.is_error
+            sent = next(m["params"] for m in messages if m["method"] == "execute")
+            assert sent["request"]["delivery_policy"] == "strict_background"
+            assert sent["lease"] == sent["request"]["owner"] == {
+                "host_id": backend.host_id, "connection_id": backend.connection_id,
+                "session_id": "session", "agent_id": "child",
+            }
+            await backend.release(backend.host_id, session_id="session", agent_id="child")
+            assert messages[-1]["params"]["allAgents"] is False
+            await backend.close()
+            assert messages[-1]["params"]["sessionId"] is None
+            assert messages[-1]["params"]["allAgents"] is True
+            assert not tool.is_available(context)
+            assert backend._heartbeat is None
+    asyncio.run(scenario())
+
+
+def test_monitor_frames_removed_and_scope_guarded():
+    async def scenario():
+        client = SimpleNamespace(request=AsyncMock(return_value={
+            "ok": True, "preview_screenshot": {"data": "private-preview"},
+            "preview_screenshot_error": "preview", "screenshot": {"data": "model"},
+        }))
+        backend = cu.LocalComputerUse(client)
+        backend._caps = dict(CAPS)
+        result = await backend.execute(backend.host_id, session_id="session", agent_id=None,
+                                       action={"action": "observe", "window_id": "1"})
+        assert result == {"ok": True, "screenshot": {"data": "model"}}
+        for options in ({"target_scope": "desktop"}, {"mode": "foreground_desktop", "target_scope": "app_window"},
+                        {"delivery_policy": "invalid"}):
+            with pytest.raises(cu.ComputerUseError):
+                await backend.execute(backend.host_id, session_id="session", agent_id=None,
+                                      action={"action": "click"}, **options)
+        assert client.request.await_count == 1
+    asyncio.run(scenario())
+
+
+def test_restart_rotates_owner_and_reconnect_does_not_replay_input():
+    async def scenario():
+        client = SimpleNamespace(start=AsyncMock(), request=AsyncMock(return_value=dict(CAPS)))
+        backend = cu.LocalComputerUse(client)
+        await backend.refresh()
+        connection = backend.connection_id
+        await backend.refresh()
+        assert backend.connection_id == connection
+        client.request.return_value = {**CAPS, "instance_id": "second"}
+        await backend.refresh()
+        assert backend.connection_id != connection
+        assert all(call.args[0] == "capabilities" for call in client.request.await_args_list)
+    asyncio.run(scenario())
+
+
+def test_absent_or_broken_component_does_not_break_cli(tmp_path, monkeypatch):
+    async def scenario():
+        client = cu.NativeClient(tmp_path)
+        monkeypatch.setattr(cu, "NativeClient", lambda: client)
+        session = SimpleNamespace(computer_use_enabled=False)
+        assert await cu.connect_session(session) is None
+        assert not session.computer_use_enabled
+        executable = cu.bundled_executable(tmp_path)
+        executable.parent.mkdir(parents=True, exist_ok=True)
+        executable.touch()
+        client.start = AsyncMock(side_effect=cu.ComputerUseError("unavailable"))
+        assert await cu.connect_session(session) is None
+        assert not session.computer_use_enabled
+    asyncio.run(scenario())
+
+
+def test_heartbeat_recovers_after_restart_without_replaying_input(monkeypatch):
+    async def scenario():
+        calls = []
+        capability_reads = 0
+
+        async def request(method, *args, **kwargs):
+            nonlocal capability_reads
+            calls.append(method)
+            if method == "heartbeat" and capability_reads < 3:
+                raise cu.ComputerUseError("disconnected")
+            if method == "capabilities":
+                capability_reads += 1
+                if capability_reads == 2:
+                    raise cu.ComputerUseError("restarting")
+                return {**CAPS, "instance_id": "first" if capability_reads == 1 else "second"}
+
+        client = SimpleNamespace(start=AsyncMock(), request=request)
+        backend = cu.LocalComputerUse(client)
+        monkeypatch.setattr(cu, "_HEARTBEAT_SECONDS", 0.01)
+        await backend.connect()
+        original_owner = backend.connection_id
+        try:
+            async def recovered():
+                while backend.capabilities(backend.host_id).get("instance_id") != "second":
+                    await asyncio.sleep(0.005)
+            await asyncio.wait_for(recovered(), 2)
+            assert backend.is_available(backend.host_id)
+            assert backend.connection_id != original_owner
+            assert "execute" not in calls
+        finally:
+            await backend.close()
+    asyncio.run(scenario())
+
+
+def test_repl_automatically_binds_and_cleans_up_on_eof(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from io import StringIO
+    from rich.console import Console
+    from crabcode_cli import repl
+    from crabcode_core.events import CoreSession
+
+    async def scenario():
+        async with executor(tmp_path) as (client, messages):
+            monkeypatch.setattr(cu, "NativeClient", lambda: client)
+            session = CoreSession(cwd=str(tmp_path))
+            monkeypatch.setattr(repl, "CoreSession", lambda **kwargs: session)
+            monkeypatch.setattr(repl, "console", Console(file=StringIO()))
+            monkeypatch.setattr(repl, "patch_stdout", lambda **kwargs: nullcontext())
+
+            async def next_event():
+                assert session.computer_use_enabled
+                assert session.computer_use_backend.is_available(session.computer_use_host_id)
+                return "eof", ""
+
+            composer = SimpleNamespace(start=lambda: None, next_event=next_event, close=AsyncMock())
+            monkeypatch.setattr(repl, "_PersistentComposer", lambda *args: composer)
+            await repl.run_repl(cwd=str(tmp_path))
+            assert not session.computer_use_backend.is_available(session.computer_use_host_id)
+            assert messages[-1]["method"] == "release"
+            assert messages[-1]["params"]["allAgents"] is True
+            composer.close.assert_awaited_once()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_pipe_auto_connects_without_flags_and_closes_after_session(tmp_path, monkeypatch, fail):
+    from crabcode_cli.pipe import run_pipe
+
+    async def scenario():
+        async with executor(tmp_path) as (client, messages):
+            monkeypatch.setattr(cu, "NativeClient", lambda: client)
+            session = SimpleNamespace()
+
+            async def send_message(*args, **kwargs):
+                assert session.computer_use_enabled
+                assert session.computer_use_backend.is_available(session.computer_use_host_id)
+                if fail:
+                    raise RuntimeError("turn failed")
+                if False:
+                    yield
+
+            async def close():
+                assert session.computer_use_backend.is_available(session.computer_use_host_id)
+                await session.computer_use_backend.release(session.computer_use_host_id, session_id="session", all_agents=True)
+
+            session.send_message = send_message
+            session.close = close
+            monkeypatch.setattr("crabcode_cli.pipe.CoreSession", lambda **kwargs: session)
+            if fail:
+                with pytest.raises(RuntimeError, match="turn failed"):
+                    await run_pipe("hello")
+            else:
+                await run_pipe("hello")
+            assert not session.computer_use_backend.is_available(session.computer_use_host_id)
+            releases = [m["params"] for m in messages if m["method"] == "release"]
+            assert [r["sessionId"] for r in releases] == ["session", None]
+    asyncio.run(scenario())
+
+
+def test_cli_status_and_install_do_not_require_a_session_flag(monkeypatch, tmp_path):
+    client = SimpleNamespace(state_dir=tmp_path, start=AsyncMock(), request=AsyncMock(return_value=CAPS))
+    monkeypatch.setattr(cu, "NativeClient", lambda: client)
+    runner = CliRunner()
+    result = runner.invoke(app, ["computer-use", "status", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["input_available"] is True
+    result = runner.invoke(app, ["computer-use", "install", "--bundle", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    client.start.assert_awaited_with(tmp_path)
+    client.start.side_effect = cu.ComputerUseError("missing component")
+    result = runner.invoke(app, ["computer-use", "status", "--json"])
+    assert result.exit_code == 1
+    assert json.loads(result.output)["status"] == "unavailable"

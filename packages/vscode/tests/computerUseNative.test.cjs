@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
 const { once } = require('node:events');
-const { request } = require('../../shared/computerUse/nativeClient.cjs');
+const { request } = require('../../computer-use/client/nativeClient.cjs');
 
 async function server(handler, run) {
   const sockets = new Set();

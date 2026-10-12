@@ -18,5 +18,5 @@ packages/computer-use/target-*/
 packages/desktop/src-tauri/gen/schemas/
 packages/desktop/src-tauri/resources/computer-use/
 packages/vscode/resources/computer-use/
-packages/vscode-computer-use/resources/computer-use/
-packages/vscode-computer-use/*.vsix
+packages/vscode/computer-use/resources/computer-use/
+packages/vscode/computer-use/*.vsix

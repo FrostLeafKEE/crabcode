@@ -78,6 +78,7 @@ class CliApiRecoveryTests(unittest.IsolatedAsyncioTestCase):
             create_pipe_input() as pipe,
             create_app_session(input=pipe, output=DummyOutput()),
             patch.object(repl, "CoreSession", return_value=session),
+            patch("crabcode_cli.computer_use.connect_session", new=AsyncMock(return_value=None)),
             patch.object(repl, "_PersistentComposer", side_effect=make_composer),
             patch.object(repl, "console", Console(file=output, width=180)),
             patch("crabcode_core.api.create_adapter", side_effect=adapter_factory or make_adapter),

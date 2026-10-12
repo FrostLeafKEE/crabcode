@@ -87,8 +87,12 @@ async def run_pipe(
     images: list[dict[str, str]] | None = None,
 ) -> None:
     """Run a single prompt through the core and print the response."""
+    from crabcode_cli.computer_use import connect_session
+
     session = CoreSession(cwd=cwd, settings=settings)
+    computer_use = None
     try:
+        computer_use = await connect_session(session)
         async for event in session.send_message(prompt, images=images):
             if isinstance(event, StreamTextEvent):
                 sys.stdout.write(safe_utf8_str(event.text))
@@ -134,7 +138,11 @@ async def run_pipe(
                     sys.stderr.write(f"\n{usage_text}\n")
                     sys.stderr.flush()
     finally:
-        await session.close()
+        try:
+            await session.close()
+        finally:
+            if computer_use is not None:
+                await computer_use.close()
 
     sys.stdout.write("\n")
     sys.stdout.flush()

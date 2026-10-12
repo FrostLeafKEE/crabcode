@@ -27,6 +27,6 @@ jobs:
       - run: node --test tests/computerUse*.test.cjs
         working-directory: packages/vscode
       - run: npm ci
-        working-directory: packages/vscode-computer-use
+        working-directory: packages/vscode/computer-use
       - run: npm run build
-        working-directory: packages/vscode-computer-use
+        working-directory: packages/vscode/computer-use
