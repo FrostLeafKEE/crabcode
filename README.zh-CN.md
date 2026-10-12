@@ -40,6 +40,8 @@ pip install crabcode[search,bedrock]
 pip install crabcode[browser,search]
 ```
 
+macOS（Apple Silicon / Intel）和 Windows x64 的平台 wheel 自带 Computer Use 原生组件，随 `pip install crabcode` 一起安装。首次运行 CrabCode 时会自动部署到用户共用目录，无需额外安装命令或启动参数；在交互会话中输入 `/status` 可查看可用状态。macOS 首次使用仍需为 **Crab Computer Use** 授予辅助功能和录屏权限。
+
 Windows PowerShell 请使用 `$env:ANTHROPIC_API_KEY = "YourKey"` 设置环境变量；
 下文其它供应商的 Key 同样使用 `$env:变量名` 形式。
 
@@ -998,7 +1000,7 @@ CrabCode 集成了 **Language Server Protocol (LSP)** 服务器，为 AI agent �
 
 ### Computer Use 操作模式
 
-Desktop、VS Code 和 CLI 共用独立的 Computer Use 原生组件，VS Code 和 CLI 无需启动或安装 Crab Desktop。CLI 在交互式和管道会话中自动检测已安装的组件，直接运行 `crabcode` 即可，**不需要 `--computer-use` 启动参数**。组件可用时，Agent 的工具列表会自动提供 `ComputerUse`，操作仍遵循现有工具权限和投递策略；未安装组件或没有可用图形桌面时，普通编程功能不受影响。
+Desktop、VS Code 和 CLI 共用独立的 Computer Use 原生组件，VS Code 和 CLI 无需启动或安装 Crab Desktop。CLI 在交互式和管道会话中自动部署安装包自带的组件，也可复用已安装的组件。直接运行 `crabcode` 即可，**不需要 `--computer-use` 启动参数**。组件可用时，Agent 的工具列表会自动提供 `ComputerUse`，操作仍遵循现有工具权限和投递策略；没有组件或可用图形桌面时，普通编程功能不受影响。启动界面不显示 Computer Use 状态，在 `/status` 中统一查看截图、输入和辅助功能树的可用情况。
 
 可通过以下命令检查组件和权限：
 
@@ -1008,13 +1010,9 @@ crabcode computer-use status --json
 crabcode computer-use permissions  # macOS：打开辅助功能权限设置
 ```
 
-如果 Desktop 或 VS Code 已安装原生组件，CLI 会直接复用。仅安装 CLI 时，需准备与当前操作系统、架构匹配的组件包，再安装一次；Python 包本身不包含原生执行器：
+macOS 和 Windows x64 的平台 wheel 已包含原生执行器，不需要单独安装。从源码安装或使用不含原生组件的通用 wheel 时，可复用 Desktop 或 VS Code 已安装的组件，或改用包含原生组件的平台 wheel。
 
-```sh
-crabcode computer-use install --bundle <原生组件目录>
-```
-
-macOS 的 `--bundle` 也接受 `.app` 路径。首次安装后启动新的 CLI 会话；已有会话会定期重新检测系统权限。macOS 需要为 **Crab Computer Use** 单独授予辅助功能和录屏权限，安装位置为 `~/Library/Application Support/CrabCode/ComputerUse/Crab Computer Use.app`。
+首次安装后启动新的 CLI 会话；已有会话会定期重新检测系统权限。macOS 需要为 **Crab Computer Use** 单独授予辅助功能和录屏权限，安装位置为 `~/Library/Application Support/CrabCode/ComputerUse/Crab Computer Use.app`。
 
 在 VS Code 中开启 `crabcode.computerUseEnabled`，可从状态栏 Computer Use 菜单查看监看截图、操作记录、系统权限和重新检测。Remote SSH、WSL 和容器窗口通过安装在**本机**的 CrabCode Computer Use 配套扩展操作本机桌面。直接在 SSH 中运行 CLI 时，操作目标是 CLI 所在机器，不会自动转发到本机桌面。参见[组件开发与打包说明](packages/computer-use/README.md)。
 

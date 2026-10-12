@@ -2232,10 +2232,6 @@ async def run_repl(
         from crabcode_cli.computer_use import connect_session
 
         computer_use = await connect_session(session)
-        if computer_use is not None:
-            caps = computer_use.capabilities(computer_use.host_id)
-            available = "ready" if caps.get("gui_available") and caps.get("input_available") else "limited — check crabcode computer-use status"
-            console.print(f"  Computer Use: {available}", style="dim")
         if resume_session_id:
             await session.initialize()
             ok = await session.resume(resume_session_id)
@@ -2949,7 +2945,7 @@ async def _handle_command(
             "[bold]/schedule runs <id> [filters][/] — show execution history\n"
             "[bold]/schedule create [options] <name> <type> <schedule> <prompt>[/] — create a task\n"
             "[bold]/schedule pause|resume|run|cancel <id>[/] — manage a task\n"
-            "[bold]/status[/] — show session status (model, effort, ultra, context, compactions)\n"
+            "[bold]/status[/] — show session status (model, effort, context, Computer Use)\n"
             "[bold]/effort [auto|none|minimal|low|medium|high|xhigh|max][/] — show/set reasoning effort\n"
             "[bold]/ultra [true|false][/] — toggle or explicitly set ultra mode\n"
             "[bold]/logs[/] — show background tool logs summary\n"
@@ -3325,6 +3321,7 @@ async def _handle_command(
         return True
 
     if cmd == "/status":
+        from crabcode_cli.computer_use import session_status as computer_use_status
         from crabcode_core.api.model_info import DEFAULT_CONTEXT_WINDOW, lookup_context_window
         from crabcode_core.compact.compact import estimate_token_count
 
@@ -3424,6 +3421,7 @@ async def _handle_command(
             f"[bold]🧵 Session:[/] {sid_short}",
             f"[bold]⚙️  Config:[/] effort={effort} · ultra={ultra} · "
             f"think={thinking} · max_tokens={max_tok} · tools={tool_display}",
+            f"[bold]Computer Use:[/] {escape(computer_use_status(session))}",
         ]
         budget = getattr(session, "last_prompt_budget", None)
         if budget:

@@ -41,15 +41,14 @@ def _configure_utf8_stdio() -> None:
             reconfigure(encoding="utf-8", errors="replace")
 
 
-def _computer_use_command(*, bundle: str | None = None, permissions: bool = False, json_output: bool = False) -> None:
+def _computer_use_command(*, permissions: bool = False, json_output: bool = False) -> None:
     import json
-    from pathlib import Path
 
     from crabcode_cli.computer_use import ComputerUseError, NativeClient
 
     async def run() -> dict:
         client = NativeClient()
-        await client.start(Path(bundle).expanduser().resolve() if bundle else None)
+        await client.start()
         if permissions:
             await client.request("permissions", timeout=10)
         caps = await client.request("capabilities", timeout=25)
@@ -80,15 +79,6 @@ def computer_use_status_cmd(
 ) -> None:
     """Start the installed component and check its current capabilities."""
     _computer_use_command(json_output=json_output)
-
-
-@computer_use_app.command("install")
-def computer_use_install_cmd(
-    bundle: str = typer.Option(..., "--bundle", help="Native component directory (or macOS .app)"),
-    json_output: bool = typer.Option(False, "--json", help="Print capabilities as JSON"),
-) -> None:
-    """Install a native component bundle; no Desktop or VS Code installation required."""
-    _computer_use_command(bundle=bundle, json_output=json_output)
 
 
 @computer_use_app.command("permissions")

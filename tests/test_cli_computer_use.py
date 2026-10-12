@@ -223,12 +223,21 @@ def test_repl_automatically_binds_and_cleans_up_on_eof(tmp_path, monkeypatch):
             monkeypatch.setattr(cu, "NativeClient", lambda: client)
             session = CoreSession(cwd=str(tmp_path))
             monkeypatch.setattr(repl, "CoreSession", lambda **kwargs: session)
-            monkeypatch.setattr(repl, "console", Console(file=StringIO()))
+            output = StringIO()
+            monkeypatch.setattr(repl, "console", Console(file=output, width=160))
             monkeypatch.setattr(repl, "patch_stdout", lambda **kwargs: nullcontext())
+            requested_status = False
 
             async def next_event():
+                nonlocal requested_status
                 assert session.computer_use_enabled
                 assert session.computer_use_backend.is_available(session.computer_use_host_id)
+                if not requested_status:
+                    assert "Computer Use:" not in output.getvalue()
+                    requested_status = True
+                    return "submit", "/status"
+                assert "Computer Use: ready" in output.getvalue()
+                assert "capture=yes" in output.getvalue()
                 return "eof", ""
 
             composer = SimpleNamespace(start=lambda: None, next_event=next_event, close=AsyncMock())
@@ -276,17 +285,71 @@ def test_pipe_auto_connects_without_flags_and_closes_after_session(tmp_path, mon
     asyncio.run(scenario())
 
 
-def test_cli_status_and_install_do_not_require_a_session_flag(monkeypatch, tmp_path):
+def test_cli_status_and_permissions_do_not_require_a_session_flag(monkeypatch, tmp_path):
     client = SimpleNamespace(state_dir=tmp_path, start=AsyncMock(), request=AsyncMock(return_value=CAPS))
     monkeypatch.setattr(cu, "NativeClient", lambda: client)
     runner = CliRunner()
     result = runner.invoke(app, ["computer-use", "status", "--json"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["input_available"] is True
-    result = runner.invoke(app, ["computer-use", "install", "--bundle", str(tmp_path)])
+    result = runner.invoke(app, ["computer-use", "permissions"])
     assert result.exit_code == 0, result.output
-    client.start.assert_awaited_with(tmp_path)
+    client.start.assert_awaited_with()
+    assert client.request.await_args_list[-2].args == ("permissions",)
     client.start.side_effect = cu.ComputerUseError("missing component")
     result = runner.invoke(app, ["computer-use", "status", "--json"])
     assert result.exit_code == 1
     assert json.loads(result.output)["status"] == "unavailable"
+
+
+def test_bundled_component_bootstraps_without_an_existing_installation(tmp_path, monkeypatch):
+    async def scenario():
+        async with executor(tmp_path) as (client, messages):
+            cu.bundled_executable(tmp_path).unlink()
+            package = tmp_path / "package"
+            monkeypatch.setattr(cu, "__file__", str(package / "computer_use.py"))
+            executable = cu.bundled_executable(package / "_native")
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            assert not client.installed
+            assert client.bundle == package / "_native"
+            monkeypatch.setattr(cu, "NativeClient", lambda: client)
+            session = SimpleNamespace()
+            backend = await cu.connect_session(session)
+            assert session.computer_use_enabled
+            client.start.assert_awaited_once()
+            await backend.close()
+    asyncio.run(scenario())
+
+
+def test_start_uses_packaged_binary_and_keeps_bootstrap_output_quiet(tmp_path, monkeypatch, capsys):
+    async def scenario():
+        package = tmp_path / "package"
+        monkeypatch.setattr(cu, "__file__", str(package / "computer_use.py"))
+        executable = cu.bundled_executable(package / "_native")
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+        process = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(None, b"")))
+        spawn = AsyncMock(return_value=process)
+        monkeypatch.setattr(cu.asyncio, "create_subprocess_exec", spawn)
+        client = cu.NativeClient(tmp_path / "fresh-state")
+        await client.start()
+        assert spawn.await_args.args == (str(executable), "--install-and-start", "--state-dir", str(client.state_dir))
+        assert spawn.await_args.kwargs["stdout"] == asyncio.subprocess.DEVNULL
+        assert capsys.readouterr().out == ""
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("caps,enabled,expected", [
+    (CAPS, True, "ready"),
+    ({**CAPS, "input_available": False}, True, "limited"),
+    ({**CAPS, "gui_available": False}, True, "unavailable"),
+    ({**CAPS, "supported_modes": ["foreground_desktop"]}, True, "unavailable in background_app"),
+    (CAPS, False, "disabled"),
+])
+def test_status_reports_effective_availability(caps, enabled, expected):
+    backend = cu.LocalComputerUse(SimpleNamespace())
+    backend._caps = dict(caps)
+    session = SimpleNamespace(computer_use_backend=backend, computer_use_host_id=backend.host_id,
+                              computer_use_enabled=enabled, computer_use_mode="background_app")
+    assert cu.session_status(session).startswith(expected)

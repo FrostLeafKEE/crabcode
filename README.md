@@ -1024,7 +1024,9 @@ Default permission behavior:
 
 ### Computer Use modes
 
-Desktop, VS Code and CLI share a standalone Computer Use component; VS Code and CLI do not require Crab Desktop. CLI automatically detects the installed component in interactive and pipe sessions; use `crabcode computer-use status` to check it, with no extra launch flag. For CLI-only installation, use `crabcode computer-use install --bundle <native-component-directory>`. In VS Code, enable `crabcode.computerUseEnabled` and use the Computer Use status-bar menu for monitoring, permission settings and refresh. Remote SSH/WSL/container windows use the **local** CrabCode Computer Use companion extension. On macOS, grant **Crab Computer Use** Accessibility and Screen Recording permissions. See [component development and packaging](packages/computer-use/README.md).
+Desktop, VS Code and CLI share a standalone Computer Use component; VS Code and CLI do not require Crab Desktop. Platform wheels for macOS (Apple Silicon / Intel) and Windows x64 include the native executor, so `pip install crabcode` installs it too. The first CLI session automatically deploys it to the shared user directory, with no extra installation command or launch flag. Interactive and pipe sessions connect automatically; status appears in `/status`, without a startup banner. `crabcode computer-use status` also checks capabilities directly. Source installs and universal wheels can reuse an existing component; otherwise, use a platform wheel containing the native executor.
+
+In VS Code, enable `crabcode.computerUseEnabled` and use the Computer Use status-bar menu for monitoring, permission settings and refresh. Remote SSH/WSL/container windows use the **local** CrabCode Computer Use companion extension. On macOS, grant **Crab Computer Use** Accessibility and Screen Recording permissions. See [component development and packaging](packages/computer-use/README.md).
 
 Once a host is connected, agents can inspect and operate desktop applications. Background application mode is the default:
 

@@ -18,7 +18,19 @@ permissions:
 
 jobs:
   release-build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: universal
+            os: ubuntu-latest
+          - name: darwin-arm64
+            os: macos-15
+          - name: darwin-x64
+            os: macos-15-intel
+          - name: win32-x64
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -30,15 +42,62 @@ jobs:
       - name: Check version metadata
         run: python scripts/sync_version.py --check
 
-      - name: Build release distributions
+      - uses: actions/setup-node@v4
+        if: matrix.name != 'universal'
+        with:
+          node-version: '22'
+
+      - name: Import macOS signing identity when configured
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          SIGNING_CERTIFICATE: ${{ secrets.CRABCODE_SIGNING_CERTIFICATE_P12_BASE64 }}
+          SIGNING_PASSWORD: ${{ secrets.CRABCODE_SIGNING_CERTIFICATE_PASSWORD }}
         run: |
-          pip install build
-          python -m build
+          if [ -z "$SIGNING_CERTIFICATE" ]; then exit 0; fi
+          python - <<'PY'
+          import base64, os
+          from pathlib import Path
+          (Path(os.environ['RUNNER_TEMP']) / 'crabcode-signing.p12').write_bytes(base64.b64decode(os.environ['SIGNING_CERTIFICATE']))
+          PY
+          keychain="$RUNNER_TEMP/crabcode-signing.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/crabcode-signing.p12" -k "$keychain" -P "$SIGNING_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          rm "$RUNNER_TEMP/crabcode-signing.p12"
+
+      - name: Build bundled Computer Use component
+        if: matrix.name != 'universal'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+          CRABCODE_SIGNING_IDENTITY: ${{ secrets.CRABCODE_SIGNING_IDENTITY }}
+        run: node packages/computer-use/scripts/build.mjs
+
+      - name: Install Python build tools
+        run: python -m pip install build
+
+      - name: Build universal wheel and source distribution
+        if: matrix.name == 'universal'
+        run: python -m build
+
+      - name: Build platform wheel with Computer Use
+        if: matrix.name != 'universal'
+        env:
+          CRABCODE_COMPUTER_USE_BUNDLE: ${{ github.workspace }}/packages/computer-use/dist/${{ matrix.name }}
+        run: python -m build --wheel
+
+      - name: Verify native payload and wheel metadata
+        if: matrix.name != 'universal'
+        run: |
+          python packages/computer-use/scripts/check-wheel.py dist
 
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
-          name: release-dists
+          name: release-dists-${{ matrix.name }}
           path: dist/
 
   pypi-publish:
@@ -56,7 +115,8 @@ jobs:
       - name: Retrieve release distributions
         uses: actions/download-artifact@v4
         with:
-          name: release-dists
+          pattern: release-dists-*
+          merge-multiple: true
           path: dist/
 
       - name: Publish release distributions to PyPI

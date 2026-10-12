@@ -51,6 +51,11 @@ The application never resets or grants system permissions automatically.
 Release builds must use the same `CRABCODE_SIGNING_IDENTITY` for both clients;
 the native component must be included in the distribution's signing and
 notarization process.
+The Python release workflow imports the optional
+`CRABCODE_SIGNING_CERTIFICATE_P12_BASE64` and
+`CRABCODE_SIGNING_CERTIFICATE_PASSWORD` repository secrets and passes
+`CRABCODE_SIGNING_IDENTITY` to the component build. Without signing credentials,
+macOS builds are ad hoc and may require renewed authorization on upgrade.
 
 An exclusive OS lock prevents multiple executors. The endpoint descriptor is
 private to the user and contains a random authentication token; do not log or
@@ -71,8 +76,13 @@ monitor. A remote machine's desktop is not selected implicitly.
 
 ## CLI
 
-The CLI automatically detects the installed component in both interactive and
-pipe sessions. Run `crabcode` as usual; no session enablement flag is needed.
+Platform Python wheels for macOS (arm64 / x86_64) and Windows x64 include the
+native component in `crabcode_cli/_native`. `pip install crabcode` installs the
+component along with the Python code. On first launch, CLI automatically deploys
+it to the shared user directory; later sessions reuse the singleton executor.
+Both interactive and pipe sessions connect automatically. Run `crabcode` as
+usual; no separate installation command or session enablement flag is needed.
+Startup stays quiet; `/status` reports capture, input and AX availability.
 Capabilities determine whether Core exposes the tool. CLI follows the existing
 `computer_use` settings and tool permission policy. With no installed component
 or graphical session, ordinary coding remains available.
@@ -83,22 +93,27 @@ crabcode computer-use status --json
 crabcode computer-use permissions  # macOS input permission settings
 ```
 
-Desktop or VS Code's installed component is reused automatically. For a CLI-only
-installation, build or obtain a bundle for the current OS/architecture and
-install it once (the Python wheel does not contain the native binary):
-
-```sh
-node packages/computer-use/scripts/build.mjs
-crabcode computer-use install --bundle packages/computer-use/dist/darwin-arm64
-```
-
-Replace `darwin-arm64` with the bundle's platform/architecture. On macOS,
-`--bundle` also accepts the `.app` itself. After first-time installation, start
-a new CLI session. Permission changes are detected during an existing session.
+Source/editable installations and universal Python wheels do not embed a native
+binary. They can reuse Desktop or VS Code's installed component; otherwise,
+install a platform wheel containing the executor. For local development, build
+a native bundle and package it into a wheel as described below.
+After first-time installation, start a new CLI session. Permission changes are
+detected during an existing session.
 An SSH CLI controls the machine on which it runs; it does not forward to a
 different desktop. VS Code's local companion is the supported remote UI route.
 
 ## Build and validation
+
+The Python release workflow builds native wheels on macOS arm64, macOS Intel
+and Windows x64, plus a universal wheel/source distribution for other environments.
+Both the aggregate `crabcode` package and standalone `crabcode-cli` support the
+same build hook. To include a prebuilt bundle, set
+`CRABCODE_COMPUTER_USE_BUNDLE` to its directory when running `python -m build --wheel`.
+The hook verifies component version, architecture and macOS signature, keeps the
+complete app bundle, and derives the wheel's minimum macOS version from the binary.
+No compiler or network download is needed when installing the resulting wheel.
+Use `python packages/computer-use/scripts/check-wheel.py <wheel-directory>` to
+verify wheel metadata, the native payload and executable permissions.
 
 From the repository root:
 

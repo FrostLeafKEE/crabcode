@@ -20,6 +20,17 @@ jobs:
       - run: cargo test --locked --workspace
         working-directory: packages/computer-use
       - run: node packages/computer-use/scripts/build.mjs --debug
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e . build hatchling pytest
+      - run: python -m pytest tests/test_cli_computer_use.py tests/test_computer_use_packaging.py -q
+      - name: Build and verify Python platform wheel
+        shell: bash
+        run: |
+          export CRABCODE_COMPUTER_USE_BUNDLE="$PWD/packages/computer-use/dist/$(node -p 'process.platform + "-" + process.arch')"
+          python -m build --wheel --no-isolation
+          python packages/computer-use/scripts/check-wheel.py dist
       - run: npm ci
         working-directory: packages/vscode
       - run: npm run build

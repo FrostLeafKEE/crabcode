@@ -83,6 +83,17 @@ def rendered_files(version: str) -> Iterable[tuple[Path, str]]:
     package_lock = ROOT / "packages/vscode/package-lock.json"
     yield package_lock, render_package_lock(package_lock, version)
 
+    # Platform Python wheels bundle this component at the same release version.
+    for crate in ("core", "host"):
+        path = ROOT / f"packages/computer-use/{crate}/Cargo.toml"
+        yield path, replace_once(path.read_text(), r'^(version = ")[^"]+("[ \t]*)$', version, path)
+    for relative in ("packages/computer-use/Cargo.lock", "packages/desktop/src-tauri/Cargo.lock"):
+        path = ROOT / relative
+        text = path.read_text()
+        for crate in ("core", "host"):
+            text = replace_once(text, rf'^(name = "crabcode-computer-use-{crate}"\nversion = ")[^"]+(")$', version, path)
+        yield path, text
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)

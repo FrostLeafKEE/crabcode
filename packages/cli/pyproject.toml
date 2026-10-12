@@ -18,5 +18,8 @@ crabcode = "crabcode_cli.app:entry"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["crabcode_cli"]

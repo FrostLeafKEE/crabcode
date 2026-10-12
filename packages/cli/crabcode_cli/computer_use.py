@@ -48,11 +48,18 @@ class NativeClient:
     def installed(self) -> bool:
         return bundled_executable(self.state_dir).is_file()
 
-    async def start(self, bundle: Path | None = None) -> None:
-        executable = bundled_executable(bundle or self.state_dir)
+    @property
+    def bundle(self) -> Path | None:
+        directory = Path(__file__).with_name("_native")
+        return directory if bundled_executable(directory).is_file() else None
+
+    async def start(self) -> None:
+        # Platform wheels carry the signed app/executable. The host installs it
+        # atomically in the per-user shared location and reuses the singleton.
+        executable = bundled_executable(self.bundle or self.state_dir)
         if not executable.is_file():
             raise ComputerUseError(
-                "Computer Use 原生组件未安装；请运行 crabcode computer-use install --bundle <组件目录>。"
+                "当前安装包未包含 Computer Use 原生组件；请使用包含原生组件的 CrabCode 平台安装包。"
             )
         process = None
         try:
@@ -238,9 +245,9 @@ class LocalComputerUse:
 
 
 async def connect_session(session: Any) -> LocalComputerUse | None:
-    """Discover an installed component automatically; ordinary CLI still works without it."""
+    """Install the bundled component or reuse the shared one, without a launch flag."""
     backend = LocalComputerUse()
-    if not backend.client.installed:
+    if not backend.client.installed and backend.client.bundle is None:
         return None
     try:
         await backend.connect()
@@ -252,3 +259,27 @@ async def connect_session(session: Any) -> LocalComputerUse | None:
     session.computer_use_host_id = backend.host_id
     session.computer_use_enabled = True
     return backend
+
+
+def session_status(session: Any) -> str:
+    """Compact runtime state for /status; startup itself stays quiet."""
+    backend = getattr(session, "computer_use_backend", None)
+    host_id = getattr(session, "computer_use_host_id", None)
+    if backend is None:
+        client = NativeClient()
+        return "unavailable (run crabcode computer-use status)" if client.installed or client.bundle else "not installed"
+    if not getattr(session, "computer_use_enabled", False):
+        return "disabled"
+    caps = backend.capabilities(host_id)
+    mode = getattr(session, "computer_use_mode", "background_app")
+    if not caps.get("gui_available"):
+        state = "unavailable"
+    elif not backend.is_available(host_id, mode):
+        state = f"unavailable in {mode}"
+    else:
+        state = "ready" if caps.get("input_available") else "limited"
+    details = " · ".join(
+        f"{label}={'yes' if caps.get(key) else 'no'}"
+        for key, label in (("capture_available", "capture"), ("input_available", "input"), ("ax_available", "AX"))
+    )
+    return f"{state} · {details}"
