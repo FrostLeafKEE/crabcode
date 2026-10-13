@@ -2,7 +2,74 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
 const { once } = require('node:events');
-const { request } = require('../../computer-use/client/nativeClient.cjs');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const vm = require('node:vm');
+const { request, bundledExecutable } = require('../../computer-use/client/nativeClient.cjs');
+
+async function startupHarness(t) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'crabcode-native-start-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const bundle = path.join(root, 'bundle'), state = path.join(root, 'state');
+  const calls = [];
+  let startupError = null;
+  const module = { exports: {} };
+  const source = await fs.readFile(require.resolve('../../computer-use/client/nativeClient.cjs'), 'utf8');
+  vm.runInNewContext(source, {
+    module, process,
+    require: name => name === 'node:child_process' ? {
+      execFile: (executable, args, options, callback) => {
+        calls.push({ executable, args, options });
+        callback(startupError, '', startupError ? 'executor failed' : '');
+      },
+    } : require(name),
+  });
+  const payload = async directory => {
+    const executable = bundledExecutable(directory);
+    await fs.mkdir(path.dirname(executable), { recursive: true });
+    await fs.writeFile(executable, 'test payload');
+    return executable;
+  };
+  return { bundle, state, calls, payload,
+    client: new module.exports.NativeComputerUse(bundle, state),
+    failStartup: () => { startupError = new Error('startup failed'); },
+  };
+}
+
+test('a source extension without a bundle starts the already installed shared component', async t => {
+  const h = await startupHarness(t);
+  const executable = await h.payload(h.state);
+  await h.client.start();
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].executable, executable);
+  assert.deepEqual(Array.from(h.calls[0].args), ['--install-and-start', '--state-dir', h.state]);
+});
+
+test('the extension bundle takes precedence over an installed shared component', async t => {
+  const h = await startupHarness(t);
+  const executable = await h.payload(h.bundle);
+  await h.payload(h.state);
+  await h.client.start();
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].executable, executable);
+});
+
+test('missing bundled and shared components report an installation error without launching', async t => {
+  const h = await startupHarness(t);
+  await assert.rejects(h.client.start(), /原生组件未安装/);
+  assert.equal(h.calls.length, 0);
+});
+
+test('a failing bundled executor reports its error without starting another component', async t => {
+  const h = await startupHarness(t);
+  const executable = await h.payload(h.bundle);
+  await h.payload(h.state);
+  h.failStartup();
+  await assert.rejects(h.client.start(), /executor failed/);
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].executable, executable);
+});
 
 async function server(handler, run) {
   const sockets = new Set();

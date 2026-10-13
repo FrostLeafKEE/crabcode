@@ -44,9 +44,13 @@ class NativeComputerUse {
   async start() {
     if (this.starting) return this.starting;
     this.starting = (async () => {
-      const executable = bundledExecutable(this.bundleDirectory);
+      let executable = bundledExecutable(this.bundleDirectory);
       try { await fs.access(executable); }
-      catch { throw new Error('Computer Use 原生组件未安装，请安装当前平台的完整 CrabCode 扩展。'); }
+      catch {
+        executable = bundledExecutable(this.stateDir);
+        try { await fs.access(executable); }
+        catch { throw new Error('Computer Use 原生组件未安装，请安装当前平台的完整 CrabCode 扩展或共享组件。'); }
+      }
       await new Promise((resolve, reject) => {
         execFile(executable, ['--install-and-start', '--state-dir', this.stateDir], { timeout: 25_000, windowsHide: true }, (error, _stdout, stderr) => {
           if (error) reject(new Error(stderr.trim() || 'Computer Use 组件启动失败，请重新安装组件后重试。'));

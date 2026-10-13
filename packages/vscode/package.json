@@ -372,6 +372,7 @@
     "vscode:prepublish": "npm run computer-use:build && npm run build",
     "computer-use:build": "node ../computer-use/scripts/build.mjs --out resources/computer-use",
     "build": "node esbuild.js --production",
+    "prewatch": "npm run computer-use:build -- --debug",
     "watch": "node esbuild.js",
     "test": "node --test tests/*.test.cjs",
     "lint": "tsc --noEmit && tsc -p tsconfig.webview.json && node ../../scripts/audit_tool_cards.mjs",

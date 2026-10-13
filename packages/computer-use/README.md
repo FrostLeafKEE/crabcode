@@ -123,10 +123,14 @@ node packages/computer-use/client/build.mjs
 cargo test --locked --manifest-path packages/computer-use/Cargo.toml --workspace
 ```
 
-For VS Code extension-host development, first run
-`npm run computer-use:build -- --debug` from `packages/vscode`; a JavaScript-only
-watch rebuild does not produce the native resource. The local companion uses
-the same command from its own package directory.
+For VS Code extension-host development, `npm run watch` from `packages/vscode`
+builds a debug native bundle before starting the JavaScript watcher; the F5
+launch task uses this command too. After native source changes, rebuild with
+`npm run computer-use:build -- --debug`. JavaScript watcher rebuilds do not
+recompile native code. Extensions without a native bundle can reuse the shared
+component already installed by CLI, Desktop or another CrabCode extension.
+The local companion uses the same native build command from its own package
+directory.
 
 Desktop's Tauri build hook and both VS Code extensions' `vscode:prepublish`
 scripts include the native component. Package platform-specific VSIX files;

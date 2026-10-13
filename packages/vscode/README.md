@@ -102,6 +102,8 @@ You can also configure existing keys in settings JSON:
 
 `crabcode.computerUseEnabled` defaults to `true`, enabling the bundled standalone
 native component without Crab Desktop. Set it to `false` to disable Computer Use.
+Source extensions without a native bundle can reuse an installed shared component
+from CLI, Desktop or another CrabCode extension.
 The Computer Use status-bar menu provides
 monitoring, permission settings and refresh. On macOS, grant **Crab Computer
 Use** Accessibility and Screen Recording access. Remote SSH/WSL/container
@@ -198,6 +200,8 @@ content, so review logs before sharing them.
 ## Building from source
 
 From `packages/vscode`, use Node.js 24 (the tested version is in `.nvmrc`):
+Native component builds also require Rust/Cargo and the platform's native build
+tools (Xcode Command Line Tools on macOS).
 
 ```bash
 nvm use
@@ -208,6 +212,8 @@ npm run package
 ```
 
 The package command builds the extension and creates `crabcode-0.1.5.vsix`.
+For extension-host development, `npm run watch` (also used by the F5 launch task)
+builds a debug native component before starting the JavaScript watcher.
 Install it with **Extensions → … → Install from VSIX…**, or run
 `code --install-extension crabcode-0.1.5.vsix`. Node.js and npm are only required
 for building the extension, not for installing the VSIX in VS Code.
