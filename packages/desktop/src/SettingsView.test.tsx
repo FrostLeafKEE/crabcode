@@ -765,7 +765,7 @@ describe("SettingsView", () => {
       ],
     };
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    act(() => root.render(
+    await act(async () => root.render(
       <SettingsView
         {...handlers}
         settings={settings}
@@ -779,7 +779,9 @@ describe("SettingsView", () => {
       />,
     ));
 
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="自动压缩"]')!.click());
+    const autoCompact = container.querySelector<HTMLButtonElement>('[aria-label="自动压缩"]')!;
+    expect(autoCompact.disabled).toBe(false);
+    await act(async () => autoCompact.click());
     const buffer = container.querySelector<HTMLInputElement>('[aria-label="压缩预留 token"]')!;
     act(() => changeInput(buffer, "30000"));
     await act(async () => buffer.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
