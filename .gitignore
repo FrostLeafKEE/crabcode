@@ -20,3 +20,4 @@ packages/desktop/src-tauri/resources/computer-use/
 packages/vscode/resources/computer-use/
 packages/vscode/computer-use/resources/computer-use/
 packages/vscode/computer-use/*.vsix
+_native
