@@ -226,8 +226,8 @@
         },
         "crabcode.computerUseEnabled": {
           "type": "boolean",
-          "default": false,
-          "description": "启用本机 Computer Use 原生组件，无需运行 Crab Desktop。Remote SSH 需在本机安装 CrabCode Computer Use 配套扩展。"
+          "default": true,
+          "description": "默认启用本机 Computer Use 原生组件，无需运行 Crab Desktop；可在状态栏或设置中关闭。Remote SSH 需在本机安装 CrabCode Computer Use 配套扩展。"
         },
         "crabcode.computerUseTargetScope": {
           "tags": [

@@ -1014,7 +1014,7 @@ macOS 和 Windows x64 的平台 wheel 已包含原生执行器，不需要单独
 
 首次安装后启动新的 CLI 会话；已有会话会定期重新检测系统权限。macOS 需要为 **Crab Computer Use** 单独授予辅助功能和录屏权限，安装位置为 `~/Library/Application Support/CrabCode/ComputerUse/Crab Computer Use.app`。
 
-在 VS Code 中开启 `crabcode.computerUseEnabled`，可从状态栏 Computer Use 菜单查看监看截图、操作记录、系统权限和重新检测。Remote SSH、WSL 和容器窗口通过安装在**本机**的 CrabCode Computer Use 配套扩展操作本机桌面。直接在 SSH 中运行 CLI 时，操作目标是 CLI 所在机器，不会自动转发到本机桌面。参见[组件开发与打包说明](packages/computer-use/README.md)。
+VS Code 中的 `crabcode.computerUseEnabled` 默认开启，设为 `false` 可关闭；可从状态栏 Computer Use 菜单查看监看截图、操作记录、系统权限和重新检测。Remote SSH、WSL 和容器窗口通过安装在**本机**的 CrabCode Computer Use 配套扩展操作本机桌面。直接在 SSH 中运行 CLI 时，操作目标是 CLI 所在机器，不会自动转发到本机桌面。参见[组件开发与打包说明](packages/computer-use/README.md)。
 
 连接 Computer Use 宿主后，Agent 可以查看和操作桌面应用。默认使用后台应用模式：
 

@@ -23,7 +23,7 @@ export class ComputerUseController implements vscode.Disposable {
   async configure(): Promise<void> {
     const revision = ++this.revision;
     const config = vscode.workspace.getConfiguration('crabcode');
-    const enabled = config.get<boolean>('computerUseEnabled', false);
+    const enabled = config.get<boolean>('computerUseEnabled', true);
     // Bind immediately even while capability detection is pending, just as Desktop
     // does. Gateway availability gates tool exposure independently.
     this.connection.setComputerUseBinding({ hostId: this.hostId, enabled });

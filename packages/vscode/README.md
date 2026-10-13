@@ -94,13 +94,15 @@ You can also configure existing keys in settings JSON:
   "crabcode.gatewayAutoInstall": true,
   "crabcode.pythonPath": "",
   "crabcode.showDiffOnFileChange": false,
+  "crabcode.computerUseEnabled": true,
   "crabcode.computerUseTargetScope": "app_window",
   "crabcode.computerUseDeliveryPolicy": "allow_foreground"
 }
 ```
 
-Enable `crabcode.computerUseEnabled` to use the bundled standalone native
-component without Crab Desktop. The Computer Use status-bar menu provides
+`crabcode.computerUseEnabled` defaults to `true`, enabling the bundled standalone
+native component without Crab Desktop. Set it to `false` to disable Computer Use.
+The Computer Use status-bar menu provides
 monitoring, permission settings and refresh. On macOS, grant **Crab Computer
 Use** Accessibility and Screen Recording access. Remote SSH/WSL/container
 windows require **CrabCode Computer Use** installed on the local UI side;

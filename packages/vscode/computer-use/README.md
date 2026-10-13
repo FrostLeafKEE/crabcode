@@ -5,7 +5,8 @@ windows. Install this extension on the **local** machine and CrabCode in the
 workspace extension host. Local CrabCode windows include the same component
 and do not require the companion to be active.
 
-Enable `crabcode.computerUseEnabled` in CrabCode settings. The status-bar
+`crabcode.computerUseEnabled` is enabled by default in CrabCode settings;
+set it to `false` to disable Computer Use. The status-bar
 Computer Use menu provides enable/disable, permission refresh, monitoring
 screenshots and operation history. Operations target the local desktop.
 
