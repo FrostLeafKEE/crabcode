@@ -65,6 +65,7 @@ def _get_using_tools_section(enabled_tools: list[str]) -> str:
     # Keep this prefix independent of the growing discovery set.
     return """# Tools
 - Use Read/Grep/Glob to inspect and search; apply_patch for multi-file edits, Edit for exact replacements, Write for new files, and Lint for diagnostics. Bash is for terminal operations; read-only sed/find pipelines are fine when useful. Do not edit through shell redirection or sed -i.
+- Use Read or Image to visually inspect local images: both return image content to you. PSD files return their saved composite preview. Reading image bytes as text or printing an image path with Bash does not let you see the image.
 - Tools listed in the request have their full contracts in their schemas. Follow them; do not guess parameters or invent tools.
 - When ToolSearch is available, the Tool discovery directory lists only tools whose schemas are not supplied yet. If a task needs one, first call ToolSearch with its exact listed name, group or a query; use the newly supplied schema in the next response. Use names exactly as listed; group is a category, not a name prefix. Tools with supplied schemas are callable directly and need no further search. Never guess an unloaded tool's name or arguments, and never print pseudo-calls such as `<tool_call>` or JSON instead of making a real tool call. Discovery does not grant execution permissions.
 - Run independent calls in parallel; sequence calls that depend on earlier results. Inspect errors and outputs before proceeding.

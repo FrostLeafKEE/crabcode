@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import mimetypes
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from crabcode_core.io_worker import run_file_tool
 from crabcode_core.types.tool import PermissionBehavior, PermissionResult, Tool, ToolContext, ToolResult
 
 
@@ -19,6 +19,7 @@ class ImageTool(Tool):
     """
 
     name = "Image"
+    description = "View and analyze local images, including PSD composite previews, or attach images for the user."
     is_read_only = True
     is_concurrency_safe = True
     input_schema: dict[str, Any] = {
@@ -40,7 +41,7 @@ class ImageTool(Tool):
             },
             "mime_type": {
                 "type": "string",
-                "description": "Optional image MIME type override applied to all paths. Omit to detect each file's MIME type independently.",
+                "description": "Optional expected output image MIME type for all paths. Converted previews use image/png. Usually omit to detect automatically.",
             },
         },
         "required": ["path"],
@@ -48,15 +49,18 @@ class ImageTool(Tool):
 
     async def get_prompt(self, **kwargs: Any) -> str:
         return (
-            "Attach one or more local images to the conversation as inline image results. "
-            "Use this after an image is generated or saved to disk. The image "
+            "View and analyze one or more local images, or attach images for the user. "
+            "You receive the actual image content for visual analysis after this tool returns. "
+            "Read also supports viewing a single local image. PSD files are converted "
+            "to saved composite previews; other non-native formats are converted to PNG. "
+            "Large images may be resized; animated/multipage images show the first frame/page. The image "
             "bytes are sent as a separate ImageContent block, so do not put a "
             "file:// or local filesystem path in Markdown. Pass path as a string "
             "or a non-empty list of paths. Optionally pass description as a string "
             "for one image or a list matching the paths in length and order; each "
             "description appears below its image as plain text. Empty descriptions "
             "are allowed. All files are validated before any images are attached. "
-            "Only pass mime_type when an override is needed for all images."
+            "mime_type, if supplied, must match the decoded image format."
         )
 
     async def check_permissions(
@@ -67,6 +71,15 @@ class ImageTool(Tool):
         return PermissionResult(behavior=PermissionBehavior.ALLOW)
 
     async def call(
+        self,
+        tool_input: dict[str, Any],
+        context: ToolContext,
+    ) -> ToolResult:
+        result = await run_file_tool(self.name, tool_input, context)
+        context.emitted_images.extend(result.images)
+        return result
+
+    async def _call_local(
         self,
         tool_input: dict[str, Any],
         context: ToolContext,
@@ -138,24 +151,18 @@ class ImageTool(Tool):
             or tool_input.get("mimeType", "")
             or ""
         ).strip()
-        if not mime_type:
-            mime_type = mimetypes.guess_type(path.name)[0] or ""
-        if not mime_type.lower().startswith("image/"):
-            return ToolResult(
-                result_for_model=(
-                    f"Error: cannot determine an image MIME type for {path}; "
-                    "pass mime_type explicitly"
-                ),
-                is_error=True,
-            )
-
         try:
-            data = path.read_bytes()
+            from crabcode_core.image_io import load_image_preview
+
+            preview = load_image_preview(path)
+            if mime_type and mime_type.lower() != preview.media_type:
+                raise ValueError(f"mime_type must match the image content ({preview.media_type})")
+            data, mime_type = preview.data, preview.media_type
             context.emit_image(data, mime_type, description=description)
         except (OSError, TypeError, ValueError) as exc:
             return ToolResult(result_for_model=f"Error attaching image {path}: {exc}", is_error=True)
 
-        message = f"Image attached: {path} ({mime_type}, {len(data)} bytes)"
+        message = f"Image attached: {path} ({preview.summary()})"
         if description:
             message += f"\nDescription: {description}"
         return ToolResult(

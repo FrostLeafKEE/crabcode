@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 
 class FileReadTool(Tool):
     name = "Read"
-    description = "Read the contents of a file."
+    description = "Read a text file or view a local image, including a saved PSD composite preview."
     is_read_only = True
     is_concurrency_safe = True
     input_schema = {
@@ -30,11 +30,11 @@ class FileReadTool(Tool):
             },
             "offset": {
                 "type": "integer",
-                "description": "Line number to start reading from (1-based). Negative values count from end.",
+                "description": "Text only: line number to start reading from (1-based). Negative values count from end. Ignored for images.",
             },
             "limit": {
                 "type": "integer",
-                "description": "Number of lines to read.",
+                "description": "Text only: number of lines to read. Ignored for images.",
             },
         },
         "required": ["file_path"],
@@ -42,7 +42,13 @@ class FileReadTool(Tool):
 
     async def get_prompt(self, **kwargs: Any) -> str:
         return (
-            "Read the contents of a file from the local filesystem. "
+            "Read text or visually inspect an image from the local filesystem. "
+            "For images, the actual image content is returned to you for visual analysis, "
+            "not just a filename or a UI preview. Supports PNG, JPEG, WebP, GIF, BMP, TIFF "
+            "and saved PSD composite previews. Non-native formats are converted to PNG; "
+            "large images may be resized. Animated/multipage images return the first frame/page. "
+            "PSD previews show the saved merged appearance, not editable layers. "
+            "offset and limit apply only to text and are ignored for images.\n\n"
             "You can optionally specify a line offset and limit (especially "
             "useful for large files), but it's recommended to read the whole "
             "file by not providing these parameters.\n\n"
@@ -60,7 +66,8 @@ class FileReadTool(Tool):
         self, tool_input: dict[str, Any], context: ToolContext,
     ) -> ToolResult:
         result = await run_file_tool(self.name, tool_input, context)
-        if not result.is_error and result.data and context.lsp_manager is not None:
+        if (not result.is_error and result.data and not result.images
+                and context.lsp_manager is not None):
             asyncio.create_task(_lsp_touch(result.data["file_path"], context.lsp_manager))
         return result
 
@@ -85,7 +92,7 @@ class FileReadTool(Tool):
                 is_error=True,
             )
 
-        path = Path(file_path)
+        path = Path(file_path).expanduser()
         if not path.is_absolute():
             path = Path(context.cwd) / path
 
@@ -102,6 +109,22 @@ class FileReadTool(Tool):
             )
 
         try:
+            from crabcode_core.image_io import is_image_file, load_image_preview
+
+            if is_image_file(path):
+                preview = load_image_preview(path)
+                context.emit_image(preview.data, preview.media_type)
+                message = f"Image read: {path} ({preview.summary()})"
+                if offset is not None or limit is not None:
+                    message += "\nText offset/limit ignored for this image."
+                return ToolResult(
+                    data={"file_path": str(path), "media_type": preview.media_type,
+                          "width": preview.width, "height": preview.height,
+                          "source_format": preview.source_format},
+                    result_for_model=message,
+                    result_for_display=message,
+                    images=[context.emitted_images[-1]],
+                )
             content = read_utf8_text(path).text
         except Exception as e:
             return ToolResult(

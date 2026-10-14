@@ -23,6 +23,7 @@ from crabcode_core import io_worker
 from crabcode_core.config.manager import ConfigManager
 from crabcode_core.subprocess_utils import terminate_process_tree
 from crabcode_core.tools.file_read import FileReadTool
+from crabcode_core.tools.image import ImageTool
 from crabcode_core.tools.file_write import FileWriteTool
 from crabcode_core.tools.file_edit import FileEditTool
 from crabcode_core.tools.glob import GlobTool
@@ -91,7 +92,7 @@ class FileIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def test_file_tools_share_default_and_configured_timeouts(self):
         for settings in (CrabCodeSettings(), CrabCodeSettings(filesystem_timeout=7200)):
             context = ToolContext(filesystem_timeout=settings.filesystem_timeout)
-            for tool in (FileReadTool(), FileWriteTool(), FileEditTool(), ApplyPatchTool(), GlobTool(), GrepTool(), BashTool()):
+            for tool in (FileReadTool(), ImageTool(), FileWriteTool(), FileEditTool(), ApplyPatchTool(), GlobTool(), GrepTool(), BashTool()):
                 with self.subTest(tool=tool.name, timeout=settings.filesystem_timeout):
                     with patch.object(io_worker, "run_io", new_callable=AsyncMock,
                                       side_effect=asyncio.TimeoutError) as run_io:
@@ -103,7 +104,7 @@ class FileIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def test_file_tools_can_disable_timeouts(self):
         settings = CrabCodeSettings(filesystem_timeout=None)
         context = ToolContext(filesystem_timeout=settings.filesystem_timeout)
-        for tool in (FileReadTool(), FileWriteTool(), FileEditTool(), ApplyPatchTool(), GlobTool(), GrepTool(), BashTool()):
+        for tool in (FileReadTool(), ImageTool(), FileWriteTool(), FileEditTool(), ApplyPatchTool(), GlobTool(), GrepTool(), BashTool()):
             with self.subTest(tool=tool.name):
                 with patch.object(io_worker, "run_io", new_callable=AsyncMock,
                                   return_value={"result_for_model": "done"}) as run_io:
@@ -204,6 +205,7 @@ class FileIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def test_all_file_tools_time_out_without_stalling_event_loop(self):
         cases = [
             (FileReadTool(), {"file_path": "target.txt"}),
+            (ImageTool(), {"path": "target.txt"}),
             (FileWriteTool(), {"file_path": "target.txt", "content": "changed"}),
             (FileEditTool(), {"file_path": "target.txt", "old_string": "before", "new_string": "after"}),
             (ApplyPatchTool(), {"patch": "*** Begin Patch\n*** Update File: target.txt\n@@\n-before\n+after\n*** End Patch"}),

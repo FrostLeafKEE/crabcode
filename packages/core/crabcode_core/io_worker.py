@@ -188,7 +188,8 @@ async def _call_file_tool(name: str, tool_input: dict[str, Any], fields: dict[st
     modules = {"Read": ("file_read", "FileReadTool"), "Write": ("file_write", "FileWriteTool"),
                "apply_patch": ("apply_patch", "ApplyPatchTool"),
                "Edit": ("file_edit", "FileEditTool"), "Glob": ("glob", "GlobTool"),
-               "Grep": ("grep", "GrepTool"), "Bash": ("bash", "BashTool")}
+               "Grep": ("grep", "GrepTool"), "Bash": ("bash", "BashTool"),
+               "Image": ("image", "ImageTool")}
     module, cls = modules[name]
     tool = getattr(import_module(f"crabcode_core.tools.{module}"), cls)()
     return asdict(await tool._call_local(tool_input, ToolContext(**fields)))
