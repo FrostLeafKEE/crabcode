@@ -104,12 +104,16 @@ different desktop. VS Code's local companion is the supported remote UI route.
 
 ## Build and validation
 
-The app icon lives in `icons/icon.png` (master) and `icons/icon.icns` (macOS).
+The app icon lives in `icons/icon.png` (master), `icons/icon.icns` (macOS),
+and `icons/icon.ico` (Windows, 16/24/32/48/64/128/256 px).
 It keeps CrabCode's charcoal-and-silver crab, with a screen and pointer for
-Computer Use. After editing the master, regenerate the macOS sizes with
+Computer Use. After editing the master, regenerate both platform formats with
 `node packages/computer-use/scripts/build-icons.mjs` on macOS.
-The shared build copies the icon into the app before signing, so Desktop,
-VS Code and CLI platform wheels carry the same icon. Bundle resource changes
+The shared build copies the macOS icon into the app before signing. The Windows
+host embeds the ICO into its executable using the Windows SDK resource compiler
+(MSVC) or windres (GNU). The icon files are checked in; normal builds do not need
+the macOS image tools. Desktop, VS Code and CLI platform wheels carry the same
+platform-specific native component and icon. Bundle resource changes
 participate in the host build ID and follow the existing idle-only upgrade path.
 
 The Python release workflow builds native wheels on macOS arm64, macOS Intel
@@ -121,7 +125,9 @@ The hook verifies component version, architecture and macOS signature, keeps the
 complete app bundle, and derives the wheel's minimum macOS version from the binary.
 No compiler or network download is needed when installing the resulting wheel.
 Use `python packages/computer-use/scripts/check-wheel.py <wheel-directory>` to
-verify wheel metadata, the native payload and executable permissions.
+verify wheel metadata, the native payload, executable permissions and app icons.
+Windows wheel verification requires `python -m pip install pefile` and compares
+the embedded icon images with the checked-in ICO, including every size.
 
 From the repository root:
 

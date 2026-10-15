@@ -77,7 +77,7 @@ jobs:
         run: node packages/computer-use/scripts/build.mjs
 
       - name: Install Python build tools
-        run: python -m pip install build
+        run: python -m pip install build pefile
 
       - name: Build universal wheel and source distribution
         if: matrix.name == 'universal'

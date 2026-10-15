@@ -28,10 +28,12 @@ fn main() {
         "Cargo.toml",
         "../core/Cargo.toml",
         "build.rs",
+        "windows.rc",
         "../Cargo.lock",
         // Bundle-only changes must also trigger installation of the new app.
         "../scripts/build.mjs",
         "../icons/icon.icns",
+        "../icons/icon.ico",
     ] {
         println!("cargo:rerun-if-changed={relative}");
         hash.update(std::fs::read(manifest.join(relative)).unwrap());
@@ -40,4 +42,13 @@ fn main() {
         "cargo:rustc-env=CRABCODE_COMPUTER_USE_BUILD={:x}",
         hash.finalize()
     );
+    // Link only the host executable, not consumers of the host library.
+    // This is a no-op for non-Windows targets, including native macOS builds.
+    embed_resource::compile_for(
+        manifest.join("windows.rc"),
+        ["crabcode-computer-use-host"],
+        embed_resource::NONE,
+    )
+    .manifest_required()
+    .expect("Could not embed the Computer Use icon; install the Windows SDK resource compiler");
 }
