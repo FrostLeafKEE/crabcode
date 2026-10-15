@@ -696,6 +696,7 @@ version = "0.1.5"
 dependencies = [
  "crabcode-computer-use-core",
  "dirs",
+ "embed-resource",
  "fs2",
  "getrandom 0.3.4",
  "objc2",
