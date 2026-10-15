@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path
+import plistlib
 import zipfile
 
 
@@ -19,6 +20,9 @@ def check(wheel: Path) -> None:
             app = prefix + "Crab Computer Use.app/Contents/"
             binary = app + "MacOS/crabcode-computer-use-host"
             assert app + "Info.plist" in names
+            plist = plistlib.loads(archive.read(app + "Info.plist"))
+            icon = archive.read(app + "Resources/" + plist["CFBundleIconFile"])
+            assert icon[:4] == b"icns" and len(icon) > 8, "app icon missing or invalid"
             assert app + "_CodeSignature/CodeResources" in names
             assert archive.getinfo(binary).external_attr >> 16 & 0o111, "executable bit lost"
             assert "-macosx_" in wheel.name

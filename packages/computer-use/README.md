@@ -104,6 +104,14 @@ different desktop. VS Code's local companion is the supported remote UI route.
 
 ## Build and validation
 
+The app icon lives in `icons/icon.png` (master) and `icons/icon.icns` (macOS).
+It keeps CrabCode's charcoal-and-silver crab, with a screen and pointer for
+Computer Use. After editing the master, regenerate the macOS sizes with
+`node packages/computer-use/scripts/build-icons.mjs` on macOS.
+The shared build copies the icon into the app before signing, so Desktop,
+VS Code and CLI platform wheels carry the same icon. Bundle resource changes
+participate in the host build ID and follow the existing idle-only upgrade path.
+
 The Python release workflow builds native wheels on macOS arm64, macOS Intel
 and Windows x64, plus a universal wheel/source distribution for other environments.
 Both the aggregate `crabcode` package and standalone `crabcode-cli` support the

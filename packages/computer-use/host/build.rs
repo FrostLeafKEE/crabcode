@@ -29,6 +29,9 @@ fn main() {
         "../core/Cargo.toml",
         "build.rs",
         "../Cargo.lock",
+        // Bundle-only changes must also trigger installation of the new app.
+        "../scripts/build.mjs",
+        "../icons/icon.icns",
     ] {
         println!("cargo:rerun-if-changed={relative}");
         hash.update(std::fs::read(manifest.join(relative)).unwrap());

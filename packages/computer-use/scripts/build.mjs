@@ -18,12 +18,15 @@ if (process.platform === "darwin") {
   const bundle = path.join(destination, "Crab Computer Use.app");
   rmSync(bundle, { recursive: true, force: true });
   mkdirSync(path.join(bundle, "Contents", "MacOS"), { recursive: true });
+  mkdirSync(path.join(bundle, "Contents", "Resources"), { recursive: true });
   cpSync(binary, path.join(bundle, "Contents", "MacOS", executable));
+  cpSync(path.join(root, "icons", "icon.icns"), path.join(bundle, "Contents", "Resources", "icon.icns"));
   writeFileSync(path.join(bundle, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>io.crabcode.computer-use</string>
 <key>CFBundleName</key><string>Crab Computer Use</string>
 <key>CFBundleExecutable</key><string>${executable}</string>
+<key>CFBundleIconFile</key><string>icon.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>${version}</string>
 <key>CFBundleShortVersionString</key><string>${version}</string>
