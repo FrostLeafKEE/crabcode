@@ -245,8 +245,22 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
           {computerUse.enabled && strictInputUnavailable && (
             <p className="computer-use-warning">当前宿主尚不支持严格后台输入；可以查看窗口，但输入动作会被拒绝。若要操作，请在设置中选择允许前台操作。</p>
           )}
-          {computerUse.enabled && computerUse.capabilities?.ax_available && computerUse.capabilities.capture_available === false && (
-            <p className="computer-use-warning">辅助功能可用；录屏不可用时仍可读取和操作界面元素，截图操作需要录屏权限。</p>
+          {computerUse.enabled && computerUse.capabilities?.capture_available === false && (
+            <section className="computer-use-permission" aria-label="录屏不可用">
+              <AlertTriangle />
+              <div>
+                <strong>录屏不可用</strong>
+                <span>{computerUse.capabilities.environment === "local_vm"
+                  ? "请在虚拟机内为 Crab Computer Use 授予录屏权限，再重新检测。宿主机授权不能代替虚拟机内的授权。"
+                  : computerUse.capabilities.platform === "macos"
+                  ? "窗口列表和截图需要录屏权限。请在系统设置 → 隐私与安全性 → 录屏与系统录音中允许 Crab Computer Use；Crab Desktop 或 VS Code 的授权不能代替此组件的授权。"
+                  : computerUse.capabilities.reason || "请检查屏幕捕获权限并重新检测。"}</span>
+              </div>
+              <div className="computer-use-permission-actions">
+                {computerUse.capabilities.platform === "macos" && <button type="button" onClick={onComputerUseOpenInputSettings}>打开系统设置</button>}
+                <button type="button" onClick={onComputerUseRefresh}>重新检测</button>
+              </div>
+            </section>
           )}
           <div className="computer-use-log" aria-label="Agent 操作记录">
             {computerUse.logs.length ? [...computerUse.logs].reverse().map((entry) => (

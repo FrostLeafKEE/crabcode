@@ -188,7 +188,8 @@ describe("desktop status bar", () => {
     act(() => container.querySelector<HTMLButtonElement>(".status-computer-use")!.click());
     expect(container.textContent).toContain("辅助功能 · 12 个元素");
     expect(container.textContent).toContain("本次模型读取 AX Tree");
-    expect(container.textContent).toContain("录屏不可用时仍可读取和操作界面元素");
+    expect(container.textContent).toContain("窗口列表和截图需要录屏权限");
+    expect(container.querySelector('[aria-label="录屏不可用"]')?.textContent).toContain("Crab Desktop 或 VS Code 的授权不能代替此组件的授权");
     expect(container.querySelector(".computer-use-frame img")?.getAttribute("alt")).toContain("最近一次");
   });
 

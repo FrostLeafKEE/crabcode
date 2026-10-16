@@ -234,13 +234,34 @@ fn capability_status(
     (gui_available, input_available, reason)
 }
 
+const SCREEN_CAPTURE_PERMISSION_REQUIRED: &str = "Screen Recording permission is required for Crab Computer Use. Enable Crab Computer Use in System Settings > Privacy & Security > Screen & System Audio Recording, then refresh Computer Use. Permissions granted to Crab Desktop or Visual Studio Code do not apply to this helper.";
+
+fn screen_capture_access() -> bool {
+    #[cfg(target_os = "macos")]
+    return core_graphics::access::ScreenCaptureAccess.preflight();
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
+fn probe_screen_capture(
+    authorized: bool,
+    capture: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    // macOS can return a valid image containing only wallpaper/system surfaces
+    // without recording permission. Successful image allocation is not consent.
+    if !authorized {
+        return Err(SCREEN_CAPTURE_PERMISSION_REQUIRED.to_string());
+    }
+    capture()
+}
+
 pub fn detect_capabilities() -> ComputerUseCapabilities {
     let found = monitors();
     let displays = found
         .as_ref()
         .map(|items| items.iter().map(|(_, info)| info.clone()).collect())
         .unwrap_or_default();
-    let capture_error = match &found {
+    let capture_error = probe_screen_capture(screen_capture_access(), || match &found {
         Ok(items) => match items
             .iter()
             .find(|(_, info)| info.primary)
@@ -248,12 +269,13 @@ pub fn detect_capabilities() -> ComputerUseCapabilities {
         {
             Some((monitor, _)) => monitor
                 .capture_image()
-                .err()
-                .map(|error| format!("Screen capture is unavailable: {error}")),
-            None => Some("No graphical displays were detected".to_string()),
+                .map(|_| ())
+                .map_err(|error| format!("Screen capture is unavailable: {error}")),
+            None => Err("No graphical displays were detected".to_string()),
         },
-        Err(reason) => Some(reason.clone()),
-    };
+        Err(reason) => Err(reason.clone()),
+    })
+    .err();
     let input_error = Enigo::new(&Settings::default())
         .err()
         .map(|error| format!("Desktop input permission is unavailable: {error}"));
@@ -2270,6 +2292,7 @@ struct DesktopSpace {
 
 #[cfg(target_os = "macos")]
 fn mac_capture_window(target: WindowTarget) -> Result<RgbaImage, String> {
+    probe_screen_capture(screen_capture_access(), || Ok(()))?;
     let readback = diagnostics::Stage::new("capture_readback");
     let bounds = CGRect::new(
         &CGPoint::new(f64::from(target.x), f64::from(target.y)),
@@ -2669,6 +2692,7 @@ fn attach_desktop_metadata(result: &mut Value, space: &DesktopSpace) {
 }
 
 fn capture_monitor_image(monitor: &Monitor, info: &DisplayInfo) -> Result<RgbaImage, String> {
+    probe_screen_capture(screen_capture_access(), || Ok(()))?;
     if info.width == 0 || info.height == 0 {
         return Err(format!("Display {} has an empty size", info.id));
     }
@@ -4171,6 +4195,22 @@ fn execute_inner(request: ExecuteRequest) -> Result<Value, String> {
         }));
     }
     let read_only = policy::observation_only(&action_name);
+    let requires_capture = action_name == "list_windows"
+        || (action_name == "observe"
+            && (scope == TargetScope::Desktop
+                || request.action.observation.as_deref() == Some("screenshot")));
+    if requires_capture && !screen_capture_access() {
+        return Ok(json!({
+            "ok": false, "action": action_name,
+            "target_scope": scope, "delivery_policy": policy,
+            "error_code": "screen_capture_permission_required",
+            "error": SCREEN_CAPTURE_PERMISSION_REQUIRED,
+            "summary": SCREEN_CAPTURE_PERMISSION_REQUIRED,
+            "action_dispatched": false, "dispatch_succeeded": false,
+            "effect_verified": false, "retry_safe": true,
+            "focus_isolation": "preserved", "foreground_activated": false,
+        }));
+    }
     #[cfg(target_os = "macos")]
     if scope == TargetScope::Desktop && (action_name == "observe" || !read_only) {
         if let Some(owner) = &request.owner {
@@ -4316,11 +4356,16 @@ pub fn release_ax(host_id: &str, connection_id: &str, session_id: Option<&str>, 
 pub fn open_input_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
+        let pane = if mac_accessibility::available() && !screen_capture_access() {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        } else {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        };
         Command::new("open")
-            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            .arg(pane)
             .status()
-            .map_err(|error| format!("Unable to open Accessibility settings: {error}"))
-            .and_then(|status| if status.success() { Ok(()) } else { Err(format!("Unable to open Accessibility settings; process exited with {status}")) })
+            .map_err(|error| format!("Unable to open Computer Use permission settings: {error}"))
+            .and_then(|status| if status.success() { Ok(()) } else { Err(format!("Unable to open Computer Use permission settings; process exited with {status}")) })
     }
     #[cfg(not(target_os = "macos"))]
     Err("Opening Accessibility settings is only supported on macOS".to_string())
@@ -5737,6 +5782,29 @@ mod tests {
         assert!(gui_available);
         assert!(!input_available);
         assert_eq!(reason.as_deref(), Some("accessibility permission denied"));
+    }
+
+    #[test]
+    fn redacted_capture_cannot_report_recording_permission_as_available() {
+        let mut captured = false;
+        let error = probe_screen_capture(false, || {
+            captured = true;
+            Ok(()) // A successful wallpaper-only capture on macOS.
+        })
+        .err();
+        let (capture_available, input_available, reason) = capability_status(error, None);
+        assert!(
+            !captured,
+            "permission detection must not prompt or capture when denied"
+        );
+        assert!(!capture_available);
+        assert!(input_available);
+        assert_eq!(reason.as_deref(), Some(SCREEN_CAPTURE_PERMISSION_REQUIRED));
+        assert!(probe_screen_capture(true, || Ok(())).is_ok());
+        assert_eq!(
+            probe_screen_capture(true, || Err("capture failed".into())).unwrap_err(),
+            "capture failed"
+        );
     }
 
     fn display(id: &str, x: i32, y: i32, width: u32, height: u32, primary: bool) -> DisplayInfo {

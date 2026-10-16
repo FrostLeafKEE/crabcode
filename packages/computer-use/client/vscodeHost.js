@@ -33,6 +33,12 @@ export class VSCodeComputerUseHost {
     return limited ? '有限可用' : labels[this.state.status];
   }
 
+  get capturePermissionHint() {
+    return this.state.capabilities?.platform === 'macos' && this.state.capabilities.capture_available === false
+      ? '窗口列表和截图需要录屏权限。请在系统设置 → 隐私与安全性 → 录屏与系统录音中允许 Crab Computer Use；Crab Desktop 或 VS Code 的授权不能代替此组件的授权。完成后选择「重新检测组件与权限」。'
+      : '';
+  }
+
   render() {
     if (this.statusPanel) this.renderStatus();
     if (!this.panel) return;
@@ -49,6 +55,7 @@ export class VSCodeComputerUseHost {
       <style>body{font-family:var(--vscode-font-family);padding:16px;color:var(--vscode-foreground)}article{border:1px solid var(--vscode-panel-border);padding:12px;margin:12px 0}img{max-width:100%;max-height:65vh;object-fit:contain}li{margin:8px 0}p{overflow-wrap:anywhere}</style></head>
       <body><h2>Computer Use · ${this.statusLabel}</h2><p>${escape(this.state.error || '等待 Agent 开始操作电脑')}</p>
       ${this.state.capabilities?.platform === 'macos' && this.state.capabilities.input_available === false ? '<p>请在系统设置 → 隐私与安全性 → 辅助功能中允许 Crab Computer Use；截图另需录屏权限。授权后从 CrabCode 菜单进入 Computer Use，重新检测组件与权限。</p>' : ''}
+      ${this.capturePermissionHint ? `<p>${escape(this.capturePermissionHint)}</p>` : ''}
       ${previews}<h3>操作记录</h3><ul>${[...this.state.logs].reverse().map(entry => `<li>${escape(new Date(entry.time).toLocaleTimeString())} · ${escape(entry.summary)}</li>`).join('')}</ul></body></html>`;
   }
 
@@ -68,7 +75,7 @@ export class VSCodeComputerUseHost {
       ['严格后台输入', availability(capabilities?.strict_background_input_available)],
       ['显示器数量', capabilities ? String(capabilities.displays?.length ?? 0) : '未检测'],
     ];
-    const notes = [...new Set([this.state.error, capabilities?.reason, capabilities?.strict_background_reason].filter(Boolean))];
+    const notes = [...new Set([this.capturePermissionHint, this.state.error, capabilities?.reason, capabilities?.strict_background_reason].filter(Boolean))];
     this.statusPanel.webview.html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
       <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
       <style>body{font-family:var(--vscode-font-family);padding:16px;color:var(--vscode-foreground);max-width:720px}dl{display:grid;grid-template-columns:minmax(120px,1fr) 2fr;gap:0}dt,dd{margin:0;padding:12px 0;border-bottom:1px solid var(--vscode-panel-border);overflow-wrap:anywhere}dt{color:var(--vscode-descriptionForeground);padding-right:16px}p{line-height:1.6;overflow-wrap:anywhere}</style></head>
