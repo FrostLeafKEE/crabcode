@@ -360,8 +360,8 @@ function createStatusBar(
     100,
   );
 
-  item.command = "crabcode.openSettings";
-  item.tooltip = "CrabCode：打开本扩展的设置";
+  item.command = "crabcode.openMenu";
+  item.tooltip = "CrabCode：Computer Use、设置、日志";
 
   function update() {
     if (connection.connected) {
@@ -390,7 +390,20 @@ function registerCommands(
   connection: CrabCodeConnection,
   extensionVersion: string,
   extensionUri: vscode.Uri,
+  computerUse: ComputerUseController,
 ): void {
+  push(vscode.commands.registerCommand("crabcode.computerUse", () => computerUse.showMenu()));
+  push(vscode.commands.registerCommand("crabcode.openMenu", async () => {
+    const choice = await vscode.window.showQuickPick([
+      { label: "$(device-desktop) Computer Use", command: "crabcode.computerUse" },
+      { label: "$(settings-gear) 设置", command: "crabcode.openSettingsMenu" },
+      { label: "$(output) 日志", command: "crabcode.showLogs" },
+    ], { title: "CrabCode", placeHolder: "选择要打开的功能" });
+    if (choice) await vscode.commands.executeCommand(choice.command);
+  }));
+  push(vscode.commands.registerCommand("crabcode.openSettingsMenu", () => chatProvider.showSettingsMenu()));
+  push(vscode.commands.registerCommand("crabcode.showLogs", () => outputChannel?.show()));
+
   // Open Chat
   push(
     vscode.commands.registerCommand("crabcode.openChat", () => {
@@ -748,7 +761,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // 7. Register all commands
   const extensionVersion = String(context.extension.packageJSON.version ?? "");
-  registerCommands(activeChatProvider, activeConnection, extensionVersion, context.extensionUri);
+  registerCommands(activeChatProvider, activeConnection, extensionVersion, context.extensionUri, computerUse);
 
   // 8. Status bar item
   push(createStatusBar(activeConnection));

@@ -47,6 +47,18 @@
   "contributes": {
     "commands": [
       {
+        "command": "crabcode.openMenu",
+        "title": "CrabCode：打开菜单"
+      },
+      {
+        "command": "crabcode.computerUse",
+        "title": "CrabCode：Computer Use"
+      },
+      {
+        "command": "crabcode.showLogs",
+        "title": "CrabCode：查看日志"
+      },
+      {
         "command": "crabcode.openChat",
         "title": "CrabCode：打开聊天"
       },
@@ -69,6 +81,10 @@
       {
         "command": "crabcode.newSession",
         "title": "CrabCode：新建会话"
+      },
+      {
+        "command": "crabcode.openSettingsMenu",
+        "title": "CrabCode：打开设置菜单"
       },
       {
         "command": "crabcode.openCrabCodeSettings",
@@ -235,7 +251,7 @@
         "crabcode.computerUseEnabled": {
           "type": "boolean",
           "default": true,
-          "description": "默认启用本机 Computer Use 原生组件，无需运行 Crab Desktop；可在状态栏或设置中关闭。Remote SSH 需在本机安装 CrabCode Computer Use 配套扩展。"
+          "description": "默认启用本机 Computer Use 原生组件，无需运行 Crab Desktop；可在状态栏 CrabCode 菜单的 Computer Use 中或设置中关闭。Remote SSH 需在本机安装 CrabCode Computer Use 配套扩展。"
         },
         "crabcode.computerUseTargetScope": {
           "tags": [

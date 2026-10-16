@@ -9,7 +9,7 @@
   "engines": { "vscode": "^1.85.0" },
   "extensionKind": ["ui"],
   "main": "./dist/extension.js",
-  "activationEvents": ["onCommand:crabcode.computerUse.configureLocal", "onCommand:crabcode.computerUse.disposeLocal"],
+  "activationEvents": ["onCommand:crabcode.computerUse.configureLocal", "onCommand:crabcode.computerUse.disposeLocal", "onCommand:crabcode.computerUse.local"],
   "scripts": {
     "build": "node esbuild.cjs",
     "computer-use:build": "node ../../computer-use/scripts/build.mjs --out resources/computer-use",

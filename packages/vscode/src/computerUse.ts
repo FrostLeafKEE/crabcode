@@ -16,7 +16,7 @@ export class ComputerUseController implements vscode.Disposable {
     // identity prevents their host registrations from replacing each other.
     this.hostId = `vscode-${randomUUID()}`;
     if (!vscode.env.remoteName) {
-      this.local = new VSCodeComputerUseHost(vscode, WebSocket, path.join(context.extensionPath, 'resources', 'computer-use'), 'crabcode.computerUse');
+      this.local = new VSCodeComputerUseHost(vscode, WebSocket, path.join(context.extensionPath, 'resources', 'computer-use'));
     }
   }
 
@@ -56,6 +56,16 @@ export class ComputerUseController implements vscode.Disposable {
       if (enabled) void vscode.window.showErrorMessage(vscode.env.remoteName
         ? '请在本机安装 CrabCode Computer Use 配套扩展，然后重新检测。Computer Use 操作的是本机桌面。'
         : 'Computer Use 初始化失败，请查看 CrabCode 输出。');
+    }
+  }
+
+  async showMenu(): Promise<void> {
+    if (this.local) return this.local.menu();
+    try {
+      await vscode.commands.executeCommand('crabcode.computerUse.local');
+    } catch (error) {
+      this.output.appendLine(`Computer Use: ${error instanceof Error ? error.message : String(error)}`);
+      void vscode.window.showErrorMessage('请在本机安装或更新 CrabCode Computer Use 配套扩展，然后重试。');
     }
   }
 

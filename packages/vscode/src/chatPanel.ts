@@ -723,7 +723,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           }
           break;
         case "openSettings":
-          void this.chooseSettingsDestination();
+          void this.showSettingsMenu();
           break;
         case "clearMessages":
           void this.clearSessionHistory();
@@ -4703,11 +4703,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async chooseSettingsDestination(): Promise<void> {
+  async showSettingsMenu(): Promise<void> {
     const choice = await vscode.window.showQuickPick(
       [
         { label: "CrabCode设置", description: "聊天、模型、权限、上下文压缩与提示词", id: "crabcode" },
-        { label: "扩展设置", description: "连接、安装、编辑器集成与调试", id: "extension" },
+        { label: "VS Code 扩展设置", description: "连接、安装、编辑器集成与调试", id: "extension" },
       ],
       { title: "CrabCode 设置", placeHolder: "选择要打开的设置" },
     );
