@@ -81,6 +81,47 @@ test('webview defaults to folding the completed process while final text and act
   } finally { w.dom.window.close(); }
 });
 
+for (const source of ['history', 'live']) {
+  test(`computer-use screenshots fold with the process and survive expansion (${source})`, () => {
+    const w = webview();
+    const images = [{ data: 'YQ==', media_type: 'image/png' }];
+    const cards = ['observe', 'click', 'scroll'].map(action => tool({
+      id: action, toolName: 'ComputerUse', input: { action }, images, collapsed: false,
+    }));
+    const picture = tool({ id: 'picture', toolName: 'Image', images, collapsed: false });
+    try {
+      if (source === 'history') {
+        w.replay([message('u', 'user', 'task'), ...cards, picture,
+          message('f', 'assistant', 'finished'), { kind: 'turnEnd', reason: 'end_turn' }]);
+      } else {
+        w.replay([], { busy: true });
+        w.send({ type: 'newMessage', message: message('u', 'user', 'task').message });
+        for (const { card } of [...cards, picture]) {
+          w.send({ type: 'toolUse', card: { ...card, result: null, images: [] } });
+          w.send({ type: 'toolResult', card });
+          assert.equal(w.hidden('tool-' + card.id), false);
+        }
+        w.send({ type: 'newMessage', message: message('f', 'assistant', 'finished').message });
+        w.send({ type: 'processTurnEnd', reason: 'end_turn' });
+        w.send({ type: 'busyState', busy: false });
+      }
+      const screenshot = w.doc.querySelector('#tool-scroll .tool-result-image');
+      assert.ok(screenshot);
+      for (const { card } of cards) assert.equal(w.hidden('tool-' + card.id), true, card.id);
+      assert.equal(w.hidden('tool-picture'), false);
+      assert.equal(w.hidden('msg-f'), false);
+      w.doc.querySelector('.turn-summary').click();
+      for (const { card } of cards) assert.equal(w.hidden('tool-' + card.id), false, card.id);
+      w.doc.querySelector('.turn-summary').click();
+      for (const { card } of cards) assert.equal(w.hidden('tool-' + card.id), true, card.id);
+      w.send({ type: 'processDisplayOptions', autoCollapseProcess: false });
+      assert.equal(w.hidden('tool-scroll'), false);
+      assert.equal(w.doc.querySelector('#tool-scroll .tool-result-image'), screenshot);
+      assert.deepEqual(w.errors, []);
+    } finally { w.dom.window.close(); }
+  });
+}
+
 test('manual expansion survives new history IDs, session switches and setting changes', () => {
   const w = webview();
   try {

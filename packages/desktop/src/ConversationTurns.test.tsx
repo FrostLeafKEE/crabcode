@@ -92,6 +92,31 @@ describe('automatic process disclosure', () => {
     } finally { h.close(); }
   });
 
+  it('folds computer-use screenshots with the process while keeping image outputs visible', () => {
+    const h = harness('computer-use');
+    const images = [{ data: 'YQ==', media_type: 'image/png' }];
+    const items = fixture();
+    items.splice(2, 1,
+      ...['observe', 'click', 'scroll'].map((action): ChatItem => ({
+        id: action, kind: 'tool', title: 'ComputerUse', input: { action }, images, status: 'complete',
+      })),
+      { id: 'picture', kind: 'tool', title: 'Image', images, status: 'complete' });
+    try {
+      h.render(items);
+      for (const id of ['observe', 'click', 'scroll']) expect(h.hidden(id)).toBe(true);
+      expect(h.hidden('picture')).toBe(false);
+      expect(h.hidden('f')).toBe(false);
+      act(() => h.node.querySelector<HTMLButtonElement>('.process-summary')!.click());
+      for (const id of ['observe', 'click', 'scroll']) expect(h.hidden(id)).toBe(false);
+      act(() => h.node.querySelector<HTMLButtonElement>('[data-item="scroll"]')!.click());
+      act(() => h.node.querySelector<HTMLButtonElement>('.process-summary')!.click());
+      for (const id of ['observe', 'click', 'scroll']) expect(h.hidden(id)).toBe(true);
+      h.render(items, false);
+      expect(h.hidden('scroll')).toBe(false);
+      expect(h.node.querySelector('[data-item="scroll"]')?.textContent).toBe('tool:open');
+    } finally { h.close(); }
+  });
+
   it('defers automatic collapse while process text is selected', () => {
     const h = harness('selection');
     try {

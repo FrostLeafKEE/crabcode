@@ -2,6 +2,8 @@ export interface ProcessItem {
   id: string;
   kind: string;
   text?: string;
+  /** Original tool name for tool items. */
+  title?: string;
   origin?: string | null;
   followUpMode?: string;
   messageUuid?: string | null;

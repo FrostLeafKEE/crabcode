@@ -7587,7 +7587,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         const item = entry.item;
         if (item.kind === 'tool') {
           const card = toolCards.get(item.id);
-          return { ...item, status: card?.result === null ? 'running' : 'complete',
+          return { ...item, title: card?.toolName, status: card?.result === null ? 'running' : 'complete',
             images: card?.images, isError: card?.isError, agent_id: card?.agentId };
         }
         if (item.kind === 'permission') return { ...item, status: permissionCards.get(item.id)?.allowed === null ? 'pending' : 'complete' };
