@@ -296,6 +296,12 @@ def test_cli_status_and_permissions_do_not_require_a_session_flag(monkeypatch, t
     assert result.exit_code == 0, result.output
     client.start.assert_awaited_with()
     assert client.request.await_args_list[-2].args == ("permissions",)
+    result = runner.invoke(app, ["computer-use", "permissions", "--screen-recording"])
+    assert result.exit_code == 0, result.output
+    assert client.request.await_args_list[-2].args == ("permissions", {"kind": "screen_recording"})
+    result = runner.invoke(app, ["computer-use", "permissions", "--accessibility"])
+    assert result.exit_code == 0, result.output
+    assert client.request.await_args_list[-2].args == ("permissions", {"kind": "accessibility"})
     client.start.side_effect = cu.ComputerUseError("missing component")
     result = runner.invoke(app, ["computer-use", "status", "--json"])
     assert result.exit_code == 1

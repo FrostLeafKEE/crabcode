@@ -8,4 +8,4 @@ export function nodeComputerUseChannel(options: {
   onState(state: ComputerUseState): void;
   WebSocket: any;
   stateDir?: string;
-}): { channel: ComputerUseChannel; openPermissions(): Promise<unknown> };
+}): { channel: ComputerUseChannel; openPermissions(kind?: 'screen_recording' | 'accessibility'): Promise<unknown> };

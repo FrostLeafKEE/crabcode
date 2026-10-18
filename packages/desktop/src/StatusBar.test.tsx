@@ -130,8 +130,10 @@ describe("desktop status bar", () => {
     act(() => container.querySelector<HTMLButtonElement>(".status-computer-use")!.click());
     expect(container.querySelector(".computer-use-console")?.textContent).toContain("有限可用");
     expect(container.querySelector(".computer-use-permission")?.textContent).toContain("需要开启辅助功能权限");
+    expect(container.querySelector(".computer-use-permission")?.textContent).toContain("卡片拖入辅助功能列表");
     act(() => container.querySelectorAll<HTMLButtonElement>(".computer-use-permission-actions button")[0].click());
     expect(onOpenInputSettings).toHaveBeenCalledOnce();
+    expect(onOpenInputSettings).toHaveBeenCalledWith("accessibility");
     act(() => container.querySelectorAll<HTMLButtonElement>(".computer-use-permission-actions button")[1].click());
     expect(onRefresh).toHaveBeenCalledOnce();
     expect(container.querySelector(".computer-use-console")?.textContent).toContain("Clicked");
@@ -175,6 +177,7 @@ describe("desktop status bar", () => {
   });
 
   it("labels AX observations and a retained screenshot without calling it the current view", () => {
+    const onOpenInputSettings = vi.fn();
     const computerUse: ComputerUseState = {
       ...initialComputerUseState("desktop-test", true), status: "ready", active: true,
       capabilities: { gui_available: true, input_available: true, platform: "macos", displays: [],
@@ -184,13 +187,16 @@ describe("desktop status bar", () => {
         frame: { data: "AAAA", media_type: "image/png", width: 10, height: 10, origin_x: 0, origin_y: 0, frame_id: "f" },
         frameUpdatedAt: Date.now() - 60000, cursor: null, updatedAt: Date.now() }],
     };
-    act(() => root.render(<StatusBar computerUse={computerUse} />));
+    act(() => root.render(<StatusBar computerUse={computerUse} onComputerUseOpenInputSettings={onOpenInputSettings} />));
     act(() => container.querySelector<HTMLButtonElement>(".status-computer-use")!.click());
     expect(container.textContent).toContain("辅助功能 · 12 个元素");
     expect(container.textContent).toContain("本次模型读取 AX Tree");
     expect(container.textContent).toContain("窗口列表和截图需要录屏权限");
     expect(container.querySelector('[aria-label="录屏不可用"]')?.textContent).toContain("Crab Desktop 或 VS Code 的授权不能代替此组件的授权");
     expect(container.querySelector('[aria-label="录屏不可用"]')?.textContent).toContain("~/Library/Application Support/CrabCode/ComputerUse/Crab Computer Use.app");
+    expect(container.querySelector('[aria-label="录屏不可用"]')?.textContent).toContain("卡片拖到录屏列表");
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="录屏不可用"] button')!.click());
+    expect(onOpenInputSettings).toHaveBeenCalledWith("screen_recording");
     expect(container.querySelector(".computer-use-frame img")?.getAttribute("alt")).toContain("最近一次");
   });
 

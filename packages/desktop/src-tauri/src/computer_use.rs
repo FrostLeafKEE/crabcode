@@ -56,8 +56,8 @@ pub async fn computer_use_capabilities(app: tauri::AppHandle) -> Result<Value, S
 }
 
 #[tauri::command]
-pub async fn computer_use_open_input_settings(app: tauri::AppHandle) -> Result<(), String> {
-    call(app, "permissions", json!({}), true).await.map(|_| ())
+pub async fn computer_use_open_input_settings(app: tauri::AppHandle, kind: Option<String>) -> Result<(), String> {
+    call(app, "permissions", json!({"kind": kind}), true).await.map(|_| ())
 }
 
 #[tauri::command]

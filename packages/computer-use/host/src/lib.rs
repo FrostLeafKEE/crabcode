@@ -11,6 +11,48 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "macos")]
+mod permission_guide {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    unsafe extern "C" {
+        fn crab_show_permission_drag_guide(
+            application_path: *const std::ffi::c_char,
+            screen_recording: bool,
+        ) -> bool;
+        fn crab_hide_permission_drag_guide_if_granted(
+            capture_granted: bool,
+            accessibility_granted: bool,
+        );
+    }
+
+    pub fn installed_bundle(executable: &Path) -> Result<&Path, String> {
+        executable
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .filter(|path| path.extension().is_some_and(|extension| extension == "app"))
+            .ok_or_else(|| "Computer Use is not running from its installed macOS app bundle".into())
+    }
+
+    pub fn show(screen_recording: bool) -> Result<(), String> {
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let bundle = installed_bundle(&executable)?;
+        let path = CString::new(bundle.as_os_str().as_bytes()).map_err(|error| error.to_string())?;
+        if unsafe { crab_show_permission_drag_guide(path.as_ptr(), screen_recording) } {
+            Ok(())
+        } else {
+            Err("Unable to show the Computer Use drag-to-authorize guide".into())
+        }
+    }
+
+    pub fn hide_if_granted(capture_granted: bool, accessibility_granted: bool) {
+        unsafe { crab_hide_permission_drag_guide_if_granted(capture_granted, accessibility_granted) }
+    }
+}
+
 pub const PROTOCOL_VERSION: u32 = 1;
 const REQUEST_LIMIT: u64 = 1024 * 1024;
 const RESPONSE_LIMIT: u64 = 64 * 1024 * 1024;
@@ -348,6 +390,8 @@ fn dispatch(
         "capabilities" => {
             let mut caps = serde_json::to_value(crabcode_computer_use_core::detect_capabilities())
                 .map_err(|e| e.to_string())?;
+            #[cfg(target_os = "macos")]
+            permission_guide::hide_if_granted(caps["capture_available"] == true, caps["ax_available"] == true);
             caps["instance_id"] = json!(instance);
             caps["environment"] = json!("host");
             caps["host_protocol_version"] = json!(PROTOCOL_VERSION);
@@ -405,8 +449,11 @@ fn dispatch(
             Ok(Value::Null)
         }
         "permissions" => {
-            crabcode_computer_use_core::open_input_settings()?;
-            Ok(Value::Null)
+            let screen_recording_pane =
+                crabcode_computer_use_core::open_input_settings(params["kind"].as_str())?;
+            #[cfg(target_os = "macos")]
+            permission_guide::show(screen_recording_pane)?;
+            Ok(json!({"drag_guide_visible": true, "kind": if screen_recording_pane { "screen_recording" } else { "accessibility" }}))
         }
         _ => Err("Unknown Computer Use executor method".into()),
     }
@@ -559,6 +606,25 @@ pub fn serve(dir: PathBuf) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn permission_guide_uses_the_executing_app_bundle() {
+        let app = Path::new("/tmp/Crab Computer Use.app");
+        let executable = app.join("Contents/MacOS/crabcode-computer-use-host");
+        assert_eq!(permission_guide::installed_bundle(&executable).unwrap(), app);
+        assert!(permission_guide::installed_bundle(Path::new("/tmp/crabcode-computer-use-host")).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn invalid_permission_kind_is_rejected_without_opening_system_settings() {
+        let mut state = NativeState::default();
+        let error = dispatch(
+            "permissions", &json!({"kind":"other"}), "instance", &mut state, Instant::now(),
+        ).unwrap_err();
+        assert!(error.contains("Unknown Computer Use permission kind"));
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

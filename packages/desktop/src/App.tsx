@@ -4690,8 +4690,8 @@ function App() {
           channelRef.current.forEach((channel) => channel.setComputerUseEnabled(enabled));
           commitSettings((current) => ({ ...current, computer_use_enabled: enabled }));
         }}
-        onComputerUseOpenInputSettings={() => {
-          const operation = computerVm ? manageVirtualMachine(computerVm, "permissions") : openComputerUseInputSettings();
+        onComputerUseOpenInputSettings={(kind) => {
+          const operation = computerVm ? manageVirtualMachine(computerVm, "permissions") : openComputerUseInputSettings(kind);
           void operation.catch(error => setGlobalError(error instanceof Error ? error.message : String(error)));
         }}
         onComputerUseRefresh={() => computerUseChannelRef.current?.refresh()}

@@ -35,7 +35,13 @@ export class VSCodeComputerUseHost {
 
   get capturePermissionHint() {
     return this.state.capabilities?.platform === 'macos' && this.state.capabilities.capture_available === false
-      ? '窗口列表和截图需要录屏权限。请在系统设置 → 隐私与安全性 → 录屏与系统录音中允许 Crab Computer Use；若列表中没有，点左下角的＋，按 ⌘⇧G 输入 ~/Library/Application Support/CrabCode/ComputerUse/Crab Computer Use.app 后添加。Crab Desktop 或 VS Code 的授权不能代替此组件的授权。完成后选择「重新检测组件与权限」。'
+      ? '窗口列表和截图需要录屏权限。选择「打开录屏权限设置」后，将弹出的 Crab Computer Use.app 卡片拖到录屏列表并打开开关；也可点＋，按 ⌘⇧G 输入 ~/Library/Application Support/CrabCode/ComputerUse/Crab Computer Use.app 后添加。Crab Desktop 或 VS Code 的授权不能代替此组件的授权。完成后选择「重新检测组件与权限」。'
+      : '';
+  }
+
+  get accessibilityPermissionHint() {
+    return this.state.capabilities?.platform === 'macos' && this.state.capabilities.input_available === false
+      ? '点击、输入和滚动需要辅助功能权限。选择「打开辅助功能权限设置」后，将弹出的 Crab Computer Use.app 卡片拖到辅助功能列表并打开开关；完成后选择「重新检测组件与权限」。'
       : '';
   }
 
@@ -54,7 +60,7 @@ export class VSCodeComputerUseHost {
       <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline';">
       <style>body{font-family:var(--vscode-font-family);padding:16px;color:var(--vscode-foreground)}article{border:1px solid var(--vscode-panel-border);padding:12px;margin:12px 0}img{max-width:100%;max-height:65vh;object-fit:contain}li{margin:8px 0}p{overflow-wrap:anywhere}</style></head>
       <body><h2>Computer Use · ${this.statusLabel}</h2><p>${escape(this.state.error || '等待 Agent 开始操作电脑')}</p>
-      ${this.state.capabilities?.platform === 'macos' && this.state.capabilities.input_available === false ? '<p>请在系统设置 → 隐私与安全性 → 辅助功能中允许 Crab Computer Use；截图另需录屏权限。授权后从 CrabCode 菜单进入 Computer Use，重新检测组件与权限。</p>' : ''}
+      ${this.accessibilityPermissionHint ? `<p>${escape(this.accessibilityPermissionHint)}</p>` : ''}
       ${this.capturePermissionHint ? `<p>${escape(this.capturePermissionHint)}</p>` : ''}
       ${previews}<h3>操作记录</h3><ul>${[...this.state.logs].reverse().map(entry => `<li>${escape(new Date(entry.time).toLocaleTimeString())} · ${escape(entry.summary)}</li>`).join('')}</ul></body></html>`;
   }
@@ -75,7 +81,7 @@ export class VSCodeComputerUseHost {
       ['严格后台输入', availability(capabilities?.strict_background_input_available)],
       ['显示器数量', capabilities ? String(capabilities.displays?.length ?? 0) : '未检测'],
     ];
-    const notes = [...new Set([this.capturePermissionHint, this.state.error, capabilities?.reason, capabilities?.strict_background_reason].filter(Boolean))];
+    const notes = [...new Set([this.capturePermissionHint, this.accessibilityPermissionHint, this.state.error, capabilities?.reason, capabilities?.strict_background_reason].filter(Boolean))];
     this.statusPanel.webview.html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
       <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
       <style>body{font-family:var(--vscode-font-family);padding:16px;color:var(--vscode-foreground);max-width:720px}dl{display:grid;grid-template-columns:minmax(120px,1fr) 2fr;gap:0}dt,dd{margin:0;padding:12px 0;border-bottom:1px solid var(--vscode-panel-border);overflow-wrap:anywhere}dt{color:var(--vscode-descriptionForeground);padding-right:16px}p{line-height:1.6;overflow-wrap:anywhere}</style></head>
@@ -85,12 +91,18 @@ export class VSCodeComputerUseHost {
   }
 
   async menu() {
+    const permissionChoices = this.state.capabilities?.platform === 'macos'
+      ? [
+        { label: '打开录屏权限设置', action: 'screen_recording_permissions' },
+        { label: '打开辅助功能权限设置', action: 'accessibility_permissions' },
+      ]
+      : [{ label: '打开系统权限设置', action: 'permissions' }];
     const choice = await this.vscode.window.showQuickPick([
       { label: 'Computer Use 状态查询', action: 'status' },
       { label: this.state.enabled ? '关闭 Computer Use' : '启用 Computer Use', action: 'toggle' },
       { label: '查看监看截图和操作记录', action: 'monitor' },
       { label: '重新检测组件与权限', action: 'refresh' },
-      { label: '打开系统权限设置', action: 'permissions' },
+      ...permissionChoices,
     ], { title: `Computer Use · ${this.statusLabel}` });
     if (!choice) return;
     try {
@@ -100,6 +112,8 @@ export class VSCodeComputerUseHost {
           ? this.vscode.ConfigurationTarget.Workspace : this.vscode.ConfigurationTarget.Global;
         await config.update('computerUseEnabled', !this.state.enabled, target);
       } else if (choice.action === 'refresh') this.runtime?.channel.refresh();
+      else if (choice.action === 'screen_recording_permissions') await this.runtime?.openPermissions('screen_recording');
+      else if (choice.action === 'accessibility_permissions') await this.runtime?.openPermissions('accessibility');
       else if (choice.action === 'permissions') await this.runtime?.openPermissions();
       else if (choice.action === 'status') {
         if (this.statusPanel) return this.statusPanel.reveal();

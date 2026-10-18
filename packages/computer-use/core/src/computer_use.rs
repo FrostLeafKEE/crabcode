@@ -4353,16 +4353,22 @@ pub fn release_ax(host_id: &str, connection_id: &str, session_id: Option<&str>, 
     let _ = (host_id, connection_id, session_id, agent_id, all_agents);
 }
 
-pub fn open_input_settings() -> Result<(), String> {
+/// Opens the requested permission pane and reports whether it is screen recording.
+pub fn open_input_settings(kind: Option<&str>) -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     {
-        let needs_capture = mac_accessibility::available() && !screen_capture_access();
-        if needs_capture {
+        let screen_recording_pane = match kind {
+            Some("screen_recording") => true,
+            Some("accessibility") => false,
+            None => mac_accessibility::available() && !screen_capture_access(),
+            Some(_) => return Err("Unknown Computer Use permission kind".into()),
+        };
+        if screen_recording_pane {
             // Preflight does not register a newly installed helper in the privacy
-            // list. Request access only after the user opens permission settings.
+            // list. Request access when the user explicitly opens these settings.
             let _ = core_graphics::access::ScreenCaptureAccess.request();
         }
-        let pane = if needs_capture {
+        let pane = if screen_recording_pane {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
         } else {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
@@ -4371,10 +4377,13 @@ pub fn open_input_settings() -> Result<(), String> {
             .arg(pane)
             .status()
             .map_err(|error| format!("Unable to open Computer Use permission settings: {error}"))
-            .and_then(|status| if status.success() { Ok(()) } else { Err(format!("Unable to open Computer Use permission settings; process exited with {status}")) })
+            .and_then(|status| if status.success() { Ok(screen_recording_pane) } else { Err(format!("Unable to open Computer Use permission settings; process exited with {status}")) })
     }
     #[cfg(not(target_os = "macos"))]
-    Err("Opening Accessibility settings is only supported on macOS".to_string())
+    {
+        let _ = kind;
+        Err("Opening Accessibility settings is only supported on macOS".to_string())
+    }
 }
 
 #[cfg(test)]

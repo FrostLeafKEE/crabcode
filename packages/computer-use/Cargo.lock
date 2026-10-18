@@ -425,6 +425,7 @@ dependencies = [
 name = "crabcode-computer-use-host"
 version = "0.1.5"
 dependencies = [
+ "cc",
  "crabcode-computer-use-core",
  "dirs",
  "embed-resource",

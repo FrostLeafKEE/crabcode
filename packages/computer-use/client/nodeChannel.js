@@ -21,5 +21,5 @@ export function nodeComputerUseChannel({ gatewayUrl, password, bundleDirectory, 
     setTimeout: (callback, delay) => setTimeout(callback, delay),
     clearTimeout: timer => clearTimeout(timer),
   });
-  return { channel, openPermissions: () => client.invoke('computer_use_open_input_settings') };
+  return { channel, openPermissions: kind => client.invoke('computer_use_open_input_settings', kind ? { kind } : {}) };
 }

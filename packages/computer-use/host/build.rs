@@ -19,6 +19,15 @@ fn hash_tree(path: &Path, hash: &mut Sha256) {
 
 fn main() {
     let manifest = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        cc::Build::new()
+            .file(manifest.join("src/permission_guide.m"))
+            .flag("-fobjc-arc")
+            .flag("-fblocks")
+            .compile("crabcode_permission_guide");
+        println!("cargo:rustc-link-lib=framework=AppKit");
+        println!("cargo:rustc-link-lib=framework=Foundation");
+    }
     let mut hash = Sha256::new();
     for relative in ["src", "../core/src"] {
         println!("cargo:rerun-if-changed={relative}");

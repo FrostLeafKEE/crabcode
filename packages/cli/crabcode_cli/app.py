@@ -41,7 +41,8 @@ def _configure_utf8_stdio() -> None:
             reconfigure(encoding="utf-8", errors="replace")
 
 
-def _computer_use_command(*, permissions: bool = False, json_output: bool = False) -> None:
+def _computer_use_command(*, permissions: bool = False, json_output: bool = False,
+                          permission_kind: str | None = None) -> None:
     import json
 
     from crabcode_cli.computer_use import ComputerUseError, NativeClient
@@ -50,7 +51,10 @@ def _computer_use_command(*, permissions: bool = False, json_output: bool = Fals
         client = NativeClient()
         await client.start()
         if permissions:
-            await client.request("permissions", timeout=10)
+            if permission_kind:
+                await client.request("permissions", {"kind": permission_kind}, timeout=10)
+            else:
+                await client.request("permissions", timeout=10)
         caps = await client.request("capabilities", timeout=25)
         return {"installed": True, "path": str(client.state_dir), **caps}
 
@@ -82,9 +86,15 @@ def computer_use_status_cmd(
 
 
 @computer_use_app.command("permissions")
-def computer_use_permissions_cmd() -> None:
-    """Open the native input permission settings (macOS)."""
-    _computer_use_command(permissions=True)
+def computer_use_permissions_cmd(
+    screen_recording: bool = typer.Option(False, "--screen-recording", help="Open Screen Recording with the draggable app card"),
+    accessibility: bool = typer.Option(False, "--accessibility", help="Open Accessibility with the draggable app card"),
+) -> None:
+    """Open the macOS permission settings and recording drag guide."""
+    if screen_recording and accessibility:
+        raise typer.BadParameter("Choose one permission pane")
+    kind = "screen_recording" if screen_recording else "accessibility" if accessibility else None
+    _computer_use_command(permissions=True, permission_kind=kind)
 
 
 @document_engine_app.command("status")

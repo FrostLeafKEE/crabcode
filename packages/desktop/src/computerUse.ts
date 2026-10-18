@@ -22,9 +22,9 @@ export function computerUseHostId(): string {
   }
 }
 
-export async function openComputerUseInputSettings(): Promise<void> {
+export async function openComputerUseInputSettings(kind?: "screen_recording" | "accessibility"): Promise<void> {
   if (!isDesktopShell()) throw new Error("Accessibility settings require the native Computer Use component");
-  await invoke("computer_use_open_input_settings");
+  await invoke("computer_use_open_input_settings", { kind });
 }
 
 export class ComputerUseChannel extends SharedComputerUseChannel {

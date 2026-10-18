@@ -41,7 +41,12 @@ Each platform distribution bundles `host`. First enablement installs it in the
 per-user application-data directory, under `CrabCode/ComputerUse`. macOS uses
 `~/Library/Application Support/CrabCode/ComputerUse/Crab Computer Use.app`.
 Grant that app Accessibility and Screen Recording access, then select refresh
-in the client. Existing Desktop permissions do not transfer to the new app.
+in the client. On macOS the shared executor's permissions action opens the
+relevant settings pane and a floating card that drags the installed app bundle
+into the Screen Recording or Accessibility list. The card appears from Desktop,
+VS Code or `crabcode computer-use permissions`; CLI can select either pane
+directly with `--screen-recording` or `--accessibility`. Existing Desktop
+permissions do not transfer to the new app.
 Local ad-hoc builds can require renewed authorization after recompilation.
 Local client build commands copy the same signed bundle into Desktop, VS Code,
 and the local companion. The shared installer keeps a newer installed build
@@ -95,7 +100,9 @@ or graphical session, ordinary coding remains available.
 ```sh
 crabcode computer-use status
 crabcode computer-use status --json
-crabcode computer-use permissions  # macOS input permission settings
+crabcode computer-use permissions  # macOS permission settings and drag guide
+crabcode computer-use permissions --screen-recording
+crabcode computer-use permissions --accessibility
 ```
 
 Source/editable installations and universal Python wheels do not embed a native

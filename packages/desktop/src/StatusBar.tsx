@@ -18,7 +18,7 @@ interface StatusBarProps {
   computerUse?: ComputerUseState;
   computerUseConfig?: RuntimeSettingsResponse | null;
   onComputerUseEnabledChange?: (enabled: boolean) => void;
-  onComputerUseOpenInputSettings?: () => void;
+  onComputerUseOpenInputSettings?: (kind: "screen_recording" | "accessibility") => void;
   onComputerUseRefresh?: () => void;
 }
 
@@ -231,10 +231,10 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
               <AlertTriangle />
               <div>
                 <strong>需要开启辅助功能权限</strong>
-                <span>{computerUse.capabilities?.environment === "local_vm" ? "请在虚拟机内为 Crab Computer Use 授予辅助功能和录屏权限。宿主机权限不影响虚拟机输入。" : "点击、输入和滚动需要在 macOS“系统设置 → 隐私与安全性 → 辅助功能”中允许 Crab Computer Use，同时需要前台权限策略支持。当前仍可查看屏幕。"}</span>
+                <span>{computerUse.capabilities?.environment === "local_vm" ? "请在虚拟机内为 Crab Computer Use 授予辅助功能和录屏权限。宿主机权限不影响虚拟机输入。" : "点击、输入和滚动需要在 macOS“系统设置 → 隐私与安全性 → 辅助功能”中允许 Crab Computer Use。点击“打开系统设置”后，可将弹出的应用卡片拖入辅助功能列表。当前仍可查看屏幕。"}</span>
               </div>
               <div className="computer-use-permission-actions">
-                <button type="button" onClick={onComputerUseOpenInputSettings}>打开系统设置</button>
+                <button type="button" onClick={() => onComputerUseOpenInputSettings?.("accessibility")}>打开系统设置</button>
                 <button type="button" onClick={onComputerUseRefresh}>重新检测</button>
               </div>
             </section>
@@ -253,11 +253,11 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                 <span>{computerUse.capabilities.environment === "local_vm"
                   ? "请在虚拟机内为 Crab Computer Use 授予录屏权限，再重新检测。宿主机授权不能代替虚拟机内的授权。"
                   : computerUse.capabilities.platform === "macos"
-                  ? "窗口列表和截图需要录屏权限。请在系统设置 → 隐私与安全性 → 录屏与系统录音中允许 Crab Computer Use；若列表中没有，点左下角的＋，按 ⌘⇧G 输入 ~/Library/Application Support/CrabCode/ComputerUse/Crab Computer Use.app 后添加。Crab Desktop 或 VS Code 的授权不能代替此组件的授权。"
+                  ? "窗口列表和截图需要录屏权限。点击“打开系统设置”，将弹出的 Crab Computer Use.app 卡片拖到录屏列表并打开开关；也可点＋，按 ⌘⇧G 输入 ~/Library/Application Support/CrabCode/ComputerUse/Crab Computer Use.app 后添加。Crab Desktop 或 VS Code 的授权不能代替此组件的授权。"
                   : computerUse.capabilities.reason || "请检查屏幕捕获权限并重新检测。"}</span>
               </div>
               <div className="computer-use-permission-actions">
-                {computerUse.capabilities.platform === "macos" && <button type="button" onClick={onComputerUseOpenInputSettings}>打开系统设置</button>}
+                {computerUse.capabilities.platform === "macos" && <button type="button" onClick={() => onComputerUseOpenInputSettings?.("screen_recording")}>打开系统设置</button>}
                 <button type="button" onClick={onComputerUseRefresh}>重新检测</button>
               </div>
             </section>
