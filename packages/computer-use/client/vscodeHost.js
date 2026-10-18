@@ -35,7 +35,7 @@ export class VSCodeComputerUseHost {
 
   get capturePermissionHint() {
     return this.state.capabilities?.platform === 'macos' && this.state.capabilities.capture_available === false
-      ? '窗口列表和截图需要录屏权限。请在系统设置 → 隐私与安全性 → 录屏与系统录音中允许 Crab Computer Use；Crab Desktop 或 VS Code 的授权不能代替此组件的授权。完成后选择「重新检测组件与权限」。'
+      ? '窗口列表和截图需要录屏权限。请在系统设置 → 隐私与安全性 → 录屏与系统录音中允许 Crab Computer Use；若列表中没有，点左下角的＋，按 ⌘⇧G 输入 ~/Library/Application Support/CrabCode/ComputerUse/Crab Computer Use.app 后添加。Crab Desktop 或 VS Code 的授权不能代替此组件的授权。完成后选择「重新检测组件与权限」。'
       : '';
   }
 

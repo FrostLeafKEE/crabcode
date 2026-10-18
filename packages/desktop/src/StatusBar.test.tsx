@@ -190,6 +190,7 @@ describe("desktop status bar", () => {
     expect(container.textContent).toContain("本次模型读取 AX Tree");
     expect(container.textContent).toContain("窗口列表和截图需要录屏权限");
     expect(container.querySelector('[aria-label="录屏不可用"]')?.textContent).toContain("Crab Desktop 或 VS Code 的授权不能代替此组件的授权");
+    expect(container.querySelector('[aria-label="录屏不可用"]')?.textContent).toContain("~/Library/Application Support/CrabCode/ComputerUse/Crab Computer Use.app");
     expect(container.querySelector(".computer-use-frame img")?.getAttribute("alt")).toContain("最近一次");
   });
 

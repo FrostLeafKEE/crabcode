@@ -4356,7 +4356,13 @@ pub fn release_ax(host_id: &str, connection_id: &str, session_id: Option<&str>, 
 pub fn open_input_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let pane = if mac_accessibility::available() && !screen_capture_access() {
+        let needs_capture = mac_accessibility::available() && !screen_capture_access();
+        if needs_capture {
+            // Preflight does not register a newly installed helper in the privacy
+            // list. Request access only after the user opens permission settings.
+            let _ = core_graphics::access::ScreenCaptureAccess.request();
+        }
+        let pane = if needs_capture {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
         } else {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"

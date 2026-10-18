@@ -253,7 +253,7 @@ export function StatusBar({ connection, gateway, startup, project, loading, erro
                 <span>{computerUse.capabilities.environment === "local_vm"
                   ? "请在虚拟机内为 Crab Computer Use 授予录屏权限，再重新检测。宿主机授权不能代替虚拟机内的授权。"
                   : computerUse.capabilities.platform === "macos"
-                  ? "窗口列表和截图需要录屏权限。请在系统设置 → 隐私与安全性 → 录屏与系统录音中允许 Crab Computer Use；Crab Desktop 或 VS Code 的授权不能代替此组件的授权。"
+                  ? "窗口列表和截图需要录屏权限。请在系统设置 → 隐私与安全性 → 录屏与系统录音中允许 Crab Computer Use；若列表中没有，点左下角的＋，按 ⌘⇧G 输入 ~/Library/Application Support/CrabCode/ComputerUse/Crab Computer Use.app 后添加。Crab Desktop 或 VS Code 的授权不能代替此组件的授权。"
                   : computerUse.capabilities.reason || "请检查屏幕捕获权限并重新检测。"}</span>
               </div>
               <div className="computer-use-permission-actions">
