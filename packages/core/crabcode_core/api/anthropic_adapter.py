@@ -16,6 +16,7 @@ from crabcode_core.api.base import (
     usage_int_field,
 )
 from crabcode_core.logging_utils import get_logger
+from crabcode_core.api.error_logging import response_request_id
 from crabcode_core.paths import get_config_home
 from crabcode_core.types.config import ApiConfig
 from crabcode_core.utf8_sanitize import safe_utf8_json_tree, safe_utf8_str
@@ -202,6 +203,9 @@ class AnthropicAdapter(APIAdapter):
                     body = await response.aread()
                     yield StreamChunk(
                         type="error",
+                        error_body=body,
+                        error_status_code=response.status_code,
+                        error_request_id=response_request_id(response),
                         error=(
                             body.decode("utf-8", errors="replace")
                             or response.reason_phrase
@@ -222,7 +226,11 @@ class AnthropicAdapter(APIAdapter):
                         )
                     except Exception:
                         pass
-                    yield StreamChunk(type="error", error=str(error_text))
+                    yield StreamChunk(
+                        type="error", error=str(error_text), error_body=text,
+                        error_status_code=response.status_code,
+                        error_request_id=response_request_id(response),
+                    )
                     return
 
                 current_tool_id = ""
@@ -339,7 +347,11 @@ class AnthropicAdapter(APIAdapter):
                             message = error.get("message") or json.dumps(error, ensure_ascii=False)
                         else:
                             message = str(error or event)
-                        yield StreamChunk(type="error", error=message)
+                        yield StreamChunk(
+                            type="error", error=message, error_body=event,
+                            error_status_code=response.status_code,
+                            error_request_id=response_request_id(response),
+                        )
 
     async def resolve_context_window(self) -> int:
         """Query the Anthropic Models API for context window, with caching."""

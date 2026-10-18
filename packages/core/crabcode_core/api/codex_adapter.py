@@ -22,6 +22,7 @@ from crabcode_core.api.base import (
     StreamChunk,
     normalize_openai_usage,
 )
+from crabcode_core.api.error_logging import response_request_id
 from crabcode_core.query.retry import MAX_REQUEST_RETRIES, request_retry_backoff
 from crabcode_core.types.config import ApiConfig
 from crabcode_core.utf8_sanitize import safe_utf8_json_tree, safe_utf8_str
@@ -283,7 +284,9 @@ def _retry_after_from_error(message: str, code: str) -> float | None:
     return value / 1000.0 if match.group(2).lower() == "ms" else value
 
 
-def _responses_error_chunk(payload: Any, fallback: str) -> StreamChunk:
+def _responses_error_chunk(
+    payload: Any, fallback: str, *, error_body: Any = None, response: Any = None,
+) -> StreamChunk:
     message = safe_utf8_str(_response_error_message(payload) or fallback)
     code = _response_error_code(payload)
     terminal_codes = {
@@ -300,6 +303,9 @@ def _responses_error_chunk(payload: Any, fallback: str) -> StreamChunk:
     return StreamChunk(
         type="error",
         error=message,
+        error_body=payload if error_body is None else error_body,
+        error_status_code=getattr(response, "status_code", None),
+        error_request_id=response_request_id(response),
         retryable=False if code in terminal_codes else True,
         retry_after=_retry_after_from_error(message, code),
     )
@@ -376,7 +382,9 @@ def _response_to_stream_chunks(response: Any) -> list[StreamChunk]:
     if not chunks and getattr(response, "error", None):
         err = response.error
         error_msg = safe_utf8_str(getattr(err, "message", str(err)))
-        chunks.append(StreamChunk(type="error", error=error_msg or "Response failed"))
+        chunks.append(StreamChunk(
+            type="error", error=error_msg or "Response failed", error_body=err,
+        ))
         return chunks
 
     chunks.append(
@@ -803,6 +811,7 @@ class CodexAdapter(APIAdapter):
                     response.raise_for_status()
                 except httpx.HTTPStatusError:
                     body = (await response.aread()).decode("utf-8", "replace").strip()
+                    error_body = body
                     if response.status_code == 401 and self._using_codex_oauth:
                         body = (
                             "Codex OAuth token was rejected. Run `codex login` "
@@ -815,6 +824,9 @@ class CodexAdapter(APIAdapter):
                     yield StreamChunk(
                         type="error",
                         error=safe_utf8_str(error_message),
+                        error_body=error_body,
+                        error_status_code=response.status_code,
+                        error_request_id=response_request_id(response),
                         retryable=(
                             response.status_code in {408, 409, 429}
                             or response.status_code >= 500
@@ -836,10 +848,13 @@ class CodexAdapter(APIAdapter):
                         payload = {}
                     error_message = _response_error_message(payload)
                     if error_message:
-                        yield _responses_error_chunk(payload, error_message)
+                        yield _responses_error_chunk(payload, error_message, response=response)
                     else:
                         yield StreamChunk(
                             type="error",
+                            error_body=body,
+                            error_status_code=response.status_code,
+                            error_request_id=response_request_id(response),
                             error=(
                                 "Responses endpoint returned JSON without a usable "
                                 "response or error payload"
@@ -973,12 +988,15 @@ class CodexAdapter(APIAdapter):
                             _response_error_message({"error": error_payload})
                             or "Response failed"
                         )
-                        yield _responses_error_chunk(payload, error_message)
+                        yield _responses_error_chunk(payload, error_message, response=response)
 
                     elif event_type == "response.incomplete":
                         saw_terminal_event = True
                         yield StreamChunk(
                             type="error",
+                            error_body=payload,
+                            error_status_code=response.status_code,
+                            error_request_id=response_request_id(response),
                             error=_incomplete_response_message(
                                 payload.get("response") or {}
                             ),
@@ -987,14 +1005,14 @@ class CodexAdapter(APIAdapter):
 
                     elif event_type in {"response.error", "error"}:
                         saw_terminal_event = True
-                        yield _responses_error_chunk(payload, "Unknown error")
+                        yield _responses_error_chunk(payload, "Unknown error", response=response)
 
                     elif _response_error_message(payload):
                         # Some proxies wrap an error in a non-standard SSE
                         # event name. Preserve the payload instead of
                         # reducing it to a generic empty-stream failure.
                         saw_terminal_event = True
-                        yield _responses_error_chunk(payload, "Unknown error")
+                        yield _responses_error_chunk(payload, "Unknown error", response=response)
 
                 if not saw_terminal_event:
                     yield StreamChunk(
@@ -1252,12 +1270,14 @@ class CodexAdapter(APIAdapter):
                     yield _responses_error_chunk(
                         {"error": {"message": error_msg, "code": error_code}},
                         "Response failed",
+                        error_body=event,
                     )
 
                 elif event_type == "response.incomplete":
                     saw_sdk_terminal_event = True
                     yield StreamChunk(
                         type="error",
+                        error_body=event,
                         error=_incomplete_response_message(
                             getattr(event, "response", None)
                         ),
@@ -1276,6 +1296,7 @@ class CodexAdapter(APIAdapter):
                     yield _responses_error_chunk(
                         {"error": {"message": error_msg, "code": error_code}},
                         "Unknown error",
+                        error_body=event,
                     )
             if not saw_sdk_terminal_event:
                 yield StreamChunk(

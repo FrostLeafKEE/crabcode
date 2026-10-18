@@ -19,6 +19,7 @@ from typing import Any, AsyncIterator
 from zoneinfo import ZoneInfo
 
 from crabcode_core.api.base import APIAdapter, ModelConfig, StreamChunk, usage_int_field
+from crabcode_core.api.error_logging import log_api_error
 from crabcode_core.paths import get_config_home
 
 logger = logging.getLogger(__name__)
@@ -260,14 +261,19 @@ async def tracked_stream_message(
                 stop_reason = chunk.stop_reason
             if chunk.type == "error":
                 outcome = "error"
+                log_api_error(adapter, session_id=session_id, model=config.model,
+                              attempt_id=request_id, purpose=purpose, chunk=chunk)
             yield chunk
         if outcome != "error":
             outcome = "output_limit" if stop_reason in {"max_tokens", "max_output_tokens", "length"} else "completed"
     except (GeneratorExit, asyncio.CancelledError):
         outcome = "interrupted"
         raise
-    except BaseException:
+    except BaseException as exc:
         outcome = "error"
+        if isinstance(exc, Exception):
+            log_api_error(adapter, session_id=session_id, model=config.model,
+                          attempt_id=request_id, purpose=purpose, exception=exc)
         raise
     finally:
         try:

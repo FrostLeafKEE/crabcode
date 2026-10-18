@@ -119,6 +119,31 @@ def test_incomplete_chunked_read_retries_after_partial_text():
     assert durable == ["recovered"]
 
 
+def test_retried_http_failure_logs_full_error_body(monkeypatch, tmp_path, caplog):
+    import openai
+
+    monkeypatch.setenv("CRABCODE_HOME", str(tmp_path))
+    body = {"error": {"message": "temporary failure", "code": "get_channel_failed",
+                      "details": {"request_id": "upstream-retry-id"}}}
+    response = httpx.Response(500, json=body,
+                              request=httpx.Request("POST", "https://provider.invalid"))
+    adapter = ScriptedAdapter([
+        [openai.InternalServerError("temporary failure", response=response, body=body)],
+        [*completed_text("recovered"), StreamChunk(type="message_stop")],
+    ])
+
+    events, messages = run(adapter)
+
+    assert len(adapter.requests) == 2
+    assert sum(isinstance(event, StreamRetryEvent) for event in events) == 1
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+    assert messages[-1].text_content == "recovered"
+    diagnostics = [json.loads(record.getMessage().split("API error details: ", 1)[1])
+                   for record in caplog.records if "API error details: " in record.getMessage()]
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["errors"][0]["body"] == body
+
+
 def _httpx2_remote_protocol_error(message: str):
     """Build the exception chain the OpenAI SDK raises for an httpx2 disconnect."""
 

@@ -108,6 +108,10 @@ class StreamChunk:
     connection_failed: bool = False
     retry_after: float | None = None
     model_id: str = ""  # provider-returned model identity, when available
+    # Internal diagnostics only; never forwarded as UI events or conversation content.
+    error_body: Any = None
+    error_status_code: int | None = None
+    error_request_id: str | None = None
 
 
 class APIAdapter(ABC):
