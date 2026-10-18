@@ -41,3 +41,20 @@ if (process.platform === "darwin") {
 }
 writeFileSync(path.join(destination, "runtime.json"), JSON.stringify({ protocol_version: 1, version, platform: process.platform, arch: process.arch }, null, 2) + "\n");
 console.log(`Computer Use component: ${destination}`);
+
+if (process.argv.includes("--sync-local-clients")) {
+  const clientDestinations = [
+    path.resolve(root, "../desktop/src-tauri/resources/computer-use"),
+    path.resolve(root, "../vscode/resources/computer-use"),
+    path.resolve(root, "../vscode/computer-use/resources/computer-use"),
+  ];
+  if (!clientDestinations.includes(destination)) {
+    throw new Error("--sync-local-clients requires a Desktop or VS Code resource destination");
+  }
+  for (const mirror of clientDestinations) {
+    if (mirror === destination) continue;
+    rmSync(mirror, { recursive: true, force: true });
+    cpSync(destination, mirror, { recursive: true, preserveTimestamps: true });
+    console.log(`Computer Use component mirrored: ${mirror}`);
+  }
+}

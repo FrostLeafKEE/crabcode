@@ -12,7 +12,7 @@
   "activationEvents": ["onCommand:crabcode.computerUse.configureLocal", "onCommand:crabcode.computerUse.disposeLocal", "onCommand:crabcode.computerUse.local"],
   "scripts": {
     "build": "node esbuild.cjs",
-    "computer-use:build": "node ../../computer-use/scripts/build.mjs --out resources/computer-use",
+    "computer-use:build": "node ../../computer-use/scripts/build.mjs --out resources/computer-use --sync-local-clients",
     "vscode:prepublish": "npm run computer-use:build && npm run build"
   },
   "dependencies": { "ws": "^8.18.0" },

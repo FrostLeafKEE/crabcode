@@ -394,7 +394,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run computer-use:build && npm run build",
-    "computer-use:build": "node ../computer-use/scripts/build.mjs --out resources/computer-use",
+    "computer-use:build": "node ../computer-use/scripts/build.mjs --out resources/computer-use --sync-local-clients",
     "build": "node esbuild.js --production",
     "prewatch": "npm run computer-use:build -- --debug",
     "watch": "node esbuild.js",

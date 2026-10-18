@@ -74,6 +74,21 @@ pub fn install(source: &Path, dir: &Path) -> Result<PathBuf, String> {
     {
         return Ok(target);
     }
+    #[cfg(target_os = "macos")]
+    if target.is_file() {
+        // An older Desktop/VS Code/CLI bundle must not replace the newer app
+        // just because its client started later. Ad-hoc signatures are tied to
+        // the binary hash, so such a downgrade also invalidates TCC access.
+        let source_modified = source.metadata().and_then(|meta| meta.modified());
+        let installed_modified = target.metadata().and_then(|meta| meta.modified());
+        if let (Ok(source_modified), Ok(installed_modified)) =
+            (source_modified, installed_modified)
+        {
+            if source_modified <= installed_modified {
+                return Ok(target);
+            }
+        }
+    }
     // Do not replace a component while another client owns an active task.
     if let Ok(endpoint) = read_endpoint(dir) {
         if let Ok(info) = rpc(&endpoint, "ping", json!({})) {
@@ -544,6 +559,35 @@ pub fn serve(dir: PathBuf) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn older_client_cannot_replace_a_newer_shared_app() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = |client: &str, contents: &str, modified: SystemTime| {
+            let executable = temp.path().join(client).join(
+                "Crab Computer Use.app/Contents/MacOS/crabcode-computer-use-host",
+            );
+            std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            std::fs::write(&executable, contents).unwrap();
+            File::options().write(true).open(&executable).unwrap()
+                .set_modified(modified).unwrap();
+            executable
+        };
+        let now = SystemTime::now();
+        let older = source("vscode", "older", now - Duration::from_secs(20));
+        let newer = source("desktop", "newer", now - Duration::from_secs(10));
+        let newest = source("companion", "newest", now);
+        let state = temp.path().join("state");
+        let installed = install(&older, &state).unwrap();
+        assert_eq!(std::fs::read(&installed).unwrap(), b"older");
+        install(&newer, &state).unwrap();
+        assert_eq!(std::fs::read(&installed).unwrap(), b"newer");
+        install(&older, &state).unwrap();
+        assert_eq!(std::fs::read(&installed).unwrap(), b"newer");
+        install(&newest, &state).unwrap();
+        assert_eq!(std::fs::read(&installed).unwrap(), b"newest");
+    }
 
     fn test_server() -> (Endpoint, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();

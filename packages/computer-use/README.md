@@ -43,6 +43,11 @@ per-user application-data directory, under `CrabCode/ComputerUse`. macOS uses
 Grant that app Accessibility and Screen Recording access, then select refresh
 in the client. Existing Desktop permissions do not transfer to the new app.
 Local ad-hoc builds can require renewed authorization after recompilation.
+Local client build commands copy the same signed bundle into Desktop, VS Code,
+and the local companion. The shared installer keeps a newer installed build
+when an older client starts, so switching clients does not repeatedly replace
+the authorized helper. A genuinely new ad-hoc build can still require one
+authorization; stable signing remains necessary to preserve TCC across changes.
 If the switches are on but TCC logs report a code-requirement mismatch, reset
 only this development component with `tccutil reset Accessibility
 io.crabcode.computer-use` and `tccutil reset ScreenCapture
