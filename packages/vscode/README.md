@@ -18,7 +18,7 @@ checkpoint recovery without leaving the editor.
 2. For a local Gateway, install CrabCode with Gateway support:
 
    ```bash
-   python -m pip install "crabcode[gateway]==0.1.5"
+   python -m pip install "crabcode[gateway]==0.1.6"
    crabcode gateway
    ```
 
@@ -211,11 +211,11 @@ npm test
 npm run package
 ```
 
-The package command builds the extension and creates `crabcode-0.1.5.vsix`.
+The package command builds the extension and creates `crabcode-0.1.6.vsix`.
 For extension-host development, `npm run watch` (also used by the F5 launch task)
 builds a debug native component before starting the JavaScript watcher.
 Install it with **Extensions → … → Install from VSIX…**, or run
-`code --install-extension crabcode-0.1.5.vsix`. Node.js and npm are only required
+`code --install-extension crabcode-0.1.6.vsix`. Node.js and npm are only required
 for building the extension, not for installing the VSIX in VS Code.
 
 ## Support and source

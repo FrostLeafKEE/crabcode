@@ -2,7 +2,7 @@
   "name": "crabcode",
   "displayName": "CrabCode",
   "description": "CrabCode Programming Assistant: Works seamlessly with the CrabCode gateway in the editor",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "publisher": "crabcode",
   "license": "MIT",
   "repository": {

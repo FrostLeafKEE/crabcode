@@ -3,7 +3,7 @@
 All notable changes to the CrabCode Visual Studio Code extension are documented
 in this file.
 
-## Unreleased
+## 0.1.6
 
 - Add `crabcode.computerUseMode` with background-application and foreground-desktop modes; explicit VS Code values override the Gateway mode without automatic fallback.
 - Add Desktop-style composer capsules for reasoning effort, models, and modes.
