@@ -8,7 +8,7 @@ import {
   Server,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { isWindowsPlatform } from "./platform";
 import type {
   ConnectionPreset,
@@ -67,15 +67,10 @@ export function RuntimeSettingsPanel({
   const writableSources = useMemo(() => sourceOptions.filter((item) => item.writable), [sourceOptions]);
   const online = gateway?.status === "online";
   const canEdit = online && Boolean(onMutate) && writableSources.length > 0;
-  const storedTarget = data?.computer_use_target_scope
+  const computerUseTarget = data?.computer_use_target_scope
     ?? (data?.computer_use_mode === "foreground_desktop" ? "desktop" : "app_window");
-  const storedPolicy = data?.computer_use_delivery_policy ?? "allow_foreground";
+  const computerUsePolicy = data?.computer_use_delivery_policy ?? "allow_foreground";
   const windowsHost = isWindowsPlatform();
-  // The shared default is app_window for macOS. On Windows that choice cannot
-  // run, so the control shows and keeps the desktop scope instead.
-  const computerUseTarget = windowsHost && storedTarget === "app_window" ? "desktop" : storedTarget;
-  const computerUsePolicy = windowsHost && storedPolicy === "strict_background" ? "allow_foreground" : storedPolicy;
-  const windowsCorrection = useRef(false);
 
   useEffect(() => {
     setSnapshotSizeDraft(data ? String(data.snapshot_max_size_mb) : "");
@@ -153,16 +148,6 @@ export function RuntimeSettingsPanel({
       // The mutation banner contains the remote error.
     }
   };
-
-  useEffect(() => {
-    if (!windowsHost || !canEdit || !data || windowsCorrection.current) return;
-    const changes: Pick<RuntimeSettingsMutation, "computer_use_target_scope" | "computer_use_delivery_policy"> = {};
-    if (storedTarget === "app_window") changes.computer_use_target_scope = "desktop";
-    if (storedPolicy === "strict_background") changes.computer_use_delivery_policy = "allow_foreground";
-    if (!changes.computer_use_target_scope && !changes.computer_use_delivery_policy) return;
-    windowsCorrection.current = true;
-    void saveComputerUseOptions(changes);
-  }, [windowsHost, canEdit, data, storedTarget, storedPolicy, source]);
 
   const addTool = async (event: FormEvent) => {
     event.preventDefault();

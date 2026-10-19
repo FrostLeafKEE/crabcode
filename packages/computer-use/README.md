@@ -97,6 +97,17 @@ Capabilities determine whether Core exposes the tool. CLI follows the existing
 `computer_use` settings and tool permission policy. With no installed component
 or graphical session, ordinary coding remains available.
 
+When the connected executor is Windows and no target scope was explicitly set,
+Core selects desktop scope if the session already allows foreground input. This
+also applies to Desktop and VS Code connected to a Gateway on another OS.
+Explicit window targets and strict-background settings are preserved; clients
+never rewrite these settings to enable Windows input.
+Windows shortcut letters are case-insensitive when used with Ctrl, Alt or Win;
+include Shift explicitly when needed. Text pastes preserve existing clipboard
+formats, including images, file lists and rich text, and do not overwrite data
+copied during the operation. An unsupported clipboard format is reported before
+the clipboard is changed or input is sent.
+
 ```sh
 crabcode computer-use status
 crabcode computer-use status --json

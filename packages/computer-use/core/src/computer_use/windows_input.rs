@@ -11,15 +11,9 @@
 use std::thread;
 use std::time::Duration;
 
+use super::windows_clipboard::with_clipboard_text;
 use serde_json::{json, Value};
-use windows::Win32::Foundation::HANDLE;
-use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
-    SetClipboardData,
-};
-use windows::Win32::System::Memory::{
-    GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
-};
+use windows::core::{w, HSTRING};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyboardLayout, MapVirtualKeyW, SendInput, VkKeyScanExW, INPUT, INPUT_0, INPUT_KEYBOARD,
     KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC,
@@ -27,13 +21,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_NEXT, VK_PRIOR, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
     VK_UP,
 };
+use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, SetCursorPos,
+    GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, SetCursorPos, SW_SHOWNORMAL,
 };
 
 const PASTE_SETTLE_MS: u64 = 200;
-const MAX_PASTE_BYTES: usize = 1024 * 1024;
-const CF_UNICODETEXT: u32 = 13;
 
 #[derive(Debug, PartialEq, Eq)]
 enum TypePlan {
@@ -74,13 +67,36 @@ pub(super) fn type_text(text: &str) -> Result<(), String> {
 }
 
 pub(super) fn press_keys(names: &[String]) -> Result<(), String> {
+    let sequence = key_sequence(names)?;
+    let mut input = Vec::with_capacity(sequence.len() * 2);
+    for stroke in &sequence {
+        input.push(key_event(*stroke, false));
+    }
+    for stroke in sequence.iter().rev() {
+        input.push(key_event(*stroke, true));
+    }
+    send_input(&input)
+}
+
+fn key_sequence(names: &[String]) -> Result<Vec<Stroke>, String> {
     if names.is_empty() {
         return Err("keys cannot be empty".to_string());
     }
     let mut sequence = Vec::new();
     let mut shift_held = false;
+    let shortcut = names.iter().any(|name| {
+        named_vk(&name.trim().to_ascii_uppercase())
+            .is_some_and(|vk| matches!(vk, VK_CONTROL | VK_MENU | VK_LWIN | VK_RWIN))
+    });
     for name in names {
-        for stroke in strokes_for_name(name)? {
+        // Shortcut letters name physical keys, not shifted text characters.
+        // Explicit SHIFT and shifted punctuation still retain their meaning.
+        let key = if shortcut && name.len() == 1 && name.as_bytes()[0].is_ascii_alphabetic() {
+            name.to_ascii_lowercase()
+        } else {
+            name.clone()
+        };
+        for stroke in strokes_for_name(&key)? {
             if stroke.vk == VK_SHIFT || stroke.vk == VK_RSHIFT {
                 if shift_held {
                     continue;
@@ -90,14 +106,31 @@ pub(super) fn press_keys(names: &[String]) -> Result<(), String> {
             sequence.push(stroke);
         }
     }
-    let mut input = Vec::with_capacity(sequence.len() * 2);
-    for stroke in &sequence {
-        input.push(key_event(*stroke, false));
+    Ok(sequence)
+}
+
+pub(super) fn open_app(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() || name.contains('\0') {
+        return Err("An application name or path without NUL characters is required".into());
     }
-    for stroke in sequence.iter().rev() {
-        input.push(key_event(*stroke, true));
+    // Pass the application as one literal shell target. PowerShell -Command
+    // appends trailing arguments to its source instead of binding $args.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            &HSTRING::from(name),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    let code = result.0 as isize;
+    if code > 32 {
+        Ok(())
+    } else {
+        Err(format!("Unable to open app: Windows shell error {code}"))
     }
-    send_input(&input)
 }
 
 pub(super) fn foreground_window() -> Option<Value> {
@@ -269,110 +302,6 @@ fn send_input(input: &[INPUT]) -> Result<(), String> {
     }
 }
 
-struct ClipboardLock;
-
-impl ClipboardLock {
-    fn open() -> Result<Self, String> {
-        for _ in 0..10 {
-            if unsafe { OpenClipboard(None) }.is_ok() {
-                return Ok(Self);
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        Err("Clipboard is busy".to_string())
-    }
-}
-
-impl Drop for ClipboardLock {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = CloseClipboard();
-        }
-    }
-}
-
-fn with_clipboard_text(
-    text: &str,
-    body: impl FnOnce() -> Result<(), String>,
-) -> Result<(), String> {
-    let previous = {
-        let _lock = ClipboardLock::open()?;
-        read_unicode_clipboard()?
-    };
-    if let Err(error) = (|| {
-        let _lock = ClipboardLock::open()?;
-        set_unicode_clipboard(text)
-    })() {
-        restore_clipboard(previous.as_deref())?;
-        return Err(error);
-    }
-    let outcome = body();
-    let restored = restore_clipboard(previous.as_deref());
-    outcome.and(restored)
-}
-
-fn restore_clipboard(previous: Option<&str>) -> Result<(), String> {
-    let _lock = ClipboardLock::open()?;
-    match previous {
-        Some(previous) => set_unicode_clipboard(previous),
-        None => unsafe { EmptyClipboard() }
-            .map_err(|error| format!("Unable to restore the clipboard: {error}")),
-    }
-}
-
-fn read_unicode_clipboard() -> Result<Option<String>, String> {
-    if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) }.is_err() {
-        return Ok(None);
-    }
-    let handle = unsafe { GetClipboardData(CF_UNICODETEXT) }
-        .map_err(|error| format!("Unable to read the clipboard: {error}"))?;
-    if handle.is_invalid() {
-        return Ok(None);
-    }
-    let memory = windows::Win32::Foundation::HGLOBAL(handle.0);
-    let pointer = unsafe { GlobalLock(memory) };
-    if pointer.is_null() {
-        return Err("Unable to read the clipboard".to_string());
-    }
-    let units = (unsafe { GlobalSize(memory) } / 2).saturating_sub(1);
-    let text = unsafe {
-        let data = std::slice::from_raw_parts(pointer as *const u16, units);
-        let end = data
-            .iter()
-            .position(|unit| *unit == 0)
-            .unwrap_or(data.len());
-        String::from_utf16_lossy(&data[..end])
-    };
-    unsafe {
-        let _ = GlobalUnlock(memory);
-    }
-    Ok(Some(text))
-}
-
-fn set_unicode_clipboard(text: &str) -> Result<(), String> {
-    let mut units: Vec<u16> = text.encode_utf16().collect();
-    units.push(0);
-    let bytes = units.len() * 2;
-    if bytes > MAX_PASTE_BYTES {
-        return Err("Text is too large to paste".to_string());
-    }
-    unsafe { EmptyClipboard() }
-        .map_err(|error| format!("Unable to prepare the clipboard: {error}"))?;
-    let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes) }
-        .map_err(|error| format!("Unable to prepare the clipboard: {error}"))?;
-    let pointer = unsafe { GlobalLock(memory) };
-    if pointer.is_null() {
-        return Err("Unable to prepare the clipboard".to_string());
-    }
-    unsafe {
-        std::ptr::copy_nonoverlapping(units.as_ptr(), pointer as *mut u16, units.len());
-        let _ = GlobalUnlock(memory);
-        SetClipboardData(CF_UNICODETEXT, Some(HANDLE(memory.0)))
-            .map_err(|error| format!("Unable to set the clipboard: {error}"))?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,17 +370,61 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_text_is_restored_after_use() {
-        let previous = {
-            let _lock = ClipboardLock::open().unwrap();
-            read_unicode_clipboard().unwrap()
-        };
-        let outcome = with_clipboard_text("crabcode-clipboard-probe", || Ok(()));
-        let restored = {
-            let _lock = ClipboardLock::open().unwrap();
-            read_unicode_clipboard().unwrap()
-        };
-        assert!(outcome.is_ok());
-        assert_eq!(restored, previous);
+    fn shortcut_letters_do_not_implicitly_hold_shift() {
+        for letter in ["A", "C", "L", "S", "V", "a", "c", "l", "s", "v"] {
+            let keys = key_sequence(&["CTRL".into(), letter.into()]).unwrap();
+            assert_eq!(
+                keys.iter().map(|stroke| stroke.vk.0).collect::<Vec<_>>(),
+                vec![
+                    VK_CONTROL.0,
+                    letter.to_ascii_uppercase().as_bytes()[0] as u16
+                ]
+            );
+        }
+        let keys = key_sequence(&["CTRL".into(), "SHIFT".into(), "L".into()]).unwrap();
+        assert_eq!(
+            keys.iter().map(|stroke| stroke.vk.0).collect::<Vec<_>>(),
+            vec![VK_CONTROL.0, VK_SHIFT.0, b'L' as u16]
+        );
+        assert!(key_sequence(&[]).is_err());
+    }
+
+    #[test]
+    fn open_app_rejects_invalid_targets_before_launch() {
+        assert!(open_app("").is_err());
+        assert!(open_app("  ").is_err());
+        assert!(open_app("calc\0.exe").is_err());
+    }
+
+    #[test]
+    fn open_app_launches_an_executable_with_a_literal_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("launched");
+        let source = dir.path().join("fixture.rs");
+        let executable = dir.path().join("app with spaces ' 中文.exe");
+        std::fs::write(&source, format!(
+            "#![windows_subsystem = \"windows\"]\nfn main() {{ std::fs::write({:?}, b\"launched\").unwrap(); }}", marker
+        )).unwrap();
+        use std::os::windows::process::CommandExt;
+        let output = std::process::Command::new("rustc")
+            .arg("--crate-name")
+            .arg("launch_fixture")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .creation_flags(0x08000000)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        open_app(executable.to_str().unwrap()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !marker.exists() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(std::fs::read(&marker).unwrap(), b"launched");
     }
 }

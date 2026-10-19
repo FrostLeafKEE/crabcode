@@ -9,8 +9,7 @@ use enigo::{Coordinate, Keyboard};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::Cursor;
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+#[cfg(not(target_os = "windows"))]
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -21,6 +20,8 @@ use xcap::{Monitor, Window};
 mod windows_focus;
 #[cfg(target_os = "windows")]
 mod windows_input;
+#[cfg(target_os = "windows")]
+mod windows_clipboard;
 
 #[cfg(target_os = "macos")]
 use core_foundation::array::{CFArray, CFArrayRef};
@@ -416,19 +417,12 @@ fn activate_app(name: &str) -> Result<(), String> {
     let status = Command::new("open").args(["-a", name]).status();
 
     #[cfg(target_os = "windows")]
-    let status = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "Start-Process -FilePath $args[0]",
-            name,
-        ])
-        .creation_flags(0x08000000)
-        .status();
+    return windows_input::open_app(name);
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let status = Command::new(name).status();
 
+    #[cfg(not(target_os = "windows"))]
     match status {
         Ok(value) if value.success() => Ok(()),
         Ok(value) => Err(format!("Unable to open app; process exited with {value}")),

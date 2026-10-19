@@ -12,6 +12,7 @@ import time
 from typing import Any
 from uuid import uuid4
 
+from crabcode_core.computer_use_mode import effective_computer_use_mode
 from crabcode_core.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -271,7 +272,7 @@ def session_status(session: Any) -> str:
     if not getattr(session, "computer_use_enabled", False):
         return "disabled"
     caps = backend.capabilities(host_id)
-    mode = getattr(session, "computer_use_mode", "background_app")
+    mode = effective_computer_use_mode(session)
     if not caps.get("gui_available"):
         state = "unavailable"
     elif not backend.is_available(host_id, mode):

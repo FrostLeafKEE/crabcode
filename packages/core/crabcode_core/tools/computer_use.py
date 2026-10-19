@@ -8,6 +8,7 @@ import copy
 import json
 from typing import Any
 
+from crabcode_core.computer_use_mode import effective_computer_use_mode
 from crabcode_core.computer_use_observation import compact_ax_result
 from crabcode_core.types.tool import (
     MAX_INLINE_IMAGE_BYTES,
@@ -40,7 +41,6 @@ _ACTIONS = {
 _AX_ACTIONS = {"press", "set_value", "perform_action"}
 _AX_FIELDS = {"observation", "snapshot_id", "element_id", "ax_action"}
 _READ_ONLY_ACTIONS = {"observe", "list_displays", "list_windows", "wait"}
-_COMPUTER_USE_MODES = {"background_app", "foreground_desktop"}
 _MAX_SCROLL_DELTA = 10_000
 _MAX_WINDOW_OBSERVATIONS = 3
 
@@ -166,9 +166,7 @@ class ComputerUseTool(Tool):
 
     def _binding(self) -> tuple[Any | None, str | None, bool, str]:
         session = self._session
-        mode = str(getattr(session, "computer_use_mode", "background_app"))
-        if mode not in _COMPUTER_USE_MODES:
-            mode = "background_app"
+        mode = effective_computer_use_mode(session)
         if self._environment():
             mode = "foreground_desktop"
         return (
@@ -359,7 +357,8 @@ class ComputerUseTool(Tool):
                 "If the combined capture is too large, observe with a display_id from displays. "
                 "cursor uses the same screenshot coordinates as clicks. "
                 "Desktop control moves the visible pointer and keyboard and may interrupt the user. "
-                "On Windows, type inserts text with one clipboard paste and then restores the previous text clipboard; "
+                "On Windows, type inserts text with one clipboard paste and then restores the previous clipboard formats, "
+                "unless the user or application has copied newer data; "
                 "a single line ending in a newline is pasted and then Enter is pressed. "
                 "keypress sends virtual-key chords, so Ctrl+V works in address bars and rename fields. "
                 "foreground_window.title is the active window after the action; read it before typing when several documents look alike. "

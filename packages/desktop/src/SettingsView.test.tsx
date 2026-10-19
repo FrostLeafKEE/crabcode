@@ -877,16 +877,40 @@ describe("SettingsView", () => {
     const button = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
       .find((item) => item.textContent === label)!;
     expect(button("指定窗口").disabled).toBe(true);
-    expect(button("指定窗口").getAttribute("aria-pressed")).toBe("false");
+    expect(button("指定窗口").getAttribute("aria-pressed")).toBe("true");
     expect(button("严格后台").disabled).toBe(true);
     expect(button("整个桌面").disabled).toBe(false);
-    expect(button("整个桌面").getAttribute("aria-pressed")).toBe("true");
+    expect(button("整个桌面").getAttribute("aria-pressed")).toBe("false");
     expect(button("允许前台操作").disabled).toBe(false);
-    expect(onMutate).toHaveBeenCalledWith(expect.objectContaining({ computer_use_target_scope: "desktop" }));
+    expect(onMutate).not.toHaveBeenCalled();
     const saved = onMutate.mock.calls.length;
     await act(async () => button("指定窗口").click());
     await act(async () => button("严格后台").click());
     expect(onMutate).toHaveBeenCalledTimes(saved);
+    await act(async () => button("整个桌面").click());
+    expect(onMutate).toHaveBeenLastCalledWith(expect.objectContaining({ computer_use_target_scope: "desktop" }));
+  });
+
+  it("preserves strict background when opening Windows settings and requires an explicit change", async () => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Windows NT 10.0");
+    const onMutate = vi.fn().mockResolvedValue(undefined);
+    await act(async () => root.render(<RuntimeSettingsPanel
+      activeConnection={settings.connections[0]} activeProject={settings.connections[0].projects[0]}
+      gateway={onlineGateway} loading={false} error={null} onRefresh={vi.fn()} onMutate={onMutate}
+      data={{ cwd: "/work/crabcode", snapshot_enabled: true, snapshot_max_size_mb: 1024,
+        computer_use_target_scope: "app_window", computer_use_delivery_policy: "strict_background",
+        extra_tools: [], extra_tools_by_source: {}, sources: [], warnings: [],
+        editable_sources: [{ id: "projectSettings", label: "项目配置", path: "/work/.crabcode/settings.json", exists: true, writable: true }] }}
+    />));
+    const button = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((item) => item.textContent === label)!;
+    expect(onMutate).not.toHaveBeenCalled();
+    expect(button("严格后台").getAttribute("aria-pressed")).toBe("true");
+    expect(button("整个桌面").disabled).toBe(true);
+    await act(async () => button("允许前台操作").click());
+    expect(onMutate).toHaveBeenCalledTimes(1);
+    expect(onMutate).toHaveBeenLastCalledWith(expect.objectContaining({ computer_use_delivery_policy: "allow_foreground" }));
   });
 
   it("shows a host-side command instead of remote execution for remote gateways", () => {

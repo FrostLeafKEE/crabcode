@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -10,6 +11,7 @@ from crabcode_core.permissions.manager import PermissionManager, PermissionMode
 from crabcode_core.tools.computer_use import ComputerUseTool
 from crabcode_core.types.config import ComputerUseSettings, CrabCodeSettings
 from crabcode_core.types.tool import ToolContext
+from crabcode_cli.computer_use import LocalComputerUse, session_status
 from crabcode_gateway.computer_use import ComputerUseBroker
 from crabcode_gateway.routes.session import _bind_computer_use
 from crabcode_gateway.schemas import (
@@ -18,6 +20,61 @@ from crabcode_gateway.schemas import (
     RuntimeSettingsResponse,
     SendMessageRequest,
 )
+
+
+@pytest.mark.parametrize("client", ["cli", "gateway"])
+@pytest.mark.parametrize("options,expected,available", [
+    ({}, "foreground_desktop", True),
+    ({"delivery_policy": "allow_foreground"}, "foreground_desktop", True),
+    ({"target_scope": "desktop"}, "foreground_desktop", True),
+    ({"target_scope": "app_window"}, "background_app", False),
+    ({"mode": "background_app"}, "background_app", False),
+    ({"delivery_policy": "strict_background"}, "background_app", False),
+])
+def test_windows_host_resolves_only_implicit_target_without_changing_permission(client, options, expected, available):
+    async def scenario():
+        caps = {"platform": "windows", "supported_modes": ["foreground_desktop"],
+                "gui_available": True, "input_available": True, "capture_available": True,
+                "delivery_policy_version": 1, "instance_id": "windows-host"}
+        requests = []
+        if client == "cli":
+            native = SimpleNamespace(request=AsyncMock(return_value={"ok": True}))
+            backend = LocalComputerUse(native)
+            backend._caps = caps
+            host_id = backend.host_id
+        else:
+            backend = ComputerUseBroker(timeout_seconds=1)
+            host_id = "vscode-or-desktop-local-host"
+
+            class Socket:
+                async def send_json(self, payload):
+                    requests.append(payload)
+                    backend.resolve(host_id, payload["request_id"], {"ok": True})
+
+            backend.register(host_id, Socket(), enabled=True, gui_available=True, capabilities=caps)
+        session = CoreSession(settings=CrabCodeSettings(computer_use=options), tools=[])
+        _bind_computer_use(session, SimpleNamespace(computer_use_broker=backend), host_id, True)
+        context = ToolContext(session=session, session_id="windows-review")
+        tool = ComputerUseTool()
+        await tool.setup(context)
+        assert tool._binding()[3] == expected
+        assert tool.is_available(context) is available
+        assert session.computer_use_delivery_policy == options.get("delivery_policy", "allow_foreground")
+        if available:
+            assert "target_scope=desktop" in await tool.get_prompt()
+            assert not (await tool.call({"action": "observe"}, context)).is_error
+            sent = native.request.await_args.args[1]["request"] if client == "cli" else requests[-1]
+            if client == "cli":
+                assert session_status(session).startswith("ready")
+            assert sent["target_scope"] == "desktop"
+            assert sent["delivery_policy"] == "allow_foreground"
+            # A later explicit client setting remains authoritative.
+            _bind_computer_use(session, None, None, target_scope="app_window")
+            assert not tool.is_available(context)
+        # Selection is effective runtime state, not a write to saved settings.
+        assert session.settings.computer_use.model_dump(exclude_unset=True) == ComputerUseSettings(**options).model_dump(exclude_unset=True)
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("initialized", [False, True])
